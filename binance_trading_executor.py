@@ -1,0 +1,576 @@
+"""Binance trading executor.
+
+Handles order execution, position sizing, stop-loss/take-profit calculation,
+and risk management for the breakout scanner trading system.
+"""
+
+from __future__ import annotations
+
+import json
+import logging
+import subprocess
+import time
+from dataclasses import dataclass, field
+from typing import Any, List, Optional
+
+
+@dataclass
+class TradingSignal:
+    """A trading signal from the scanner."""
+    symbol: str
+    stage: str
+    direction: str
+    entry_price: float
+    metrics: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass
+class OrderResult:
+    """Result of an executed order."""
+    symbol: str
+    side: str
+    quantity: float
+    executed_price: float
+    order_id: int
+    status: str
+    message: str = ""
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "symbol": self.symbol,
+            "side": self.side,
+            "quantity": self.quantity,
+            "executed_price": self.executed_price,
+            "order_id": self.order_id,
+            "status": self.status,
+            "message": self.message,
+        }
+
+
+def _run_binance_cli(args: list[str], max_retries: int = 5) -> dict[str, Any] | list[Any]:
+    """Run binance-cli with given args and parse JSON output.
+
+    Added retry logic and empty response handling to prevent JSON parse errors.
+    Increased retries to 5 with exponential backoff for rate limit handling.
+    Added API call throttling to avoid rate limiting.
+    """
+    # 限流：确保 API 调用间隔 0.5 秒
+    time.sleep(0.5)
+
+    cmd = ["binance-cli", "futures-usds"] + args
+
+    for attempt in range(max_retries + 1):
+        try:
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
+
+            # Check for command failure
+            if result.returncode != 0:
+                error_msg = result.stderr.strip() or f"Command failed with exit code {result.returncode}"
+                # API 限流时重试
+                if "rate limit" in error_msg.lower() or "too many requests" in error_msg.lower():
+                    if attempt < max_retries:
+                        logger = logging.getLogger(__name__)
+                        wait_time = 2 ** attempt  # 指数退避：1s, 2s, 4s, 8s, 16s
+                        logger.warning(f"API 限流，等待 {wait_time}s 后重试 ({attempt + 1}/{max_retries + 1})...")
+                        time.sleep(wait_time)
+                        continue
+                raise RuntimeError(f"binance-cli 错误：{error_msg}")
+
+            # Check for empty response (common cause of JSON parse errors)
+            stdout = result.stdout.strip()
+            if not stdout:
+                if attempt < max_retries:
+                    logger = logging.getLogger(__name__)
+                    wait_time = 2 ** attempt
+                    logger.warning(f"binance-cli 返回空响应，等待 {wait_time}s 后重试 ({attempt + 1}/{max_retries + 1})...")
+                    time.sleep(wait_time)
+                    continue
+                raise RuntimeError("binance-cli 返回空响应（已达最大重试次数）")
+
+            # Parse JSON with error handling
+            try:
+                data = json.loads(stdout)
+                return data  # type: ignore
+            except json.JSONDecodeError as e:
+                if attempt < max_retries:
+                    logger = logging.getLogger(__name__)
+                    wait_time = 2 ** attempt
+                    logger.warning(f"JSON 解析失败，等待 {wait_time}s 后重试 ({attempt + 1}/{max_retries + 1}): {e}")
+                    time.sleep(wait_time)
+                    continue
+                # Return truncated response for debugging
+                raise RuntimeError(f"无效 JSON 响应：{stdout[:200]}...")
+
+        except subprocess.TimeoutExpired:
+            if attempt < max_retries:
+                wait_time = 2 ** attempt
+                time.sleep(wait_time)
+                continue
+            raise RuntimeError("binance-cli 超时（已达最大重试次数）")
+
+    raise RuntimeError("binance-cli 失败（已达最大重试次数）")
+
+
+def adjust_quantity_precision(symbol: str, quantity: float) -> float:
+    """Adjust quantity precision based on Binance symbol stepSize.
+    
+    Most USDT-M futures use stepSize of 0.001 or 0.01.
+    Falls back to 3 decimal places if exchange info is unavailable.
+    """
+    try:
+        # 获取交易对精度信息
+        info = _run_binance_cli(["exchange-info", "--symbol", symbol])
+        if isinstance(info, dict) and "symbols" in info:
+            sym_info = info["symbols"][0]
+            for f in sym_info.get("filters", []):
+                if f.get("filterType") == "LOT_SIZE":
+                    step_size = float(f.get("stepSize", "0.001"))
+                    # 计算小数位数
+                    decimals = len(str(step_size).rstrip('0').split('.')[-1]) if '.' in str(step_size) else 0
+                    quantity = round(quantity, decimals)
+                    logger.info(f"🔧 {symbol} 精度适配：stepSize={step_size}, 调整后 quantity={quantity}")
+                    return quantity
+    except Exception as e:
+        logger.debug(f"获取 {symbol} 精度信息失败，使用默认 3 位小数: {e}")
+    
+    # 默认保留 3 位小数（适用于大多数 USDT 合约）
+    quantity = round(quantity, 3)
+    return quantity
+
+
+def get_account_balance() -> dict[str, Any]:
+    """Fetch futures account information."""
+    return _run_binance_cli(["account-information-v2"])  # type: ignore
+
+
+def calculate_position_size(
+    account_balance: float,
+    risk_per_trade_pct: float,
+    entry_price: float,
+    stop_loss_price: float,
+    max_position_pct: float = 20.0,
+    min_notional: float = 5.0,  # 最小名义价值 5 USDT
+) -> float:
+    """Calculate position size based on risk parameters.
+
+    Args:
+        account_balance: Total account balance in USDT
+        risk_per_trade_pct: Risk per trade as percentage (e.g., 1.0 = 1%)
+        entry_price: Entry price of the trade
+        stop_loss_price: Stop loss price
+        max_position_pct: Maximum position size as % of account (default 20%)
+        min_notional: Minimum notional value (default 5 USDT for Binance)
+
+    Returns:
+        Quantity of the asset to buy/sell
+    """
+    risk_amount = account_balance * (risk_per_trade_pct / 100.0)
+    stop_loss_pct = abs(entry_price - stop_loss_price) / entry_price * 100
+
+    if stop_loss_pct == 0:
+        return 0.0
+
+    # Position size = risk_amount / stop_loss_percentage
+    position_value = risk_amount / (stop_loss_pct / 100.0)
+    
+    # 确保最小名义价值（Binance 要求至少 5 USDT）
+    position_value = max(position_value, min_notional)
+
+    # Cap at max position
+    max_position_value = account_balance * (max_position_pct / 100.0)
+    position_value = min(position_value, max_position_value)
+
+    quantity = position_value / entry_price
+    return round(quantity, 3)
+
+
+def calculate_stop_loss(entry_price: float, stop_loss_pct: float, side: str) -> float:
+    """Calculate stop loss price.
+
+    Args:
+        entry_price: Entry price
+        stop_loss_pct: Stop loss percentage
+        side: 'LONG' or 'SHORT'
+
+    Returns:
+        Stop loss price
+    """
+    if side == "LONG":
+        return round(entry_price * (1 - stop_loss_pct / 100.0), 2)
+    else:  # SHORT
+        return round(entry_price * (1 + stop_loss_pct / 100.0), 2)
+
+
+def calculate_take_profit(entry_price: float, take_profit_pcts: list[float], side: str) -> list[float]:
+    """Calculate take profit levels.
+
+    Args:
+        entry_price: Entry price
+        take_profit_pcts: List of take profit percentages
+        side: 'LONG' or 'SHORT'
+
+    Returns:
+        List of take profit prices
+    """
+    levels = []
+    for tp_pct in take_profit_pcts:
+        if side == "LONG":
+            levels.append(round(entry_price * (1 + tp_pct / 100.0), 2))
+        else:  # SHORT
+            levels.append(round(entry_price * (1 - tp_pct / 100.0), 2))
+    return levels
+
+
+def signal_to_order_params(signal: TradingSignal, side: str) -> dict[str, Any]:
+    """Convert trading signal to order parameters.
+
+    Args:
+        signal: Trading signal
+        side: 'LONG' or 'SHORT' (maps to BUY/SELL for futures)
+
+    Returns:
+        Order parameters dict for binance-cli
+    """
+    binance_side = "BUY" if side == "LONG" else "SELL"
+
+    return {
+        "symbol": signal.symbol,
+        "side": binance_side,
+        "type": "MARKET",
+        "quantity": 0,  # To be filled by position sizing
+    }
+
+
+def should_trade(signal: TradingSignal) -> bool:
+    """Determine if a signal should be traded.
+
+    支持双向交易：
+    - LONG/SHORT: 可交易
+    - CONSIDER_LONG/CONSIDER_SHORT: 可交易（反向信号）
+    - 其他：不交易
+    
+    放宽条件：接受所有有明确方向的信号
+    """
+    # Don't trade neutral signals
+    if signal.stage == "neutral":
+        return False
+    
+    # Don't trade unclear directions
+    if signal.direction in {"NO_TRADE", "WATCH", "RISK_OFF"}:
+        return False
+    
+    # Trade all stages with clear direction (mania and exhaustion can trade too)
+    if signal.direction in {"LONG", "SHORT", "CONSIDER_LONG", "CONSIDER_SHORT"}:
+        return True
+    
+    return False
+
+
+def place_market_order(
+    symbol: str,
+    side: str,
+    quantity: float,
+    leverage: int = 5,
+    position_side: Optional[str] = None,
+    reduce_only: bool = False,
+) -> OrderResult:
+    """Place a market order with leverage.
+
+    Args:
+        symbol: Trading symbol
+        side: 'BUY' or 'SELL'
+        quantity: Quantity to trade
+        leverage: Leverage (default 5x)
+
+    Returns:
+        OrderResult with execution details
+    """
+    try:
+        # 实盘 profile
+        profile = "main"
+
+        # 调整 quantity 精度，防止 LOT_SIZE 过滤失败
+        quantity = adjust_quantity_precision(symbol, quantity)
+
+        # First set leverage if not already set
+        try:
+            _run_binance_cli([
+                "profile", "select", "--name", profile,
+            ])
+            _run_binance_cli([
+                "change-initial-leverage",
+                "--symbol", symbol,
+                "--leverage", str(leverage),
+            ])
+        except Exception:
+            pass  # Leverage might already be set
+
+        # Place market order
+        resolved_position_side = position_side or ("LONG" if side == "BUY" else "SHORT")
+
+        args = [
+            "new-order",
+            "--symbol", symbol,
+            "--side", side,
+            "--type", "MARKET",
+            "--quantity", str(quantity),
+            "--position-side", resolved_position_side,
+            "--new-order-resp-type", "RESULT",
+        ]
+        if reduce_only:
+            args.extend(["--reduce-only", "true"])
+        result = _run_binance_cli(args)
+
+        # Parse result
+        executed_qty = float(result.get("executedQty", 0))
+        executed_price = float(result.get("avgPrice", 0)) or float(result.get("price", 0))
+        order_id = int(result.get("orderId", result.get("orderID", 0)))
+        status = result.get("status", "UNKNOWN")
+
+        return OrderResult(
+            symbol=symbol,
+            side=side,
+            quantity=executed_qty,
+            executed_price=executed_price,
+            order_id=order_id,
+            status=status,
+            message=f"Leverage: {leverage}x",
+        )
+    except Exception as e:
+        return OrderResult(
+            symbol=symbol,
+            side=side,
+            quantity=quantity,
+            executed_price=0,
+            order_id=0,
+            status="ERROR",
+            message=str(e),
+        )
+
+
+def place_stop_loss_order(
+    symbol: str,
+    side: str,
+    quantity: float,
+    stop_price: float,
+    position_side: Optional[str] = None,
+    reduce_only: bool = True,
+) -> OrderResult:
+    """Place a stop-loss order.
+
+    Args:
+        symbol: Trading symbol
+        side: 'BUY' or 'SELL' (opposite of entry side)
+        quantity: Quantity to close
+        stop_price: Trigger price for stop loss
+
+    Returns:
+        OrderResult with execution details
+    """
+    try:
+        # 实盘 profile
+        profile = "main"
+        try:
+            _run_binance_cli([
+                "profile", "select", "--name", profile,
+            ])
+        except Exception:
+            pass
+        
+        # Place STOP_MARKET order using algo order API
+        resolved_position_side = position_side or ("LONG" if side == "SELL" else "SHORT")
+
+        args = [
+            "new-algo-order",
+            "--algo-type", "STOP_MARKET",
+            "--symbol", symbol,
+            "--side", side,
+            "--quantity", str(quantity),
+            "--trigger-price", str(stop_price),
+            "--position-side", resolved_position_side,
+            "--new-order-resp-type", "RESULT",
+        ]
+        if reduce_only:
+            args.extend(["--reduce-only", "true"])
+        result = _run_binance_cli(args)
+        
+        executed_qty = float(result.get("executedQty", 0))
+        order_id = int(result.get("algoId", result.get("orderID", 0)))
+        status = result.get("status", "ALGO_ORDER_PLACED")
+
+        return OrderResult(
+            symbol=symbol,
+            side=side,
+            quantity=executed_qty,
+            executed_price=stop_price,
+            order_id=order_id,
+            status=status,
+            message="Stop loss order placed",
+        )
+    except Exception as e:
+        return OrderResult(
+            symbol=symbol,
+            side=side,
+            quantity=quantity,
+            executed_price=stop_price,
+            order_id=0,
+            status="ERROR",
+            message=str(e),
+        )
+
+
+def cancel_stop_loss_order(symbol: str, order_id: int) -> bool:
+    """Best-effort cancellation for a protective stop order."""
+    if not order_id:
+        return False
+
+    cancel_attempts = [
+        ["cancel-algo-order", "--symbol", symbol, "--algo-id", str(order_id)],
+        ["cancel-order", "--symbol", symbol, "--order-id", str(order_id)],
+    ]
+
+    for args in cancel_attempts:
+        try:
+            _run_binance_cli(args)
+            return True
+        except Exception:
+            continue
+
+    return False
+
+
+def execute_trade(
+    signal: TradingSignal,
+    account_balance: float,
+    risk_per_trade_pct: float = 1.0,
+    stop_loss_pct: float = 5.0,
+    max_position_pct: float = 20.0,
+    leverage: int = 5,
+    quantity: float = None,  # 可选：使用外部计算的仓位
+    stop_loss_price: float = None,  # 可选：使用外部计算的止损
+) -> dict[str, Any]:
+    """Execute a trade based on a signal.
+
+    Args:
+        signal: Trading signal from scanner
+        account_balance: Account balance in USDT
+        risk_per_trade_pct: Risk per trade (default 1%)
+        stop_loss_pct: Stop loss percentage (default 5%)
+        max_position_pct: Maximum position size (default 20%)
+        leverage: Leverage (default 5x)
+        quantity: Optional pre-calculated quantity (overrides internal calculation)
+        stop_loss_price: Optional pre-calculated stop loss price (overrides internal calculation)
+
+    Returns:
+        Trade execution result dict
+    """
+    if not should_trade(signal):
+        return {
+            "symbol": signal.symbol,
+            "action": "SKIPPED",
+            "reason": f"Signal does not meet trading criteria (stage={signal.stage}, direction={signal.direction})",
+        }
+
+    # Determine order side
+    side = "BUY" if signal.direction == "LONG" else "SELL"
+    opposite_side = "SELL" if signal.direction == "LONG" else "BUY"
+
+    # Calculate position size (use external values if provided)
+    if stop_loss_price is None:
+        stop_loss_price = calculate_stop_loss(signal.entry_price, stop_loss_pct, signal.direction)
+    
+    if quantity is None:
+        quantity = calculate_position_size(
+            account_balance=account_balance,
+            risk_per_trade_pct=risk_per_trade_pct,
+            entry_price=signal.entry_price,
+            stop_loss_price=stop_loss_price,
+            max_position_pct=max_position_pct,
+        )
+
+    if quantity <= 0:
+        return {
+            "symbol": signal.symbol,
+            "action": "SKIPPED",
+            "reason": "Calculated position size is zero or negative",
+        }
+
+    # 打印下单参数，便于排查
+    logger.info(f"📤 {signal.symbol} 准备下单: 方向={side}, 数量={quantity}, 杠杆={leverage}x, 止损=${stop_loss_price:.4f}")
+
+    # Place market order
+    entry_result = place_market_order(
+        signal.symbol,
+        side,
+        quantity,
+        leverage,
+        position_side=signal.direction,
+    )
+
+    if entry_result.status != "FILLED":
+        return {
+            "symbol": signal.symbol,
+            "action": "FAILED",
+            "reason": f"Entry order failed: {entry_result.message}",
+            "order_result": entry_result.to_dict(),
+        }
+
+    # Place stop loss order
+    sl_result = place_stop_loss_order(
+        signal.symbol,
+        opposite_side,
+        quantity,
+        stop_loss_price,
+        position_side=signal.direction,
+    )
+
+    return {
+        "symbol": signal.symbol,
+        "action": "EXECUTED",
+        "direction": signal.direction,
+        "quantity": quantity,  # 添加 quantity 字段
+        "order_id": entry_result.order_id,  # 添加 order_id 字段
+        "entry_order": entry_result.to_dict(),
+        "stop_loss_order": sl_result.to_dict(),
+        "stop_loss_price": stop_loss_price,
+        "risk_amount_usdt": round(account_balance * risk_per_trade_pct / 100, 2),
+        "stage": signal.stage,
+    }
+
+
+def main():
+    """CLI entrypoint for testing trading executor."""
+    import argparse
+
+    parser = argparse.ArgumentParser(description="Binance trading executor")
+    parser.add_argument("--symbol", "-s", required=True, help="Trading symbol")
+    parser.add_argument("--direction", "-d", choices=["LONG", "SHORT"], required=True)
+    parser.add_argument("--stage", default="confirmed_breakout")
+    parser.add_argument("--entry-price", "-p", type=float, required=True)
+    parser.add_argument("--balance", "-b", type=float, default=10000.0, help="Account balance (USDT)")
+    parser.add_argument("--risk", "-r", type=float, default=1.0, help="Risk per trade (%)")
+    parser.add_argument("--stop-loss", "-l", type=float, default=5.0, help="Stop loss (%)")
+    parser.add_argument("--max-position", "-m", type=float, default=20.0, help="Max position (%)")
+    args = parser.parse_args()
+
+    signal = TradingSignal(
+        symbol=args.symbol,
+        stage=args.stage,
+        direction=args.direction,
+        entry_price=args.entry_price,
+        metrics={},
+    )
+
+    result = execute_trade(
+        signal=signal,
+        account_balance=args.balance,
+        risk_per_trade_pct=args.risk,
+        stop_loss_pct=args.stop_loss,
+        max_position_pct=args.max_position,
+    )
+
+    print(json.dumps(result, indent=2))
+
+
+if __name__ == "__main__":
+    main()
