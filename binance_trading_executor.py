@@ -111,6 +111,42 @@ def _run_binance_cli(args: list[str], max_retries: int = 5) -> dict[str, Any] | 
     raise RuntimeError("binance-cli 失败（已达最大重试次数）")
 
 
+def _run_binance_root_cli(args: list[str], max_retries: int = 3) -> dict[str, Any] | list[Any]:
+    """Run top-level binance-cli commands that do not live under futures-usds."""
+    time.sleep(0.2)
+    cmd = ["binance-cli"] + args
+
+    for attempt in range(max_retries + 1):
+        try:
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+
+            if result.returncode != 0:
+                error_msg = result.stderr.strip() or result.stdout.strip() or f"Command failed with exit code {result.returncode}"
+                raise RuntimeError(f"binance-cli 错误：{error_msg}")
+
+            stdout = result.stdout.strip()
+            if not stdout:
+                return {}
+
+            try:
+                return json.loads(stdout)  # type: ignore
+            except json.JSONDecodeError:
+                return {"raw_output": stdout}
+
+        except subprocess.TimeoutExpired:
+            if attempt < max_retries:
+                time.sleep(2 ** attempt)
+                continue
+            raise RuntimeError("binance-cli 顶层命令超时")
+
+    raise RuntimeError("binance-cli 顶层命令失败")
+
+
+def ensure_profile_selected(profile: str = "main") -> None:
+    """Select the active binance-cli profile using the top-level CLI command."""
+    _run_binance_root_cli(["profile", "select", "--name", profile])
+
+
 def adjust_quantity_precision(symbol: str, quantity: float) -> float:
     """Adjust quantity precision based on Binance symbol stepSize.
     
@@ -294,9 +330,7 @@ def place_market_order(
 
         # First set leverage if not already set
         try:
-            _run_binance_cli([
-                "profile", "select", "--name", profile,
-            ])
+            ensure_profile_selected(profile)
             _run_binance_cli([
                 "change-initial-leverage",
                 "--symbol", symbol,
@@ -371,9 +405,7 @@ def place_stop_loss_order(
         # 实盘 profile
         profile = "main"
         try:
-            _run_binance_cli([
-                "profile", "select", "--name", profile,
-            ])
+            ensure_profile_selected(profile)
         except Exception:
             pass
         

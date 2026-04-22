@@ -45,6 +45,7 @@ try:
     from binance_trading_executor import (
         TradingSignal,
         cancel_stop_loss_order,
+        ensure_profile_selected,
         execute_trade,
         get_account_balance,
         place_market_order,
@@ -449,9 +450,7 @@ class CryptoSword:
         if not shutil.which("binance-cli"):
             raise RuntimeError("未找到 binance-cli")
 
-        from binance_trading_executor import _run_binance_cli
-
-        _run_binance_cli(["profile", "select", "--name", "main"])
+        ensure_profile_selected("main")
 
         account_info = get_account_balance()
         if not isinstance(account_info, dict):
