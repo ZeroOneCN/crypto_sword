@@ -532,6 +532,7 @@ def calculate_position_size(
     stop_loss_price: float,
     max_position_pct: float = 20.0,
     leverage: int = 5,
+    min_notional: float = 5.0,
 ) -> Dict[str, Any]:
     """
     计算仓位大小
@@ -562,6 +563,9 @@ def calculate_position_size(
     # 仓位价值 = 风险金额 / 止损百分比
     position_value = risk_amount / (stop_distance_pct / 100)
     
+    # 先确保满足交易所最小名义价值
+    position_value = max(position_value, min_notional)
+
     # 应用最大仓位限制
     max_position_value = account_balance * (max_position_pct / 100)
     is_capped = position_value > max_position_value
