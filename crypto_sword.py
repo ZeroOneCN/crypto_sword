@@ -44,6 +44,7 @@ try:
     )
     from binance_trading_executor import (
         TradingSignal,
+        cancel_protective_order,
         cancel_stop_loss_order,
         ensure_profile_selected,
         execute_trade,
@@ -176,6 +177,9 @@ class Position:
         stage_at_entry: str,
         stop_loss_order_id: int = 0,
         session_id: str = "",
+        target_roi_pct: float = 0.0,
+        take_profit_targets: Optional[List[dict[str, Any]]] = None,
+        take_profit_order_ids: Optional[List[int]] = None,
     ):
         self.symbol = symbol
         self.side = side
@@ -188,6 +192,10 @@ class Position:
         self.stage_at_entry = stage_at_entry
         self.stop_loss_order_id = stop_loss_order_id
         self.session_id = session_id
+        self.target_roi_pct = target_roi_pct
+        self.take_profit_targets = take_profit_targets or []
+        self.take_profit_order_ids = take_profit_order_ids or []
+        self.initial_quantity = quantity
 
         # 动态跟踪
         self.highest_price: float = entry_price
@@ -225,14 +233,25 @@ class Position:
         if self.side == "BUY":
             if current_price <= self.current_stop:
                 return "STOP_LOSS"
-            if current_price >= self.take_profit_price:
+            if not self.take_profit_order_ids and current_price >= self.take_profit_price:
                 return "TAKE_PROFIT"
         else:
             if current_price >= self.current_stop:
                 return "STOP_LOSS"
-            if current_price <= self.take_profit_price:
+            if not self.take_profit_order_ids and current_price <= self.take_profit_price:
                 return "TAKE_PROFIT"
         return None
+
+    def _format_take_profit_targets_text(self) -> str:
+        if not self.take_profit_targets:
+            return f"${self.take_profit_price:,.4f}"
+
+        parts = []
+        for target in self.take_profit_targets:
+            roi_pct = float(target.get("target_roi_pct", 0) or 0)
+            price = float(target.get("price", 0) or 0)
+            parts.append(f"{roi_pct:.0f}%→${price:,.4f}")
+        return " | ".join(parts)
 
     def to_dict(self) -> dict:
         return {
@@ -244,6 +263,9 @@ class Position:
             "entry_time": self.entry_time.isoformat(),
             "stop_loss": round(self.current_stop, 4),
             "take_profit": round(self.take_profit_price, 4),
+            "target_roi_pct": round(self.target_roi_pct, 2),
+            "take_profit_targets": self.take_profit_targets,
+            "take_profit_targets_text": self._format_take_profit_targets_text(),
             "highest": round(self.highest_price, 4),
             "lowest": round(self.lowest_price, 4),
             "unrealized_pnl": round(self.pnl, 2),
@@ -333,6 +355,133 @@ class CryptoSword:
     def _new_session_id(self, symbol: str) -> str:
         return f"{symbol}-{datetime.now().strftime('%Y%m%d%H%M%S')}-{uuid4().hex[:8]}"
 
+    def _build_take_profit_plan(self) -> tuple[list[float], list[float]]:
+        """Build default staged take-profit plan around the configured target ROI."""
+        base_roi = max(float(self.config.take_profit_pct), 0.0)
+        if base_roi <= 0:
+            return [0.0], [1.0]
+
+        staged_levels = []
+        for multiplier in (0.5, 1.0, 1.5):
+            roi = round(base_roi * multiplier, 2)
+            if roi > 0 and roi not in staged_levels:
+                staged_levels.append(roi)
+
+        ratios = [0.5, 0.3, 0.2][:len(staged_levels)]
+        ratio_total = sum(ratios) or 1.0
+        ratios = [ratio / ratio_total for ratio in ratios]
+        return staged_levels, ratios
+
+    def _parse_trade_notes(self, notes: str) -> dict[str, str]:
+        parsed: dict[str, str] = {}
+        for note in (notes or "").split(";"):
+            if "=" not in note:
+                continue
+            key, value = note.split("=", 1)
+            parsed[key] = value
+        return parsed
+
+    def _cancel_position_protection(self, position: Position):
+        if position.stop_loss_order_id:
+            if cancel_stop_loss_order(position.symbol, position.stop_loss_order_id):
+                logger.info(f"🔕 已撤销 {position.symbol} 保护止损单：{position.stop_loss_order_id}")
+            else:
+                logger.warning(f"⚠️ {position.symbol} 保护止损单撤销失败：{position.stop_loss_order_id}")
+                send_telegram_message(
+                    format_error_msg(
+                        error_type="止损单撤销失败",
+                        message=f"order_id={position.stop_loss_order_id}",
+                        symbol=position.symbol,
+                        session_id=position.session_id,
+                        component="stop_loss_cleanup",
+                    )
+                )
+
+        for order_id in position.take_profit_order_ids:
+            if not order_id:
+                continue
+            if cancel_protective_order(position.symbol, order_id):
+                logger.info(f"🔕 已撤销 {position.symbol} 止盈委托：{order_id}")
+            else:
+                logger.warning(f"⚠️ {position.symbol} 止盈委托撤销失败：{order_id}")
+
+    def _sync_positions_with_exchange(self):
+        """Sync local tracked positions with real exchange positions for staged TP fills."""
+        if not self.tracker.positions:
+            return
+
+        try:
+            account_info = get_account_balance()
+        except Exception as e:
+            logger.warning(f"同步交易所持仓失败：{e}")
+            return
+
+        live_positions = {
+            (item["symbol"], item["side"]): item
+            for item in self._extract_live_positions(account_info if isinstance(account_info, dict) else {})
+        }
+
+        for symbol, position in list(self.tracker.positions.items()):
+            side_key = "LONG" if position.side == "BUY" else "SHORT"
+            live_pos = live_positions.get((symbol, side_key))
+
+            if not live_pos:
+                logger.warning(f"♻️ {symbol} 本地有仓位但交易所已无持仓，按交易所状态移除")
+                current_price = self.get_current_prices([symbol]).get(symbol, position.take_profit_price or position.current_stop or position.entry_price)
+                if position.side == "BUY":
+                    inferred_reason = "STOP_LOSS" if current_price <= position.current_stop else "TAKE_PROFIT"
+                    pnl = (current_price - position.entry_price) * position.quantity
+                else:
+                    inferred_reason = "STOP_LOSS" if current_price >= position.current_stop else "TAKE_PROFIT"
+                    pnl = (position.entry_price - current_price) * position.quantity
+
+                position.exit_price = current_price
+                position.exit_time = datetime.now()
+                position.exit_reason = f"{inferred_reason}_EXCHANGE"
+                position.pnl = pnl
+                position.pnl_pct = pnl / (position.entry_price * position.quantity) * 100 if position.entry_price and position.quantity else 0.0
+                self.daily_pnl += pnl
+
+                self._cancel_position_protection(position)
+                self.tracker.remove_position(symbol)
+                send_telegram_message(
+                    format_close_position_msg(
+                        symbol=symbol,
+                        direction="LONG" if position.side == "BUY" else "SHORT",
+                        entry_price=position.entry_price,
+                        exit_price=current_price,
+                        quantity=position.quantity,
+                        pnl=pnl,
+                        pnl_pct=position.pnl_pct,
+                        reason=position.exit_reason,
+                        duration_hours=(position.exit_time - position.entry_time).total_seconds() / 3600,
+                        session_id=position.session_id,
+                    )
+                )
+
+                open_trades = self.db.get_open_trades(mode=self.config.mode)
+                for trade in open_trades:
+                    if trade.symbol == symbol:
+                        self.db.update_exit(
+                            trade_id=trade.id,
+                            exit_price=current_price,
+                            exit_reason=position.exit_reason,
+                            pnl=pnl,
+                            pnl_pct=position.pnl_pct,
+                            realized_pnl=pnl,
+                        )
+                        break
+                continue
+
+            live_qty = float(live_pos.get("quantity", 0) or 0)
+            if live_qty <= 0:
+                continue
+
+            if live_qty + 1e-9 < position.quantity:
+                reduced_qty = position.quantity - live_qty
+                logger.info(f"🎯 {symbol} 交易所已部分止盈：减少 {reduced_qty:.6f}，剩余 {live_qty:.6f}")
+            position.quantity = live_qty
+
     def _check_new_day(self):
         today = datetime.now().date().isoformat()
         if today != self._daily_marker:
@@ -412,17 +561,27 @@ class CryptoSword:
                 entry_price * (1 - self.config.stop_loss_pct / 100) if side == "BUY"
                 else entry_price * (1 + self.config.stop_loss_pct / 100)
             )
+            notes_map = self._parse_trade_notes(trade.notes if trade else "")
+            take_profit_targets: list[dict[str, Any]] = []
+            take_profit_order_ids: list[int] = []
+            target_roi_pct = float(notes_map.get("target_roi_pct", self.config.take_profit_pct) or self.config.take_profit_pct)
+            if notes_map.get("tp_plan"):
+                try:
+                    take_profit_targets = json.loads(notes_map["tp_plan"])
+                except Exception:
+                    take_profit_targets = []
+            if notes_map.get("tp_order_ids"):
+                try:
+                    take_profit_order_ids = [int(x) for x in notes_map["tp_order_ids"].split(",") if x.strip()]
+                except Exception:
+                    take_profit_order_ids = []
+
             take_profit_price = trade.take_profit if trade else (
-                entry_price * (1 + self.config.take_profit_pct / 100) if side == "BUY"
-                else entry_price * (1 - self.config.take_profit_pct / 100)
+                entry_price * (1 + (target_roi_pct / max(self.config.leverage, 1)) / 100) if side == "BUY"
+                else entry_price * (1 - (target_roi_pct / max(self.config.leverage, 1)) / 100)
             )
             entry_time = datetime.fromisoformat(trade.entry_time) if trade and trade.entry_time else datetime.now()
-            session_id = ""
-            if trade and trade.notes:
-                for note in trade.notes.split(";"):
-                    if note.startswith("session_id="):
-                        session_id = note.split("=", 1)[1]
-                        break
+            session_id = notes_map.get("session_id", "")
             if not session_id:
                 session_id = self._new_session_id(live_pos["symbol"])
 
@@ -438,6 +597,9 @@ class CryptoSword:
                 stage_at_entry=trade.stage if trade else "restored",
                 stop_loss_order_id=0,
                 session_id=session_id,
+                target_roi_pct=target_roi_pct,
+                take_profit_targets=take_profit_targets,
+                take_profit_order_ids=take_profit_order_ids,
             )
             self.tracker.add_position(restored)
             logger.warning(f"♻️ 已恢复持仓：{restored.symbol} {restored.side} session={session_id}")
@@ -633,6 +795,7 @@ class CryptoSword:
                 logger.warning(f"🛡️ 风控评估失败 {symbol}: {e}，回退到执行器默认计算")
 
             # 执行交易（优先使用风控计算的仓位和止损）
+            take_profit_roi_pcts, take_profit_ratios = self._build_take_profit_plan()
             result = execute_trade(
                 signal=trading_signal,
                 account_balance=balance,
@@ -642,6 +805,8 @@ class CryptoSword:
                 leverage=self.config.leverage,
                 quantity=quantity,
                 stop_loss_price=stop_loss,
+                take_profit_roi_pcts=take_profit_roi_pcts,
+                take_profit_ratios=take_profit_ratios,
             )
 
             if result.get("action") != "EXECUTED":
@@ -650,12 +815,14 @@ class CryptoSword:
 
             entry_order = result.get("entry_order", {})
             executed_entry_price = float(entry_order.get("executed_price", price) or price)
-
+            take_profit_targets = result.get("take_profit_orders", [])
+            take_profit_prices = result.get("take_profit_prices", [])
+            target_roi_pcts = result.get("take_profit_roi_pcts", take_profit_roi_pcts)
+            primary_target_roi_pct = float(self.config.take_profit_pct)
+            tp_price = float(take_profit_prices[0] if take_profit_prices else executed_entry_price)
             if direction == "LONG":
-                tp_price = executed_entry_price * (1 + self.config.take_profit_pct / 100)
                 side = "BUY"
             else:
-                tp_price = executed_entry_price * (1 - self.config.take_profit_pct / 100)
                 side = "SELL"
 
             stop_loss_order = result.get("stop_loss_order", {})
@@ -671,6 +838,9 @@ class CryptoSword:
                 stage_at_entry=signal["stage"],
                 stop_loss_order_id=stop_loss_order.get("order_id", 0),
                 session_id=session_id,
+                target_roi_pct=primary_target_roi_pct,
+                take_profit_targets=take_profit_targets,
+                take_profit_order_ids=[int(item.get("order_id", 0) or 0) for item in take_profit_targets if item.get("order_id")],
             )
 
             from telegram_notifier import format_open_position_msg
@@ -690,8 +860,18 @@ class CryptoSword:
                 score=score,
                 risk_level=risk_level,
                 session_id=session_id,
+                target_roi_pct=primary_target_roi_pct,
+                take_profit_targets=take_profit_targets,
             )
             send_telegram_message(msg)
+
+            notes_parts = [
+                f"session_id={session_id}",
+                f"risk_level={risk_level}",
+                f"target_roi_pct={primary_target_roi_pct}",
+                f"tp_plan={json.dumps(take_profit_targets, separators=(',', ':'))}",
+                f"tp_order_ids={','.join(str(int(item.get('order_id', 0))) for item in take_profit_targets if item.get('order_id'))}",
+            ]
 
             trade = TradeRecord(
                 symbol=symbol,
@@ -706,7 +886,7 @@ class CryptoSword:
                 entry_time=position.entry_time.isoformat(),
                 mode=self.config.mode,
                 market_snapshot=signal.get("metrics", {}),
-                notes=f"session_id={session_id};risk_level={risk_level}",
+                notes=";".join(notes_parts),
             )
             trade_id = self.db.add_trade(trade)
             logger.info(f"📜 交易已记录 (ID: {trade_id})")
@@ -766,21 +946,7 @@ class CryptoSword:
 
                 self.tracker.remove_position(symbol)
                 self.daily_pnl += pnl
-
-                if position.stop_loss_order_id:
-                    if cancel_stop_loss_order(symbol, position.stop_loss_order_id):
-                        logger.info(f"🔕 已撤销 {symbol} 保护止损单：{position.stop_loss_order_id}")
-                    else:
-                        logger.warning(f"⚠️ {symbol} 保护止损单撤销失败：{position.stop_loss_order_id}")
-                        send_telegram_message(
-                            format_error_msg(
-                                error_type="止损单撤销失败",
-                                message=f"order_id={position.stop_loss_order_id}",
-                                symbol=symbol,
-                                session_id=position.session_id,
-                                component="stop_loss_cleanup",
-                            )
-                        )
+                self._cancel_position_protection(position)
 
                 duration_hours = (position.exit_time - position.entry_time).total_seconds() / 3600
                 send_telegram_message(
@@ -832,6 +998,7 @@ class CryptoSword:
     def run_scan_cycle(self):
         """运行一次完整的扫描 - 交易循环"""
         self._check_new_day()
+        self._sync_positions_with_exchange()
         logger.info("=" * 60)
         logger.info(f"🔄 扫描周期开始 | 持仓：{self.tracker.get_open_count()}/{self.config.max_open_positions}")
 

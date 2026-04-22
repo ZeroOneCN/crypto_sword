@@ -341,6 +341,75 @@ def calculate_take_profit(entry_price: float, take_profit_pcts: list[float], sid
     return levels
 
 
+def calculate_take_profit_prices_by_roi(
+    entry_price: float,
+    target_roi_pcts: list[float],
+    leverage: int,
+    side: str,
+    symbol: Optional[str] = None,
+) -> list[float]:
+    """Convert leveraged target ROI percentages into actual take-profit prices."""
+    if leverage <= 0:
+        raise ValueError("Leverage must be greater than zero")
+
+    levels: list[float] = []
+    for roi_pct in target_roi_pcts:
+        price_move_pct = roi_pct / float(leverage)
+        if side == "LONG":
+            price = entry_price * (1 + price_move_pct / 100.0)
+        else:
+            price = entry_price * (1 - price_move_pct / 100.0)
+        if symbol:
+            price = adjust_price_precision(symbol, price)
+        levels.append(price)
+    return levels
+
+
+def _normalize_take_profit_ratios(level_count: int, take_profit_ratios: Optional[list[float]]) -> list[float]:
+    """Normalize take-profit ratios to match the number of target levels."""
+    if level_count <= 0:
+        return []
+
+    if not take_profit_ratios:
+        return [1.0 / level_count] * level_count
+
+    ratios = [max(float(r), 0.0) for r in take_profit_ratios[:level_count]]
+    if len(ratios) < level_count:
+        remaining = max(1.0 - sum(ratios), 0.0)
+        missing = level_count - len(ratios)
+        fill = remaining / missing if missing else 0.0
+        ratios.extend([fill] * missing)
+
+    total = sum(ratios)
+    if total <= 0:
+        return [1.0 / level_count] * level_count
+
+    return [ratio / total for ratio in ratios]
+
+
+def _build_take_profit_slices(symbol: str, quantity: float, take_profit_ratios: list[float]) -> list[float]:
+    """Split the entry quantity into exchange-compatible partial take-profit slices."""
+    if not take_profit_ratios:
+        return []
+
+    quantities: list[float] = []
+    remaining = quantity
+
+    for index, ratio in enumerate(take_profit_ratios):
+        if index == len(take_profit_ratios) - 1:
+            slice_qty = remaining
+        else:
+            slice_qty = quantity * ratio
+        adjusted_qty = adjust_quantity_precision(symbol, slice_qty)
+        remaining = max(remaining - adjusted_qty, 0.0)
+        quantities.append(adjusted_qty)
+
+    if quantities:
+        quantities[-1] = adjust_quantity_precision(symbol, max(quantity - sum(quantities[:-1]), 0.0))
+
+    return [qty for qty in quantities if qty > 0]
+
+
 def signal_to_order_params(signal: TradingSignal, side: str) -> dict[str, Any]:
     """Convert trading signal to order parameters.
 
@@ -539,8 +608,67 @@ def place_stop_loss_order(
         )
 
 
-def cancel_stop_loss_order(symbol: str, order_id: int) -> bool:
-    """Best-effort cancellation for a protective stop order."""
+def place_take_profit_order(
+    symbol: str,
+    side: str,
+    quantity: float,
+    trigger_price: float,
+    position_side: Optional[str] = None,
+    reduce_only: bool = True,
+) -> OrderResult:
+    """Place a TAKE_PROFIT_MARKET order."""
+    try:
+        profile = "main"
+        try:
+            ensure_profile_selected(profile)
+        except Exception:
+            pass
+
+        quantity = adjust_quantity_precision(symbol, quantity)
+        trigger_price = adjust_price_precision(symbol, trigger_price)
+        resolved_position_side = position_side or ("LONG" if side == "SELL" else "SHORT")
+
+        args = [
+            "new-algo-order",
+            "--algo-type", "TAKE_PROFIT_MARKET",
+            "--symbol", symbol,
+            "--side", side,
+            "--quantity", str(quantity),
+            "--trigger-price", str(trigger_price),
+            "--position-side", resolved_position_side,
+            "--new-order-resp-type", "RESULT",
+        ]
+        if reduce_only:
+            args.extend(["--reduce-only", "true"])
+        result = _run_binance_cli(args)
+
+        executed_qty = float(result.get("executedQty", 0))
+        order_id = int(result.get("algoId", result.get("orderID", 0)))
+        status = result.get("status", "ALGO_ORDER_PLACED")
+
+        return OrderResult(
+            symbol=symbol,
+            side=side,
+            quantity=executed_qty or quantity,
+            executed_price=trigger_price,
+            order_id=order_id,
+            status=status,
+            message="Take profit order placed",
+        )
+    except Exception as e:
+        return OrderResult(
+            symbol=symbol,
+            side=side,
+            quantity=quantity,
+            executed_price=trigger_price,
+            order_id=0,
+            status="ERROR",
+            message=str(e),
+        )
+
+
+def cancel_protective_order(symbol: str, order_id: int) -> bool:
+    """Best-effort cancellation for stop-loss / take-profit protective orders."""
     if not order_id:
         return False
 
@@ -559,6 +687,11 @@ def cancel_stop_loss_order(symbol: str, order_id: int) -> bool:
     return False
 
 
+def cancel_stop_loss_order(symbol: str, order_id: int) -> bool:
+    """Backward-compatible stop-loss cancellation wrapper."""
+    return cancel_protective_order(symbol, order_id)
+
+
 def execute_trade(
     signal: TradingSignal,
     account_balance: float,
@@ -568,6 +701,8 @@ def execute_trade(
     leverage: int = 5,
     quantity: float = None,  # 可选：使用外部计算的仓位
     stop_loss_price: float = None,  # 可选：使用外部计算的止损
+    take_profit_roi_pcts: Optional[list[float]] = None,
+    take_profit_ratios: Optional[list[float]] = None,
 ) -> dict[str, Any]:
     """Execute a trade based on a signal.
 
@@ -635,24 +770,67 @@ def execute_trade(
             "order_result": entry_result.to_dict(),
         }
 
+    actual_entry_price = entry_result.executed_price or signal.entry_price
+    actual_quantity = entry_result.quantity or quantity
+    target_roi_pcts = take_profit_roi_pcts or [20.0]
+    take_profit_prices = calculate_take_profit_prices_by_roi(
+        entry_price=actual_entry_price,
+        target_roi_pcts=target_roi_pcts,
+        leverage=leverage,
+        side=signal.direction,
+        symbol=signal.symbol,
+    )
+    normalized_ratios = _normalize_take_profit_ratios(len(take_profit_prices), take_profit_ratios)
+    take_profit_quantities = _build_take_profit_slices(signal.symbol, actual_quantity, normalized_ratios)
+    take_profit_orders: list[dict[str, Any]] = []
+
     # Place stop loss order
     sl_result = place_stop_loss_order(
         signal.symbol,
         opposite_side,
-        quantity,
+        actual_quantity,
         stop_loss_price,
         position_side=signal.direction,
     )
+
+    for index, trigger_price in enumerate(take_profit_prices):
+        if index >= len(take_profit_quantities):
+            break
+        tp_quantity = take_profit_quantities[index]
+        if tp_quantity <= 0:
+            continue
+        tp_result = place_take_profit_order(
+            signal.symbol,
+            opposite_side,
+            tp_quantity,
+            trigger_price,
+            position_side=signal.direction,
+        )
+        take_profit_orders.append(
+            {
+                "level": index + 1,
+                "target_roi_pct": target_roi_pcts[index],
+                "price": trigger_price,
+                "quantity": tp_quantity,
+                "ratio": normalized_ratios[index] if index < len(normalized_ratios) else 0.0,
+                "order_id": tp_result.order_id,
+                "status": tp_result.status,
+                "message": tp_result.message,
+            }
+        )
 
     return {
         "symbol": signal.symbol,
         "action": "EXECUTED",
         "direction": signal.direction,
-        "quantity": quantity,  # 添加 quantity 字段
+        "quantity": actual_quantity,
         "order_id": entry_result.order_id,  # 添加 order_id 字段
         "entry_order": entry_result.to_dict(),
         "stop_loss_order": sl_result.to_dict(),
         "stop_loss_price": stop_loss_price,
+        "take_profit_orders": take_profit_orders,
+        "take_profit_prices": take_profit_prices,
+        "take_profit_roi_pcts": target_roi_pcts,
         "risk_amount_usdt": round(account_balance * risk_per_trade_pct / 100, 2),
         "stage": signal.stage,
     }
