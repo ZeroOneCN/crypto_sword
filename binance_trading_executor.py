@@ -14,6 +14,9 @@ from dataclasses import dataclass, field
 from typing import Any, List, Optional
 
 
+logger = logging.getLogger(__name__)
+
+
 @dataclass
 class TradingSignal:
     """A trading signal from the scanner."""
