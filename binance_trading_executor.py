@@ -150,6 +150,74 @@ def ensure_profile_selected(profile: str = "main") -> None:
     _run_binance_root_cli(["profile", "select", "--name", profile])
 
 
+# ═══ 交易所精度信息缓存 ═══
+_exchange_info_cache: Optional[dict] = None
+_exchange_info_cache_time: float = 0
+EXCHANGE_INFO_CACHE_TTL = 300  # 5 分钟缓存
+
+
+def get_exchange_info() -> dict:
+    """获取交易所信息（带 5 分钟缓存）"""
+    global _exchange_info_cache, _exchange_info_cache_time
+    now = time.time()
+    if _exchange_info_cache and (now - _exchange_info_cache_time) < EXCHANGE_INFO_CACHE_TTL:
+        return _exchange_info_cache
+    info = _run_binance_cli(["exchange-information"])
+    _exchange_info_cache = info
+    _exchange_info_cache_time = now
+    return info
+
+
+def get_symbol_info(symbol: str) -> Optional[dict]:
+    """获取指定交易对的精度信息（带缓存）"""
+    info = get_exchange_info()
+    if isinstance(info, dict) and "symbols" in info:
+        for s in info["symbols"]:
+            if s.get("symbol") == symbol:
+                return s
+    return None
+
+
+def _truncate_to_step(value: float, step_size: float) -> float:
+    """Truncate value to step size (Binance requires truncation, not rounding)."""
+    from decimal import Decimal, ROUND_FLOOR
+    step = Decimal(str(step_size))
+    val = Decimal(str(value))
+    step_str = str(step)
+    if '.' in step_str:
+        decimals = len(step_str.split('.')[1].rstrip('0'))
+    else:
+        decimals = 0
+    quantize_str = '0.' + '0' * decimals if decimals > 0 else '0'
+    result = val.quantize(Decimal(quantize_str), rounding=ROUND_FLOOR)
+    if result < step:
+        result = step
+    return float(result)
+
+
+def adjust_price_precision(symbol: str, price: float) -> float:
+    """Adjust price precision based on Binance symbol tickSize."""
+    try:
+        info = _run_binance_cli(["exchange-information"])
+        if isinstance(info, dict) and "symbols" in info:
+            sym_info = None
+            for s in info["symbols"]:
+                if s.get("symbol") == symbol:
+                    sym_info = s
+                    break
+            if sym_info:
+                for f in sym_info.get("filters", []):
+                    if f.get("filterType") == "PRICE_FILTER":
+                        tick_size = float(f.get("tickSize", "0.00001"))
+                        price = _truncate_to_step(price, tick_size)
+                        logger.info(f"🔧 {symbol} 价格精度：tickSize={tick_size}, 调整后 price={price}")
+                        return price
+    except Exception as e:
+        logger.debug(f"获取 {symbol} 价格精度失败: {e}")
+    # 默认 5 位小数
+    return _truncate_to_step(price, 0.00001)
+
+
 def adjust_quantity_precision(symbol: str, quantity: float) -> float:
     """Adjust quantity precision based on Binance symbol stepSize.
     
@@ -157,24 +225,37 @@ def adjust_quantity_precision(symbol: str, quantity: float) -> float:
     Falls back to 3 decimal places if exchange info is unavailable.
     """
     try:
-        # 获取交易对精度信息
-        info = _run_binance_cli(["exchange-info", "--symbol", symbol])
-        if isinstance(info, dict) and "symbols" in info:
-            sym_info = info["symbols"][0]
+        sym_info = get_symbol_info(symbol)
+        if sym_info:
             for f in sym_info.get("filters", []):
                 if f.get("filterType") == "LOT_SIZE":
                     step_size = float(f.get("stepSize", "0.001"))
-                    # 计算小数位数
-                    decimals = len(str(step_size).rstrip('0').split('.')[-1]) if '.' in str(step_size) else 0
-                    quantity = round(quantity, decimals)
+                    quantity = _truncate_to_step(quantity, step_size)
                     logger.info(f"🔧 {symbol} 精度适配：stepSize={step_size}, 调整后 quantity={quantity}")
                     return quantity
     except Exception as e:
         logger.debug(f"获取 {symbol} 精度信息失败，使用默认 3 位小数: {e}")
     
-    # 默认保留 3 位小数（适用于大多数 USDT 合约）
-    quantity = round(quantity, 3)
+    # 默认截断到 3 位小数（适用于大多数 USDT 合约）
+    quantity = _truncate_to_step(quantity, 0.001)
     return quantity
+
+
+def adjust_price_precision(symbol: str, price: float) -> float:
+    """Adjust price precision based on Binance symbol tickSize."""
+    try:
+        sym_info = get_symbol_info(symbol)
+        if sym_info:
+            for f in sym_info.get("filters", []):
+                if f.get("filterType") == "PRICE_FILTER":
+                    tick_size = float(f.get("tickSize", "0.00001"))
+                    price = _truncate_to_step(price, tick_size)
+                    logger.info(f"🔧 {symbol} 价格精度：tickSize={tick_size}, 调整后 price={price}")
+                    return price
+    except Exception as e:
+        logger.debug(f"获取 {symbol} 价格精度失败: {e}")
+    # 默认 5 位小数
+    return _truncate_to_step(price, 0.00001)
 
 
 def get_account_balance() -> dict[str, Any]:
@@ -188,7 +269,7 @@ def calculate_position_size(
     entry_price: float,
     stop_loss_price: float,
     max_position_pct: float = 20.0,
-    min_notional: float = 5.0,  # 最小名义价值 5 USDT
+    min_notional: float = 5.0,
 ) -> float:
     """Calculate position size based on risk parameters.
 
@@ -411,6 +492,10 @@ def place_stop_loss_order(
             ensure_profile_selected(profile)
         except Exception:
             pass
+        
+        # 调整 quantity 和 price 精度
+        quantity = adjust_quantity_precision(symbol, quantity)
+        stop_price = adjust_price_precision(symbol, stop_price)
         
         # Place STOP_MARKET order using algo order API
         resolved_position_side = position_side or ("LONG" if side == "SELL" else "SHORT")
