@@ -31,7 +31,11 @@ from typing import Dict, Any, Optional, List, Callable
 from pathlib import Path
 from dataclasses import dataclass, field
 from collections import defaultdict
-import subprocess
+
+try:
+    from binance_api_client import get_native_binance_client
+except Exception:
+    get_native_binance_client = None
 
 logger = logging.getLogger(__name__)
 
@@ -292,18 +296,14 @@ class ConditionOrderManager:
 # ═══════════════════════════════════════════════════════════════
 
 def run_binance_cli(args: List[str], timeout: int = 10) -> Optional[Any]:
-    """运行 binance-cli"""
+    """Compatibility wrapper backed by native Binance REST."""
     try:
-        cmd = ["binance-cli", "futures-usds"] + args
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
-        
-        if result.returncode != 0:
+        if get_native_binance_client is None:
             return None
-        
-        return json.loads(result.stdout)
+        return get_native_binance_client().command_compat(list(args))  # type: ignore
         
     except Exception as e:
-        logger.error(f"binance-cli 异常：{e}")
+        logger.error(f"原生 Binance API 异常：{e}")
         return None
 
 
@@ -333,15 +333,21 @@ def quick_close_position(
     """
     start_time = time.time()
     
-    # 市价平仓
-    result = run_binance_cli([
-        "new-order",
-        "--symbol", symbol,
-        "--side", side,
-        "--type", "MARKET",
-        "--quantity", str(quantity),
-        "--reduce-only", "true",
-    ])
+    position_side = "LONG" if side == "SELL" else "SHORT"
+    result = None
+    try:
+        if get_native_binance_client is None:
+            raise RuntimeError("原生 Binance API 客户端不可用")
+        result = get_native_binance_client().new_order(  # type: ignore
+            symbol=symbol,
+            side=side,
+            order_type="MARKET",
+            quantity=quantity,
+            position_side=position_side,
+            reduce_only=True,
+        )
+    except Exception as e:
+        result = {"msg": str(e)}
     
     elapsed = time.time() - start_time
     

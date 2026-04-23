@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import json
 import logging
-import subprocess
 import time
 from dataclasses import dataclass, field
 from decimal import Decimal, ROUND_CEILING
@@ -60,103 +59,28 @@ class OrderResult:
 
 
 def _run_binance_cli(args: list[str], max_retries: int = 5) -> dict[str, Any] | list[Any]:
-    """Run binance-cli with given args and parse JSON output.
-
-    Added retry logic and empty response handling to prevent JSON parse errors.
-    Increased retries to 5 with exponential backoff for rate limit handling.
-    Added API call throttling to avoid rate limiting.
-    """
-    # 限流：确保 API 调用间隔 0.5 秒
-    time.sleep(0.5)
-
-    cmd = ["binance-cli", "futures-usds"] + args
-
+    """Compatibility wrapper backed by native Binance REST."""
+    if not get_native_binance_client:
+        raise RuntimeError("原生 Binance API 客户端不可用")
     for attempt in range(max_retries + 1):
         try:
-            result = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
-
-            # Check for command failure
-            if result.returncode != 0:
-                error_msg = result.stderr.strip() or f"Command failed with exit code {result.returncode}"
-                # API 限流时重试
-                if "rate limit" in error_msg.lower() or "too many requests" in error_msg.lower():
-                    if attempt < max_retries:
-                        logger = logging.getLogger(__name__)
-                        wait_time = 2 ** attempt  # 指数退避：1s, 2s, 4s, 8s, 16s
-                        logger.warning(f"API 限流，等待 {wait_time}s 后重试 ({attempt + 1}/{max_retries + 1})...")
-                        time.sleep(wait_time)
-                        continue
-                raise RuntimeError(f"binance-cli 错误：{error_msg}")
-
-            # Check for empty response (common cause of JSON parse errors)
-            stdout = result.stdout.strip()
-            if not stdout:
-                if attempt < max_retries:
-                    logger = logging.getLogger(__name__)
-                    wait_time = 2 ** attempt
-                    logger.warning(f"binance-cli 返回空响应，等待 {wait_time}s 后重试 ({attempt + 1}/{max_retries + 1})...")
-                    time.sleep(wait_time)
-                    continue
-                raise RuntimeError("binance-cli 返回空响应（已达最大重试次数）")
-
-            # Parse JSON with error handling
-            try:
-                data = json.loads(stdout)
-                return data  # type: ignore
-            except json.JSONDecodeError as e:
-                if attempt < max_retries:
-                    logger = logging.getLogger(__name__)
-                    wait_time = 2 ** attempt
-                    logger.warning(f"JSON 解析失败，等待 {wait_time}s 后重试 ({attempt + 1}/{max_retries + 1}): {e}")
-                    time.sleep(wait_time)
-                    continue
-                # Return truncated response for debugging
-                raise RuntimeError(f"无效 JSON 响应：{stdout[:200]}...")
-
-        except subprocess.TimeoutExpired:
-            if attempt < max_retries:
-                wait_time = 2 ** attempt
-                time.sleep(wait_time)
-                continue
-            raise RuntimeError("binance-cli 超时（已达最大重试次数）")
-
-    raise RuntimeError("binance-cli 失败（已达最大重试次数）")
-
-
-def _run_binance_root_cli(args: list[str], max_retries: int = 3) -> dict[str, Any] | list[Any]:
-    """Run top-level binance-cli commands that do not live under futures-usds."""
-    time.sleep(0.2)
-    cmd = ["binance-cli"] + args
-
-    for attempt in range(max_retries + 1):
-        try:
-            result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
-
-            if result.returncode != 0:
-                error_msg = result.stderr.strip() or result.stdout.strip() or f"Command failed with exit code {result.returncode}"
-                raise RuntimeError(f"binance-cli 错误：{error_msg}")
-
-            stdout = result.stdout.strip()
-            if not stdout:
-                return {}
-
-            try:
-                return json.loads(stdout)  # type: ignore
-            except json.JSONDecodeError:
-                return {"raw_output": stdout}
-
-        except subprocess.TimeoutExpired:
+            time.sleep(0.2)
+            return get_native_binance_client().command_compat(args)  # type: ignore
+        except Exception as e:
             if attempt < max_retries:
                 time.sleep(2 ** attempt)
                 continue
-            raise RuntimeError("binance-cli 顶层命令超时")
+            raise RuntimeError(f"原生 Binance API 调用失败：{e}")
 
-    raise RuntimeError("binance-cli 顶层命令失败")
+
+def _run_binance_root_cli(args: list[str], max_retries: int = 3) -> dict[str, Any] | list[Any]:
+    """Deprecated compatibility shim; profile selection is no longer needed."""
+    return {}
 
 
 def ensure_profile_selected(profile: str = "main") -> None:
-    """Select the active binance-cli profile using the top-level CLI command."""
-    _run_binance_root_cli(["profile", "select", "--name", profile])
+    """Deprecated no-op retained for older imports."""
+    return None
 
 
 # ═══ 交易所精度信息缓存 ═══
@@ -172,15 +96,9 @@ def get_exchange_info() -> dict:
     if _exchange_info_cache and (now - _exchange_info_cache_time) < EXCHANGE_INFO_CACHE_TTL:
         return _exchange_info_cache
 
-    info = None
-    if is_native_binance_configured() and get_native_binance_client:
-        try:
-            info = get_native_binance_client().exchange_info()
-        except Exception as e:
-            logger.warning(f"原生 Binance API 获取交易所信息失败，回退 binance-cli：{e}")
-
-    if info is None:
-        info = _run_binance_cli(["exchange-information"])
+    if not get_native_binance_client:
+        raise RuntimeError("原生 Binance API 客户端不可用")
+    info = get_native_binance_client().exchange_info()
 
     _exchange_info_cache = info
     _exchange_info_cache_time = now
@@ -300,12 +218,9 @@ def adjust_price_precision(symbol: str, price: float) -> float:
 
 def get_account_balance() -> dict[str, Any]:
     """Fetch futures account information."""
-    if is_native_binance_configured() and get_native_binance_client:
-        try:
-            return get_native_binance_client().account_information()  # type: ignore
-        except Exception as e:
-            logger.warning(f"原生 Binance API 获取账户失败，回退 binance-cli：{e}")
-    return _run_binance_cli(["account-information-v2"])  # type: ignore
+    if not is_native_binance_configured() or not get_native_binance_client:
+        raise RuntimeError("原生 Binance API 未配置，无法查询账户")
+    return get_native_binance_client().account_information()  # type: ignore
 
 
 def calculate_position_size(
@@ -486,7 +401,7 @@ def signal_to_order_params(signal: TradingSignal, side: str) -> dict[str, Any]:
         side: 'LONG' or 'SHORT' (maps to BUY/SELL for futures)
 
     Returns:
-        Order parameters dict for binance-cli
+        Order parameters dict for market execution
     """
     binance_side = "BUY" if side == "LONG" else "SELL"
 
@@ -543,38 +458,25 @@ def place_market_order(
         OrderResult with execution details
     """
     try:
-        # 实盘 profile
-        profile = "main"
-
         # 调整 quantity 精度，防止 LOT_SIZE 过滤失败
         quantity = adjust_quantity_precision(symbol, quantity)
 
-        # First set leverage if not already set
-        try:
-            ensure_profile_selected(profile)
-            _run_binance_cli([
-                "change-initial-leverage",
-                "--symbol", symbol,
-                "--leverage", str(leverage),
-            ])
-        except Exception:
-            pass  # Leverage might already be set
+        if not is_native_binance_configured() or not get_native_binance_client:
+            raise RuntimeError("原生 Binance API 未配置，无法下单")
 
-        # Place market order
         resolved_position_side = position_side or ("LONG" if side == "BUY" else "SHORT")
+        if not reduce_only:
+            get_native_binance_client().change_leverage(symbol, leverage)  # type: ignore
 
-        args = [
-            "new-order",
-            "--symbol", symbol,
-            "--side", side,
-            "--type", "MARKET",
-            "--quantity", str(quantity),
-            "--position-side", resolved_position_side,
-            "--new-order-resp-type", "RESULT",
-        ]
-        if reduce_only:
-            args.extend(["--reduce-only", "true"])
-        result = _run_binance_cli(args)
+        result = get_native_binance_client().new_order(  # type: ignore
+            symbol=symbol,
+            side=side,
+            order_type="MARKET",
+            quantity=quantity,
+            position_side=resolved_position_side,
+            reduce_only=reduce_only,
+            new_order_resp_type="RESULT",
+        )
 
         # Parse result
         executed_qty = float(result.get("executedQty", 0))
@@ -623,37 +525,29 @@ def place_stop_loss_order(
         OrderResult with execution details
     """
     try:
-        # 实盘 profile
-        profile = "main"
-        try:
-            ensure_profile_selected(profile)
-        except Exception:
-            pass
-        
+        if not is_native_binance_configured() or not get_native_binance_client:
+            raise RuntimeError("原生 Binance API 未配置，无法挂止损")
+
         # 调整 quantity 和 price 精度
         quantity = adjust_quantity_precision(symbol, quantity)
         stop_price = adjust_price_precision(symbol, stop_price)
-        
-        # Place STOP_MARKET order using algo order API
         resolved_position_side = position_side or ("LONG" if side == "SELL" else "SHORT")
 
-        args = [
-            "new-algo-order",
-            "--algo-type", "STOP_MARKET",
-            "--symbol", symbol,
-            "--side", side,
-            "--quantity", str(quantity),
-            "--trigger-price", str(stop_price),
-            "--position-side", resolved_position_side,
-            "--new-order-resp-type", "RESULT",
-        ]
-        if reduce_only:
-            args.extend(["--reduce-only", "true"])
-        result = _run_binance_cli(args)
+        result = get_native_binance_client().new_order(  # type: ignore
+            symbol=symbol,
+            side=side,
+            order_type="STOP_MARKET",
+            quantity=quantity,
+            position_side=resolved_position_side,
+            reduce_only=reduce_only,
+            stop_price=stop_price,
+            working_type="MARK_PRICE",
+            new_order_resp_type="RESULT",
+        )
         
         executed_qty = float(result.get("executedQty", 0))
-        order_id = int(result.get("algoId", result.get("orderID", 0)))
-        status = result.get("status", "ALGO_ORDER_PLACED")
+        order_id = int(result.get("orderId", result.get("orderID", 0)))
+        status = result.get("status", "ORDER_PLACED")
 
         return OrderResult(
             symbol=symbol,
@@ -686,33 +580,28 @@ def place_take_profit_order(
 ) -> OrderResult:
     """Place a TAKE_PROFIT_MARKET order."""
     try:
-        profile = "main"
-        try:
-            ensure_profile_selected(profile)
-        except Exception:
-            pass
+        if not is_native_binance_configured() or not get_native_binance_client:
+            raise RuntimeError("原生 Binance API 未配置，无法挂止盈")
 
         quantity = adjust_quantity_precision(symbol, quantity)
         trigger_price = adjust_price_precision(symbol, trigger_price)
         resolved_position_side = position_side or ("LONG" if side == "SELL" else "SHORT")
 
-        args = [
-            "new-algo-order",
-            "--algo-type", "TAKE_PROFIT_MARKET",
-            "--symbol", symbol,
-            "--side", side,
-            "--quantity", str(quantity),
-            "--trigger-price", str(trigger_price),
-            "--position-side", resolved_position_side,
-            "--new-order-resp-type", "RESULT",
-        ]
-        if reduce_only:
-            args.extend(["--reduce-only", "true"])
-        result = _run_binance_cli(args)
+        result = get_native_binance_client().new_order(  # type: ignore
+            symbol=symbol,
+            side=side,
+            order_type="TAKE_PROFIT_MARKET",
+            quantity=quantity,
+            position_side=resolved_position_side,
+            reduce_only=reduce_only,
+            stop_price=trigger_price,
+            working_type="MARK_PRICE",
+            new_order_resp_type="RESULT",
+        )
 
         executed_qty = float(result.get("executedQty", 0))
-        order_id = int(result.get("algoId", result.get("orderID", 0)))
-        status = result.get("status", "ALGO_ORDER_PLACED")
+        order_id = int(result.get("orderId", result.get("orderID", 0)))
+        status = result.get("status", "ORDER_PLACED")
 
         return OrderResult(
             symbol=symbol,
@@ -740,19 +629,15 @@ def cancel_protective_order(symbol: str, order_id: int) -> bool:
     if not order_id:
         return False
 
-    cancel_attempts = [
-        ["cancel-algo-order", "--symbol", symbol, "--algo-id", str(order_id)],
-        ["cancel-order", "--symbol", symbol, "--order-id", str(order_id)],
-    ]
+    if not is_native_binance_configured() or not get_native_binance_client:
+        raise RuntimeError("原生 Binance API 未配置，无法撤单")
 
-    for args in cancel_attempts:
-        try:
-            _run_binance_cli(args)
-            return True
-        except Exception:
-            continue
-
-    return False
+    try:
+        get_native_binance_client().cancel_order(symbol, order_id)  # type: ignore
+        return True
+    except Exception as e:
+        logger.warning(f"{symbol} 原生撤单失败 order_id={order_id}: {e}")
+        return False
 
 
 def cancel_stop_loss_order(symbol: str, order_id: int) -> bool:
@@ -762,59 +647,22 @@ def cancel_stop_loss_order(symbol: str, order_id: int) -> bool:
 
 def fetch_open_orders(symbol: Optional[str] = None) -> list[dict[str, Any]]:
     """Best-effort fetch for normal open orders."""
-    if is_native_binance_configured() and get_native_binance_client:
-        try:
-            return get_native_binance_client().open_orders(symbol)  # type: ignore
-        except Exception as e:
-            logger.debug(f"原生 Binance API 获取普通开放订单失败，回退 binance-cli：{e}")
-
-    candidates = [
-        ["current-all-open-orders"],
-        ["open-orders"],
-    ]
-    if symbol:
-        candidates = [args + ["--symbol", symbol] for args in candidates]
-
-    for args in candidates:
-        try:
-            result = _run_binance_cli(args, max_retries=1)
-            if isinstance(result, list):
-                return result
-            if isinstance(result, dict):
-                return result.get("orders", result.get("data", [])) or []
-        except Exception:
-            continue
-    return []
+    if not is_native_binance_configured() or not get_native_binance_client:
+        return []
+    return get_native_binance_client().open_orders(symbol)  # type: ignore
 
 
 def fetch_open_algo_orders(symbol: Optional[str] = None) -> list[dict[str, Any]]:
     """Best-effort fetch for algo open orders such as STOP_MARKET / TAKE_PROFIT_MARKET."""
+    # Native conditional orders created through /fapi/v1/order are returned by
+    # openOrders, so merge both sources for compatibility with older metadata.
+    orders = fetch_open_orders(symbol)
     if is_native_binance_configured() and get_native_binance_client:
         try:
-            native_orders = get_native_binance_client().open_algo_orders(symbol)  # type: ignore
-            if native_orders:
-                return native_orders
-        except Exception as e:
-            logger.debug(f"原生 Binance API 获取 Algo 开放订单失败，回退 binance-cli：{e}")
-
-    candidates = [
-        ["open-algo-orders"],
-        ["current-all-open-algo-orders"],
-        ["query-current-algo-open-orders"],
-    ]
-    if symbol:
-        candidates = [args + ["--symbol", symbol] for args in candidates]
-
-    for args in candidates:
-        try:
-            result = _run_binance_cli(args, max_retries=1)
-            if isinstance(result, list):
-                return result
-            if isinstance(result, dict):
-                return result.get("orders", result.get("data", [])) or []
+            orders.extend(get_native_binance_client().open_algo_orders(symbol))  # type: ignore
         except Exception:
-            continue
-    return []
+            pass
+    return orders
 
 
 def execute_trade(

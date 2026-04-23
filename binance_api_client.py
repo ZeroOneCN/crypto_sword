@@ -1,9 +1,4 @@
-"""Native Binance USD-M futures REST client.
-
-This client is intentionally read-only for the first migration stage. Order
-execution still goes through the existing binance-cli path until the native
-client has been verified on the server.
-"""
+"""Native Binance USD-M futures REST client."""
 
 from __future__ import annotations
 
@@ -72,6 +67,51 @@ class BinanceApiClient:
     def exchange_info(self) -> dict[str, Any]:
         return self._request("GET", "/fapi/v1/exchangeInfo", signed=False)
 
+    def ticker_24hr(self, symbol: str | None = None) -> Any:
+        params: dict[str, Any] = {}
+        if symbol:
+            params["symbol"] = symbol
+        return self._request("GET", "/fapi/v1/ticker/24hr", params=params, signed=False)
+
+    def klines(self, symbol: str, interval: str = "1h", limit: int = 50) -> list[Any]:
+        data = self._request(
+            "GET",
+            "/fapi/v1/klines",
+            params={"symbol": symbol, "interval": interval, "limit": limit},
+            signed=False,
+        )
+        return data if isinstance(data, list) else []
+
+    def open_interest(self, symbol: str) -> dict[str, Any]:
+        return self._request("GET", "/fapi/v1/openInterest", params={"symbol": symbol}, signed=False)
+
+    def open_interest_statistics(self, symbol: str, period: str = "1h", limit: int = 24) -> list[dict[str, Any]]:
+        data = self._request(
+            "GET",
+            "/futures/data/openInterestHist",
+            params={"symbol": symbol, "period": period, "limit": limit},
+            signed=False,
+        )
+        return data if isinstance(data, list) else []
+
+    def long_short_ratio(self, symbol: str, period: str = "1h", limit: int = 24) -> list[dict[str, Any]]:
+        data = self._request(
+            "GET",
+            "/futures/data/globalLongShortAccountRatio",
+            params={"symbol": symbol, "period": period, "limit": limit},
+            signed=False,
+        )
+        return data if isinstance(data, list) else []
+
+    def funding_rate(self, symbol: str, limit: int = 3) -> list[dict[str, Any]]:
+        data = self._request(
+            "GET",
+            "/fapi/v1/fundingRate",
+            params={"symbol": symbol, "limit": limit},
+            signed=False,
+        )
+        return data if isinstance(data, list) else []
+
     def account_information(self) -> dict[str, Any]:
         account = self._request("GET", "/fapi/v3/account", signed=True)
         # Keep the existing code path compatible with account-information-v2.
@@ -99,7 +139,7 @@ class BinanceApiClient:
             params["symbol"] = symbol
 
         # Binance has changed conditional/algo order endpoints over time; try
-        # known variants and let callers fall back to binance-cli when absent.
+        # known variants; normal conditional orders are also visible in openOrders.
         for path in ("/fapi/v1/openAlgoOrders", "/fapi/v1/algoOpenOrders"):
             try:
                 data = self._request("GET", path, params=params, signed=True)
@@ -107,6 +147,95 @@ class BinanceApiClient:
             except Exception as e:
                 logger.debug(f"Native open algo orders unsupported via {path}: {e}")
         return []
+
+    def change_leverage(self, symbol: str, leverage: int) -> dict[str, Any]:
+        return self._request(
+            "POST",
+            "/fapi/v1/leverage",
+            params={"symbol": symbol, "leverage": leverage},
+            signed=True,
+        )
+
+    def new_order(
+        self,
+        symbol: str,
+        side: str,
+        order_type: str,
+        quantity: float | None = None,
+        position_side: str | None = None,
+        reduce_only: bool = False,
+        stop_price: float | None = None,
+        working_type: str = "MARK_PRICE",
+        new_order_resp_type: str = "RESULT",
+    ) -> dict[str, Any]:
+        params: dict[str, Any] = {
+            "symbol": symbol,
+            "side": side,
+            "type": order_type,
+            "newOrderRespType": new_order_resp_type,
+        }
+        if quantity is not None:
+            params["quantity"] = _format_decimal(quantity)
+        if position_side:
+            params["positionSide"] = position_side
+        # In Hedge Mode, positionSide already determines whether the order closes
+        # LONG or SHORT. Binance may reject reduceOnly together with positionSide.
+        if reduce_only and not position_side:
+            params["reduceOnly"] = "true"
+        if stop_price is not None:
+            params["stopPrice"] = _format_decimal(stop_price)
+            params["workingType"] = working_type
+
+        return self._request("POST", "/fapi/v1/order", params=params, signed=True)
+
+    def cancel_order(self, symbol: str, order_id: int) -> dict[str, Any]:
+        return self._request(
+            "DELETE",
+            "/fapi/v1/order",
+            params={"symbol": symbol, "orderId": order_id},
+            signed=True,
+        )
+
+    def command_compat(self, args: list[str]) -> Any:
+        """Compatibility adapter for old command-style futures calls."""
+        if not args:
+            raise RuntimeError("Empty Binance command")
+
+        command = args[0]
+        params = _args_to_params(args[1:])
+
+        if command in {"exchange-information", "exchangeInfo"}:
+            return self.exchange_info()
+        if command in {"ticker24hr-price-change-statistics", "ticker-24hr"}:
+            return self.ticker_24hr(params.get("symbol"))
+        if command in {"open-interest", "openInterest"}:
+            return self.open_interest(_required(params, "symbol"))
+        if command in {"open-interest-statistics", "openInterestHist"}:
+            return self.open_interest_statistics(
+                _required(params, "symbol"),
+                period=params.get("period", "1h"),
+                limit=int(params.get("limit", 24)),
+            )
+        if command in {"long-short-ratio", "globalLongShortAccountRatio"}:
+            return self.long_short_ratio(
+                _required(params, "symbol"),
+                period=params.get("period", "1h"),
+                limit=int(params.get("limit", 24)),
+            )
+        if command in {"get-funding-rate-history", "fundingRate"}:
+            return self.funding_rate(_required(params, "symbol"), limit=int(params.get("limit", 3)))
+        if command in {"kline-candlestick-data", "klines"}:
+            return self.klines(
+                _required(params, "symbol"),
+                interval=params.get("interval", "1h"),
+                limit=int(params.get("limit", 50)),
+            )
+        if command in {"account-information-v2", "account-information-v3"}:
+            return self.account_information()
+        if command in {"current-all-open-orders", "open-orders"}:
+            return self.open_orders(params.get("symbol"))
+
+        raise RuntimeError(f"Unsupported native Binance command: {command}")
 
     def _request(
         self,
@@ -142,6 +271,40 @@ class BinanceApiClient:
         except urllib.error.HTTPError as e:
             body = e.read().decode("utf-8", errors="replace")
             raise RuntimeError(f"Binance API HTTP {e.code}: {body[:300]}") from e
+
+
+def _format_decimal(value: float) -> str:
+    return f"{float(value):.16f}".rstrip("0").rstrip(".")
+
+
+def _args_to_params(args: list[str]) -> dict[str, str]:
+    params: dict[str, str] = {}
+    index = 0
+    while index < len(args):
+        key = args[index]
+        if key.startswith("--"):
+            normalized = _kebab_to_camel(key[2:])
+            if index + 1 < len(args) and not args[index + 1].startswith("--"):
+                params[normalized] = args[index + 1]
+                index += 2
+            else:
+                params[normalized] = "true"
+                index += 1
+        else:
+            index += 1
+    return params
+
+
+def _kebab_to_camel(value: str) -> str:
+    parts = value.split("-")
+    return parts[0] + "".join(part[:1].upper() + part[1:] for part in parts[1:])
+
+
+def _required(params: dict[str, str], key: str) -> str:
+    value = params.get(key)
+    if not value:
+        raise RuntimeError(f"Missing required parameter: {key}")
+    return value
 
 
 def _load_binance_config() -> dict[str, Any]:

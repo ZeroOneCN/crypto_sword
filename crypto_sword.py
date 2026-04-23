@@ -19,7 +19,6 @@ import argparse
 import json
 import logging
 import os
-import shutil
 import sys
 import time
 from datetime import datetime
@@ -46,7 +45,6 @@ try:
         TradingSignal,
         cancel_protective_order,
         cancel_stop_loss_order,
-        ensure_profile_selected,
         execute_trade,
         fetch_open_algo_orders,
         fetch_open_orders,
@@ -865,11 +863,8 @@ class CryptoSword:
 
         native_ready = is_native_binance_configured()
         if not native_ready:
-            if not shutil.which("binance-cli"):
-                raise RuntimeError("未找到 binance-cli，且原生 Binance API 未配置")
-            ensure_profile_selected("main")
-        else:
-            logger.info("🧬 原生 Binance API 只读通道已启用，binance-cli 保留为下单/备用通道")
+            raise RuntimeError("原生 Binance API 未配置：请设置 BINANCE_API_KEY / BINANCE_API_SECRET")
+        logger.info("🧬 原生 Binance API 交易通道已启用")
 
         account_info = get_account_balance()
         if not isinstance(account_info, dict):

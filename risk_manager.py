@@ -9,8 +9,6 @@
 ╚═══════════════════════════════════════════════════════════════╝
 """
 
-import subprocess
-import json
 import logging
 import time
 from typing import Dict, Any, Optional, List, Tuple
@@ -19,6 +17,11 @@ from dataclasses import dataclass, field
 import math
 
 logger = logging.getLogger(__name__)
+
+try:
+    from binance_api_client import get_native_binance_client
+except Exception:
+    get_native_binance_client = None
 
 # ═══════════════════════════════════════════════
 # API 调用限流 - 避免 Binance 限流
@@ -142,69 +145,27 @@ class PositionRisk:
 # ═══════════════════════════════════════════════════════════════
 
 def run_binance_cli(args: List[str], timeout: int = 60, max_retries: int = 5) -> Optional[Any]:
-    """运行 binance-cli 命令
+    """Compatibility wrapper backed by native Binance REST.
     
     Added retry logic and empty response handling to prevent JSON parse errors.
     Increased retries to 5 with exponential backoff for rate limit handling.
     Added API call throttling to avoid rate limiting.
     """
-    # 限流：确保 API 调用间隔
-    _throttle_api_call()
-    
-    cmd = ["binance-cli", "futures-usds"] + args
-    
+    if get_native_binance_client is None:
+        logger.error("原生 Binance API 客户端不可用")
+        return None
+
     for attempt in range(max_retries + 1):
         try:
-            result = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
-            
-            # Check for command failure
-            if result.returncode != 0:
-                error_msg = result.stderr.strip() or f"Command failed with exit code {result.returncode}"
-                # API 限流时重试
-                if "rate limit" in error_msg.lower() or "too many requests" in error_msg.lower():
-                    if attempt < max_retries:
-                        wait_time = 2 ** attempt  # 指数退避：1s, 2s, 4s, 8s, 16s
-                        logger.warning(f"API 限流，等待 {wait_time}s 后重试 ({attempt + 1}/{max_retries + 1})...")
-                        time.sleep(wait_time)
-                        continue
-                logger.warning(f"binance-cli 失败：{error_msg}")
-                return None
-            
-            # Check for empty response (common cause of JSON parse errors)
-            stdout = result.stdout.strip()
-            if not stdout:
-                if attempt < max_retries:
-                    wait_time = 2 ** attempt
-                    logger.warning(f"binance-cli 返回空响应，等待 {wait_time}s 后重试 ({attempt + 1}/{max_retries + 1})...")
-                    time.sleep(wait_time)
-                    continue
-                logger.warning("binance-cli 返回空响应（已达最大重试次数）")
-                return None
-            
-            # Parse JSON with error handling
-            try:
-                data = json.loads(stdout)
-                return data
-            except json.JSONDecodeError as e:
-                if attempt < max_retries:
-                    wait_time = 2 ** attempt
-                    logger.warning(f"JSON 解析失败，等待 {wait_time}s 后重试 ({attempt + 1}/{max_retries + 1}): {e}")
-                    time.sleep(wait_time)
-                    continue
-                logger.error(f"无效 JSON 响应：{stdout[:200]}...")
-                return None
-                
-        except subprocess.TimeoutExpired:
-            if attempt < max_retries:
-                wait_time = 2 ** attempt
-                time.sleep(wait_time)
-                continue
-            logger.error("binance-cli 超时（已达最大重试次数）")
-            return None
+            _throttle_api_call()
+            return get_native_binance_client().command_compat(list(args))  # type: ignore
         except Exception as e:
-            logger.error(f"binance-cli 异常：{e}")
+            if attempt < max_retries:
+                time.sleep(2 ** attempt)
+                continue
+            logger.error(f"原生 Binance API 异常：{e}")
             return None
-    
+
     return None
 
 

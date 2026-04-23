@@ -114,8 +114,7 @@ def load_historical_data(
     In production, fetch from Binance API or load from local cache.
     For now, generate synthetic data for testing.
     """
-    # TODO: Implement real data fetching from Binance
-    # binance-cli futures-usds klines --symbol BTCUSDT --interval 1d --startTime ... --endTime ...
+    # TODO: Implement real data fetching through the native Binance REST client.
 
     logger.warning("Using synthetic data for backtest - implement real data fetch")
 
