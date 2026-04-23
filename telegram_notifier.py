@@ -116,12 +116,13 @@ def _format_take_profit_targets(targets: list[dict[str, Any]]) -> str:
     lines = []
     for target in targets:
         roi_pct = float(target.get("target_roi_pct", 0) or 0)
+        price_move_pct = float(target.get("price_move_pct", 0) or 0)
         price = float(target.get("price", 0) or 0)
         ratio = float(target.get("ratio", 0) or 0) * 100
         quantity = float(target.get("quantity", 0) or 0)
         lines.append(
             f"TP{int(target.get('level', len(lines) + 1))}: "
-            f"<code>{roi_pct:.2f}% ROI</code> → <code>${price:,.4f}</code> "
+            f"<code>{price_move_pct:.2f}% 价格 / {roi_pct:.2f}% ROI</code> → <code>${price:,.4f}</code> "
             f"({ratio:.0f}% / {quantity})"
         )
     return "\n".join(lines)
@@ -135,7 +136,8 @@ def format_open_position_msg(symbol: str, direction: str, entry_price: float, qu
                              leverage: int, stop_loss: float, take_profit: float, 
                              risk_amount: float, risk_pct: float, score: float = 0,
                              risk_level: str = "", session_id: str = "",
-                             target_roi_pct: float = 0, take_profit_targets: list[dict[str, Any]] = None) -> str:
+                             target_roi_pct: float = 0, price_move_pct: float = 0,
+                             take_profit_targets: list[dict[str, Any]] = None) -> str:
     """格式化开仓通知"""
     direction_emoji = "🟢" if direction == "LONG" else "🔴"
     direction_text = "做多 LONG" if direction == "LONG" else "做空 SHORT"
@@ -160,6 +162,8 @@ def format_open_position_msg(symbol: str, direction: str, entry_price: float, qu
 
     if target_roi_pct > 0:
         msg += f"\n<b>目标收益率</b>  <code>{target_roi_pct:.2f}% ROI</code>"
+    if price_move_pct > 0:
+        msg += f"\n<b>实际价格目标</b>  <code>{price_move_pct:.2f}%</code>"
     if take_profit_targets:
         msg += f"\n<b>分批止盈</b>\n{_format_take_profit_targets(take_profit_targets)}"
     
@@ -264,7 +268,7 @@ def format_startup_msg(
 <b>模式</b>  <code>{_escape(mode_name)}</code>
 <b>杠杆</b>  {leverage}x
 <b>单笔风险</b>  {risk_pct:.2f}%
-<b>止损 / 目标收益率</b>  {stop_loss_pct:.2f}% / {take_profit_pct:.2f}%
+<b>止损 / 止盈</b>  {stop_loss_pct:.2f}% / {take_profit_pct:.2f}%
 <b>扫描范围</b>  前 <code>{scan_top_n}</code> 个币种
 <b>扫描间隔</b>  <code>{scan_interval_sec}</code> 秒
 <b>最大持仓</b>  <code>{max_positions}</code> 个"""

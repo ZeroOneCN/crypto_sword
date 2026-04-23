@@ -321,7 +321,12 @@ def calculate_stop_loss(entry_price: float, stop_loss_pct: float, side: str) -> 
         return round(entry_price * (1 + stop_loss_pct / 100.0), 2)
 
 
-def calculate_take_profit(entry_price: float, take_profit_pcts: list[float], side: str) -> list[float]:
+def calculate_take_profit(
+    entry_price: float,
+    take_profit_pcts: list[float],
+    side: str,
+    symbol: Optional[str] = None,
+) -> list[float]:
     """Calculate take profit levels.
 
     Args:
@@ -335,10 +340,28 @@ def calculate_take_profit(entry_price: float, take_profit_pcts: list[float], sid
     levels = []
     for tp_pct in take_profit_pcts:
         if side == "LONG":
-            levels.append(round(entry_price * (1 + tp_pct / 100.0), 2))
+            price = entry_price * (1 + tp_pct / 100.0)
         else:  # SHORT
-            levels.append(round(entry_price * (1 - tp_pct / 100.0), 2))
+            price = entry_price * (1 - tp_pct / 100.0)
+        if symbol:
+            price = adjust_price_precision(symbol, price)
+        levels.append(price)
     return levels
+
+
+def calculate_effective_roi_pcts(entry_price: float, target_prices: list[float], leverage: int, side: str) -> list[float]:
+    """Calculate leveraged ROI percentages for display from actual target prices."""
+    if entry_price <= 0:
+        return [0.0 for _ in target_prices]
+
+    roi_pcts: list[float] = []
+    for price in target_prices:
+        if side == "LONG":
+            price_move_pct = (price - entry_price) / entry_price * 100.0
+        else:
+            price_move_pct = (entry_price - price) / entry_price * 100.0
+        roi_pcts.append(price_move_pct * leverage)
+    return roi_pcts
 
 
 def calculate_take_profit_prices_by_roi(
@@ -702,7 +725,9 @@ def execute_trade(
     quantity: float = None,  # 可选：使用外部计算的仓位
     stop_loss_price: float = None,  # 可选：使用外部计算的止损
     take_profit_roi_pcts: Optional[list[float]] = None,
+    take_profit_price_pcts: Optional[list[float]] = None,
     take_profit_ratios: Optional[list[float]] = None,
+    take_profit_mode: str = "price",
 ) -> dict[str, Any]:
     """Execute a trade based on a signal.
 
@@ -772,14 +797,32 @@ def execute_trade(
 
     actual_entry_price = entry_result.executed_price or signal.entry_price
     actual_quantity = entry_result.quantity or quantity
-    target_roi_pcts = take_profit_roi_pcts or [20.0]
-    take_profit_prices = calculate_take_profit_prices_by_roi(
-        entry_price=actual_entry_price,
-        target_roi_pcts=target_roi_pcts,
-        leverage=leverage,
-        side=signal.direction,
-        symbol=signal.symbol,
-    )
+    if take_profit_mode == "roi":
+        target_pcts = take_profit_roi_pcts or [20.0]
+        take_profit_prices = calculate_take_profit_prices_by_roi(
+            entry_price=actual_entry_price,
+            target_roi_pcts=target_pcts,
+            leverage=leverage,
+            side=signal.direction,
+            symbol=signal.symbol,
+        )
+        price_move_pcts = [pct / float(leverage) for pct in target_pcts]
+        effective_roi_pcts = list(target_pcts)
+    else:
+        target_pcts = take_profit_price_pcts or take_profit_roi_pcts or [20.0]
+        take_profit_prices = calculate_take_profit(
+            actual_entry_price,
+            target_pcts,
+            signal.direction,
+            symbol=signal.symbol,
+        )
+        price_move_pcts = list(target_pcts)
+        effective_roi_pcts = calculate_effective_roi_pcts(
+            actual_entry_price,
+            take_profit_prices,
+            leverage,
+            signal.direction,
+        )
     normalized_ratios = _normalize_take_profit_ratios(len(take_profit_prices), take_profit_ratios)
     take_profit_quantities = _build_take_profit_slices(signal.symbol, actual_quantity, normalized_ratios)
     take_profit_orders: list[dict[str, Any]] = []
@@ -809,7 +852,8 @@ def execute_trade(
         take_profit_orders.append(
             {
                 "level": index + 1,
-                "target_roi_pct": target_roi_pcts[index],
+                "target_roi_pct": effective_roi_pcts[index],
+                "price_move_pct": price_move_pcts[index],
                 "price": trigger_price,
                 "quantity": tp_quantity,
                 "ratio": normalized_ratios[index] if index < len(normalized_ratios) else 0.0,
@@ -830,7 +874,9 @@ def execute_trade(
         "stop_loss_price": stop_loss_price,
         "take_profit_orders": take_profit_orders,
         "take_profit_prices": take_profit_prices,
-        "take_profit_roi_pcts": target_roi_pcts,
+        "take_profit_roi_pcts": effective_roi_pcts,
+        "take_profit_price_pcts": price_move_pcts,
+        "take_profit_mode": take_profit_mode,
         "risk_amount_usdt": round(account_balance * risk_per_trade_pct / 100, 2),
         "stage": signal.stage,
     }
