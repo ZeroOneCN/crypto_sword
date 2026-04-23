@@ -1967,8 +1967,8 @@ class CryptoSword:
         self._emit_latency_trace("execute_exit_failed", trace_started, latency_steps, symbol=symbol)
         return False
 
-    def _run_scan_cycle_legacy(self):
-        """运行一次完整的扫描 - 交易循环"""
+    def _deprecated_run_scan_cycle_legacy(self):
+        """Deprecated legacy full-scan loop retained only for historical reference."""
         trace_started = time.perf_counter()
         latency_steps: list[tuple[str, float]] = []
         step_started = time.perf_counter()

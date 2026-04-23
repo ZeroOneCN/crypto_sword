@@ -298,7 +298,7 @@ def format_protection_status_msg(
     return msg
 
 
-def format_scan_monitor_msg(signals: list[dict[str, Any]], scanned_count: int = 0, max_items: int = 5) -> str:
+def _legacy_format_scan_monitor_msg(signals: list[dict[str, Any]], scanned_count: int = 0, max_items: int = 5) -> str:
     """Format a compact real-time scanner monitor report."""
     now_text = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     msg = f"""📡 <b>宙斯交易中枢 | 妖币扫描报告</b>
