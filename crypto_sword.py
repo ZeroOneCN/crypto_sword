@@ -20,6 +20,7 @@ import json
 import logging
 import os
 import sys
+import threading
 import time
 from datetime import datetime
 from pathlib import Path
@@ -82,8 +83,9 @@ try:
         calculate_position_size,
     )
     try:
-        from binance_websocket import BinanceWebSocketClient
+        from binance_websocket import BinanceUserDataWebSocketClient, BinanceWebSocketClient
     except Exception:
+        BinanceUserDataWebSocketClient = None
         BinanceWebSocketClient = None
 except ImportError as e:
     print(f"❌ 导入失败：{e}")
@@ -367,8 +369,11 @@ class CryptoSword:
         self._market_overview: dict[str, Any] = {}
         self._tp_multiplier: float = 1.0
         self._ws_client = None
+        self._user_ws_client = None
         self._ws_symbols: set[str] = set()
         self._ws_last_refresh: float = 0.0
+        self._state_lock = threading.RLock()
+        self._last_user_stream_sync: float = 0.0
 
     def _new_session_id(self, symbol: str) -> str:
         return f"{symbol}-{datetime.now().strftime('%Y%m%d%H%M%S')}-{uuid4().hex[:8]}"
@@ -478,6 +483,65 @@ class CryptoSword:
         except Exception:
             return 0.0
         return 0.0
+
+    def _start_user_data_stream(self):
+        """Start private WebSocket for order/account state updates."""
+        if BinanceUserDataWebSocketClient is None:
+            logger.warning("User data WebSocket unavailable; continuing with REST reconciliation")
+            return
+        if self._user_ws_client:
+            return
+
+        try:
+            self._user_ws_client = BinanceUserDataWebSocketClient(
+                callbacks={
+                    "on_order_update": self._handle_ws_order_update,
+                    "on_account_update": self._handle_ws_account_update,
+                }
+            )
+            self._user_ws_client.start()
+            logger.info("Binance user data WebSocket started: realtime order/account sync")
+        except Exception as e:
+            self._user_ws_client = None
+            logger.warning(f"Binance user data WebSocket start failed; REST sync remains active: {e}")
+
+    def _request_state_sync_from_ws(self, reason: str, symbol: str = ""):
+        """Debounced REST reconciliation triggered by private WebSocket events."""
+        now = time.time()
+        if now - self._last_user_stream_sync < 2.0:
+            return
+        self._last_user_stream_sync = now
+        logger.info(f"WS state sync requested: {reason}{f' | {symbol}' if symbol else ''}")
+        try:
+            with self._state_lock:
+                self._sync_positions_with_exchange()
+        except Exception as e:
+            logger.warning(f"WS state sync failed: {e}")
+
+    def _handle_ws_order_update(self, event: dict[str, Any]):
+        """React to user stream order updates."""
+        order = event.get("o", {}) if isinstance(event, dict) else {}
+        symbol = str(order.get("s", "") or "")
+        status = str(order.get("X", "") or "")
+        execution_type = str(order.get("x", "") or "")
+        order_type = str(order.get("o", "") or "")
+        realized_pnl = float(order.get("rp", 0) or 0)
+
+        if status in {"FILLED", "PARTIALLY_FILLED", "CANCELED", "EXPIRED"} or execution_type == "TRADE":
+            logger.info(
+                f"WS order update: {symbol} {order_type} {execution_type}/{status} "
+                f"filled={order.get('z', '0')} price={order.get('L', '0')} rp={realized_pnl:.4f}"
+            )
+            self._request_state_sync_from_ws(f"{execution_type}/{status}", symbol)
+
+    def _handle_ws_account_update(self, event: dict[str, Any]):
+        """React to account/position updates from user stream."""
+        account = event.get("a", {}) if isinstance(event, dict) else {}
+        positions = account.get("P", []) or []
+        changed_symbols = [str(pos.get("s", "")) for pos in positions if pos.get("s")]
+        if changed_symbols:
+            logger.info(f"WS position update: {', '.join(changed_symbols[:8])}")
+        self._request_state_sync_from_ws("ACCOUNT_UPDATE", changed_symbols[0] if changed_symbols else "")
 
     def _parse_trade_notes(self, notes: str) -> dict[str, str]:
         parsed: dict[str, str] = {}
@@ -1265,7 +1329,8 @@ class CryptoSword:
         """运行一次完整的扫描 - 交易循环"""
         self._check_new_day()
         self._refresh_market_profile()
-        self._sync_positions_with_exchange()
+        with self._state_lock:
+            self._sync_positions_with_exchange()
         logger.info("=" * 60)
         logger.info(f"🔄 扫描周期开始 | 持仓：{self.tracker.get_open_count()}/{self.config.max_open_positions}")
 
@@ -1304,8 +1369,9 @@ class CryptoSword:
 
             position = self.execute_entry(signal)
             if position:
-                self.tracker.add_position(position)
-                self.traded_symbols_today.add(signal["symbol"])
+                with self._state_lock:
+                    self.tracker.add_position(position)
+                    self.traded_symbols_today.add(signal["symbol"])
 
         # 4. 发送持仓摘要（日志 + 定期 Telegram 通知）
         summary = self.tracker.get_summary()
@@ -1346,6 +1412,7 @@ class CryptoSword:
 
         try:
             self.day_start_balance = self._run_health_checks()
+            self._start_user_data_stream()
             logger.info(f"🩺 启动健康检查通过 | 可用余额: ${self.day_start_balance:.2f}")
         except Exception as e:
             logger.error(f"❌ 启动健康检查失败：{e}")
@@ -1407,6 +1474,11 @@ class CryptoSword:
         if self._ws_client:
             try:
                 self._ws_client.stop()
+            except Exception:
+                pass
+        if self._user_ws_client:
+            try:
+                self._user_ws_client.stop()
             except Exception:
                 pass
 

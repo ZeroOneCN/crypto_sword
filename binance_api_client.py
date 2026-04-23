@@ -148,6 +148,32 @@ class BinanceApiClient:
                 logger.debug(f"Native open algo orders unsupported via {path}: {e}")
         return []
 
+    def start_user_data_stream(self) -> str:
+        """Create or extend a futures user data stream listenKey."""
+        data = self._request("POST", "/fapi/v1/listenKey", signed=False, api_key=True)
+        listen_key = data.get("listenKey") if isinstance(data, dict) else ""
+        if not listen_key:
+            raise RuntimeError("Binance listenKey response missing listenKey")
+        return str(listen_key)
+
+    def keepalive_user_data_stream(self, listen_key: str) -> dict[str, Any]:
+        """Keep the futures user data stream alive."""
+        params = {"listenKey": listen_key} if listen_key else {}
+        data = self._request("PUT", "/fapi/v1/listenKey", params=params, signed=False, api_key=True)
+        return data if isinstance(data, dict) else {}
+
+    def close_user_data_stream(self, listen_key: str) -> dict[str, Any]:
+        """Close the futures user data stream."""
+        params = {"listenKey": listen_key} if listen_key else {}
+        data = self._request("DELETE", "/fapi/v1/listenKey", params=params, signed=False, api_key=True)
+        return data if isinstance(data, dict) else {}
+
+    def websocket_base_url(self) -> str:
+        """Return the matching USD-M futures WebSocket base URL."""
+        if "testnet" in self.base_url:
+            return "wss://stream.binancefuture.com"
+        return "wss://fstream.binance.com"
+
     def change_leverage(self, symbol: str, leverage: int) -> dict[str, Any]:
         return self._request(
             "POST",
@@ -243,6 +269,7 @@ class BinanceApiClient:
         path: str,
         params: dict[str, Any] | None = None,
         signed: bool = False,
+        api_key: bool = False,
     ) -> Any:
         params = {k: v for k, v in (params or {}).items() if v is not None}
         headers = {"Content-Type": "application/json"}
@@ -257,6 +284,10 @@ class BinanceApiClient:
             query = f"{query}&signature={signature}"
             headers["X-MBX-APIKEY"] = self.api_key
         else:
+            if api_key:
+                if not self.api_key:
+                    raise RuntimeError("Binance API key not configured")
+                headers["X-MBX-APIKEY"] = self.api_key
             query = urllib.parse.urlencode(params, doseq=True)
 
         url = f"{self.base_url}{path}"

@@ -79,6 +79,8 @@ export BINANCE_API_SECRET="YOUR_SECRET"
 
 账户、持仓、交易所规则、开放订单查询、开仓、平仓、止损、止盈、撤单均使用原生 Binance USD-M Futures REST API。
 
+系统同时接入 Binance USD-M Futures WebSocket：公开行情流用于持仓价格监听，用户数据流用于订单成交、账户和持仓变化同步；REST 仍作为最终下单和状态校准通道。
+
 ### Telegram 通知
 
 编辑 `config/telegram.json`:

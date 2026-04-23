@@ -14,6 +14,14 @@ from dataclasses import dataclass, field
 from typing import Any, Callable, Optional
 
 try:
+    from binance_api_client import get_native_binance_client, is_native_binance_configured
+except Exception:
+    get_native_binance_client = None
+
+    def is_native_binance_configured() -> bool:
+        return False
+
+try:
     import websocket  # pip install websocket-client
 except Exception:  # pragma: no cover - optional runtime dependency
     websocket = None
@@ -46,7 +54,12 @@ class OrderBookData:
 class BinanceWebSocketClient:
     """Binance futures WebSocket client."""
 
-    def __init__(self, symbols: list[str], callbacks: Optional[dict[str, Callable]] = None):
+    def __init__(
+        self,
+        symbols: list[str],
+        callbacks: Optional[dict[str, Callable]] = None,
+        base_ws_url: str | None = None,
+    ):
         """Initialize WebSocket client.
 
         Args:
@@ -58,6 +71,7 @@ class BinanceWebSocketClient:
         """
         self.symbols = [s.lower() for s in symbols]
         self.callbacks = callbacks or {}
+        self.base_ws_url = (base_ws_url or _get_default_ws_base_url()).rstrip("/")
 
         self.tickers: dict[str, TickerData] = {}
         self.orderbooks: dict[str, OrderBookData] = {}
@@ -155,7 +169,7 @@ class BinanceWebSocketClient:
     def _run_ws(self):
         """Run WebSocket loop in background thread."""
         streams = "/".join(self._get_streams())
-        url = f"wss://fstream.binance.com/stream?streams={streams}"
+        url = f"{self.base_ws_url}/stream?streams={streams}"
 
         self.ws = websocket.WebSocketApp(
             url,
@@ -213,6 +227,141 @@ class BinanceWebSocketClient:
             if ob.bids and ob.asks:
                 return (ob.bids[0][0] + ob.asks[0][0]) / 2
         return self.get_price(symbol)
+
+
+class BinanceUserDataWebSocketClient:
+    """Binance futures user data stream for order and account updates."""
+
+    def __init__(self, callbacks: Optional[dict[str, Callable]] = None):
+        self.callbacks = callbacks or {}
+        self.ws: Optional[websocket.WebSocketApp] = None
+        self.running = False
+        self.listen_key = ""
+        self._thread: Optional[threading.Thread] = None
+        self._keepalive_thread: Optional[threading.Thread] = None
+        self._reconnect_lock = threading.Lock()
+
+    def _client(self):
+        if not get_native_binance_client or not is_native_binance_configured():
+            raise RuntimeError("Native Binance API is not configured")
+        return get_native_binance_client()
+
+    def _open_listen_key(self) -> str:
+        self.listen_key = self._client().start_user_data_stream()
+        return self.listen_key
+
+    def _on_message(self, ws, message: str):
+        try:
+            data = json.loads(message)
+            event_type = data.get("e", "")
+
+            if event_type == "ORDER_TRADE_UPDATE" and "on_order_update" in self.callbacks:
+                self.callbacks["on_order_update"](data)
+            elif event_type == "ACCOUNT_UPDATE" and "on_account_update" in self.callbacks:
+                self.callbacks["on_account_update"](data)
+            elif event_type == "listenKeyExpired":
+                logger.warning("Binance user data listenKey expired; reconnecting")
+                self._reconnect_async()
+
+            if "on_event" in self.callbacks:
+                self.callbacks["on_event"](data)
+        except Exception as e:
+            logger.error(f"Error processing user data WebSocket message: {e}")
+
+    def _on_error(self, ws, error):
+        logger.error(f"User data WebSocket error: {error}")
+
+    def _on_close(self, ws, close_status_code, close_msg):
+        logger.info(f"User data WebSocket closed: {close_status_code} {close_msg}")
+
+    def _on_open(self, ws):
+        logger.info("User data WebSocket connected")
+
+    def _run_keepalive(self):
+        while self.running:
+            time.sleep(30 * 60)
+            if not self.running or not self.listen_key:
+                continue
+            try:
+                self._client().keepalive_user_data_stream(self.listen_key)
+                logger.debug("Binance user data listenKey keepalive sent")
+            except Exception as e:
+                logger.warning(f"Binance user data listenKey keepalive failed: {e}")
+                self._reconnect_async()
+
+    def _run_ws(self):
+        while self.running:
+            try:
+                listen_key = self.listen_key or self._open_listen_key()
+                base_ws_url = self._client().websocket_base_url().rstrip("/")
+                url = f"{base_ws_url}/ws/{listen_key}"
+                self.ws = websocket.WebSocketApp(
+                    url,
+                    on_open=self._on_open,
+                    on_message=self._on_message,
+                    on_error=self._on_error,
+                    on_close=self._on_close,
+                )
+                self.ws.run_forever(ping_interval=60, ping_timeout=10)
+            except Exception as e:
+                logger.error(f"User data WebSocket loop failed: {e}")
+
+            if self.running:
+                time.sleep(5)
+
+    def _reconnect_async(self):
+        if not self.running:
+            return
+        with self._reconnect_lock:
+            self.listen_key = ""
+            if self.ws:
+                try:
+                    self.ws.close()
+                except Exception:
+                    pass
+
+    def start(self):
+        """Start user data stream in background threads."""
+        if websocket is None:
+            raise RuntimeError("websocket-client is not installed")
+        if self.running:
+            return
+
+        self.running = True
+        self._open_listen_key()
+        self._thread = threading.Thread(target=self._run_ws, daemon=True)
+        self._thread.start()
+        self._keepalive_thread = threading.Thread(target=self._run_keepalive, daemon=True)
+        self._keepalive_thread.start()
+        time.sleep(1)
+
+    def stop(self):
+        """Stop user data stream and close listenKey."""
+        self.running = False
+        if self.ws:
+            try:
+                self.ws.close()
+            except Exception:
+                pass
+        if self._thread:
+            self._thread.join(timeout=5)
+        if self._keepalive_thread:
+            self._keepalive_thread.join(timeout=2)
+        if self.listen_key:
+            try:
+                self._client().close_user_data_stream(self.listen_key)
+            except Exception:
+                pass
+            self.listen_key = ""
+
+
+def _get_default_ws_base_url() -> str:
+    try:
+        if get_native_binance_client:
+            return get_native_binance_client().websocket_base_url()
+    except Exception:
+        pass
+    return "wss://fstream.binance.com"
 
 
 def main():
