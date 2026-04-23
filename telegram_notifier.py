@@ -4,6 +4,7 @@ import html
 import json
 import logging
 import os
+import re
 import threading
 import time
 from pathlib import Path
@@ -72,30 +73,40 @@ def send_telegram_message(message: str, parse_mode: str = "HTML") -> bool:
             import urllib.request
             import urllib.error
 
-            # Use HTML mode with proper escaping, or plain text if parse_mode is None
-            if parse_mode is None:
-                # Plain text - no parsing, most reliable
-                data = json.dumps({
-                    "chat_id": config["chat_id"],
-                    "text": message,
-                }).encode("utf-8")
-            else:
-                data = json.dumps({
-                    "chat_id": config["chat_id"],
-                    "text": message,
-                    "parse_mode": parse_mode,
-                }).encode("utf-8")
+            attempts = [(message, parse_mode)]
+            if parse_mode is not None:
+                attempts.append((_strip_html(message), None))
 
-            req = urllib.request.Request(url, data=data, headers={"Content-Type": "application/json"})
-            with urllib.request.urlopen(req, timeout=10) as response:
-                result = json.loads(response.read().decode("utf-8"))
-                _last_message_time = time.time()
-                if result.get("ok"):
-                    logger.info("Telegram message sent successfully")
-                    return True
-                else:
-                    logger.error(f"Telegram API error: {result}")
-                    return False
+            for index, (attempt_message, attempt_parse_mode) in enumerate(attempts):
+                payload = {
+                    "chat_id": config["chat_id"],
+                    "text": attempt_message,
+                }
+                if attempt_parse_mode:
+                    payload["parse_mode"] = attempt_parse_mode
+
+                data = json.dumps(payload).encode("utf-8")
+                req = urllib.request.Request(url, data=data, headers={"Content-Type": "application/json"})
+
+                try:
+                    with urllib.request.urlopen(req, timeout=10) as response:
+                        result = json.loads(response.read().decode("utf-8"))
+                        _last_message_time = time.time()
+                        if result.get("ok"):
+                            if index > 0:
+                                logger.warning("Telegram HTML failed; plain-text fallback sent successfully")
+                            else:
+                                logger.info("Telegram message sent successfully")
+                            return True
+                        logger.error(f"Telegram API error: {result}")
+                except urllib.error.HTTPError as e:
+                    body = e.read().decode("utf-8", errors="replace")
+                    logger.error(f"Telegram HTTP {e.code}: {body[:300]}")
+                    if e.code == 400 and index + 1 < len(attempts):
+                        continue
+                    raise
+
+            return False
 
         except Exception as e:
             _last_message_time = time.time()
@@ -106,6 +117,20 @@ def send_telegram_message(message: str, parse_mode: str = "HTML") -> bool:
 def _escape(value: Any) -> str:
     """Escape dynamic content for Telegram HTML messages."""
     return html.escape(str(value), quote=False)
+
+
+def _strip_html(message: str) -> str:
+    """Convert a simple Telegram HTML message to plain text."""
+    text = re.sub(r"</?(b|code|i|u|s|pre)>", "", message)
+    return html.unescape(text)
+
+
+def _fmt_num(value: Any, decimals: int = 6) -> str:
+    """Format noisy float values for Telegram."""
+    try:
+        return f"{float(value):.{decimals}f}".rstrip("0").rstrip(".")
+    except Exception:
+        return str(value)
 
 
 def _format_take_profit_targets(targets: list[dict[str, Any]]) -> str:
@@ -123,7 +148,7 @@ def _format_take_profit_targets(targets: list[dict[str, Any]]) -> str:
         lines.append(
             f"TP{int(target.get('level', len(lines) + 1))}: "
             f"<code>{price_move_pct:.2f}% 价格 / {roi_pct:.2f}% ROI</code> → <code>${price:,.4f}</code> "
-            f"({ratio:.0f}% / {quantity})"
+            f"({ratio:.0f}% / {_fmt_num(quantity)})"
         )
     return "\n".join(lines)
 
@@ -155,7 +180,7 @@ def format_open_position_msg(symbol: str, direction: str, entry_price: float, qu
 <b>方向</b>  {direction_text}
 <b>入场</b>  <code>${entry_price:,.4f}</code>
 <b>杠杆</b>  {leverage}x
-<b>仓位</b>  <code>{quantity}</code>  |  名义 <code>{notional_value:,.2f} USDT</code>
+<b>仓位</b>  <code>{_fmt_num(quantity)}</code>  |  名义 <code>{notional_value:,.2f} USDT</code>
 <b>止损</b>  <code>${stop_loss:,.4f}</code>  ({sl_pct:.2f}%)
 <b>止盈</b>  <code>${take_profit:,.4f}</code>  ({tp_pct:.2f}%)
 <b>风险</b>  <code>${risk_amount:.2f}</code>  |  {risk_pct:.2f}%"""
@@ -229,8 +254,8 @@ def format_partial_take_profit_msg(
 <b>档位</b>  <code>{_escape(level_text)}</code>
 <b>入场</b>  <code>${entry_price:,.4f}</code>
 <b>成交价</b>  <code>${exit_price:,.4f}</code>
-<b>止盈数量</b>  <code>{quantity}</code>
-<b>剩余数量</b>  <code>{remaining_quantity}</code>
+<b>止盈数量</b>  <code>{_fmt_num(quantity)}</code>
+<b>剩余数量</b>  <code>{_fmt_num(remaining_quantity)}</code>
 <b>本次盈亏</b>  🟢 <b>{pnl_sign}${pnl:,.2f}</b>  ({pnl_sign}{pnl_pct:.2f}%)"""
 
     if session_id:

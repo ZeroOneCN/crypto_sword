@@ -532,7 +532,7 @@ def calculate_position_size(
     stop_loss_price: float,
     max_position_pct: float = 20.0,
     leverage: int = 5,
-    min_notional: float = 5.0,
+    min_notional: float = 5.5,
 ) -> Dict[str, Any]:
     """
     计算仓位大小

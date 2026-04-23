@@ -11,6 +11,7 @@ import logging
 import subprocess
 import time
 from dataclasses import dataclass, field
+from decimal import Decimal, ROUND_CEILING
 from typing import Any, List, Optional
 
 try:
@@ -198,7 +199,7 @@ def get_symbol_info(symbol: str) -> Optional[dict]:
 
 def _truncate_to_step(value: float, step_size: float) -> float:
     """Truncate value to step size (Binance requires truncation, not rounding)."""
-    from decimal import Decimal, ROUND_FLOOR
+    from decimal import ROUND_FLOOR
     step = Decimal(str(step_size))
     val = Decimal(str(value))
     step_str = str(step)
@@ -213,27 +214,48 @@ def _truncate_to_step(value: float, step_size: float) -> float:
     return float(result)
 
 
-def adjust_price_precision(symbol: str, price: float) -> float:
-    """Adjust price precision based on Binance symbol tickSize."""
+def _ceil_to_step(value: float, step_size: float) -> float:
+    """Round value up to the next valid exchange step."""
+    step = Decimal(str(step_size))
+    val = Decimal(str(value))
+    steps = (val / step).to_integral_value(rounding=ROUND_CEILING)
+    result = steps * step
+    return float(result)
+
+
+def _get_lot_step_size(symbol: str) -> float:
     try:
-        info = _run_binance_cli(["exchange-information"])
-        if isinstance(info, dict) and "symbols" in info:
-            sym_info = None
-            for s in info["symbols"]:
-                if s.get("symbol") == symbol:
-                    sym_info = s
-                    break
-            if sym_info:
-                for f in sym_info.get("filters", []):
-                    if f.get("filterType") == "PRICE_FILTER":
-                        tick_size = float(f.get("tickSize", "0.00001"))
-                        price = _truncate_to_step(price, tick_size)
-                        logger.info(f"🔧 {symbol} 价格精度：tickSize={tick_size}, 调整后 price={price}")
-                        return price
+        sym_info = get_symbol_info(symbol)
+        if sym_info:
+            for f in sym_info.get("filters", []):
+                if f.get("filterType") == "LOT_SIZE":
+                    return float(f.get("stepSize", "0.001"))
+    except Exception:
+        pass
+    return 0.001
+
+
+def get_symbol_min_notional(symbol: str, default: float = 5.0) -> float:
+    """Return the exchange minimum notional for a symbol."""
+    try:
+        sym_info = get_symbol_info(symbol)
+        if sym_info:
+            for f in sym_info.get("filters", []):
+                if f.get("filterType") in {"MIN_NOTIONAL", "NOTIONAL"}:
+                    return float(f.get("notional", f.get("minNotional", default)) or default)
     except Exception as e:
-        logger.debug(f"获取 {symbol} 价格精度失败: {e}")
-    # 默认 5 位小数
-    return _truncate_to_step(price, 0.00001)
+        logger.debug(f"获取 {symbol} 最小名义价值失败: {e}")
+    return default
+
+
+def calculate_min_quantity_for_notional(symbol: str, price: float, min_notional: float | None = None, buffer_pct: float = 3.0) -> float:
+    """Calculate a step-aligned quantity that remains above min notional after truncation."""
+    if price <= 0:
+        return 0.0
+    minimum = min_notional if min_notional is not None else get_symbol_min_notional(symbol)
+    target_notional = minimum * (1 + buffer_pct / 100.0)
+    step_size = _get_lot_step_size(symbol)
+    return _ceil_to_step(target_notional / price, step_size)
 
 
 def adjust_quantity_precision(symbol: str, quantity: float) -> float:
@@ -292,7 +314,7 @@ def calculate_position_size(
     entry_price: float,
     stop_loss_price: float,
     max_position_pct: float = 20.0,
-    min_notional: float = 5.0,
+    min_notional: float = 5.5,
 ) -> float:
     """Calculate position size based on risk parameters.
 
@@ -302,7 +324,7 @@ def calculate_position_size(
         entry_price: Entry price of the trade
         stop_loss_price: Stop loss price
         max_position_pct: Maximum position size as % of account (default 20%)
-        min_notional: Minimum notional value (default 5 USDT for Binance)
+        min_notional: Minimum target notional value with safety buffer
 
     Returns:
         Quantity of the asset to buy/sell
@@ -854,6 +876,15 @@ def execute_trade(
             "action": "SKIPPED",
             "reason": "Calculated position size is zero or negative",
         }
+
+    min_quantity = calculate_min_quantity_for_notional(signal.symbol, signal.entry_price)
+    if min_quantity > quantity:
+        old_quantity = quantity
+        quantity = min_quantity
+        logger.warning(
+            f"⚖️ {signal.symbol} 仓位低于最小名义价值，数量从 {old_quantity} 上调到 {quantity} "
+            f"(预估名义 ${quantity * signal.entry_price:.2f})"
+        )
 
     # 打印下单参数，便于排查
     logger.info(f"📤 {signal.symbol} 准备下单: 方向={side}, 数量={quantity}, 杠杆={leverage}x, 止损=${stop_loss_price:.4f}")
