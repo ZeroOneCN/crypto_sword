@@ -12,6 +12,8 @@ from __future__ import annotations
 
 import json
 import logging
+import os
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
@@ -19,6 +21,32 @@ from pathlib import Path
 from typing import Any, Iterable, List, Tuple
 
 logger = logging.getLogger(__name__)
+
+_CACHE_LOCK = threading.RLock()
+_CACHE: dict[tuple[Any, ...], tuple[float, Any]] = {}
+
+
+def _cache_get(key: tuple[Any, ...], ttl_sec: float) -> Any | None:
+    if ttl_sec <= 0:
+        return None
+    now = time.time()
+    with _CACHE_LOCK:
+        cached = _CACHE.get(key)
+        if not cached:
+            return None
+        expires_at, value = cached
+        if expires_at <= now:
+            _CACHE.pop(key, None)
+            return None
+        return value
+
+
+def _cache_set(key: tuple[Any, ...], value: Any, ttl_sec: float) -> Any:
+    if ttl_sec <= 0:
+        return value
+    with _CACHE_LOCK:
+        _CACHE[key] = (time.time() + ttl_sec, value)
+    return value
 
 import importlib.util
 import sys
@@ -274,7 +302,9 @@ def _run_binance_cli(args: list[str], max_retries: int = 5) -> dict[str, Any] | 
 
     for attempt in range(max_retries + 1):
         try:
-            time.sleep(0.2)
+            throttle_sec = float(os.getenv("HERMES_BINANCE_PUBLIC_THROTTLE_SEC", "0.05"))
+            if throttle_sec > 0:
+                time.sleep(throttle_sec)
             return get_native_binance_client().command_compat(args)  # type: ignore
         except Exception as e:
             if attempt < max_retries:
@@ -287,15 +317,29 @@ def _run_binance_cli(args: list[str], max_retries: int = 5) -> dict[str, Any] | 
 
 def fetch_ticker_24hr(symbol: str | None = None) -> dict[str, Any]:
     """Fetch 24hr ticker statistics. If symbol is None, fetch all."""
+    cache_key = ("ticker_24hr", symbol or "ALL")
+    cached = _cache_get(cache_key, 5 if symbol is None else 10)
+    if cached is not None:
+        return cached
+    if symbol:
+        all_tickers = _cache_get(("ticker_24hr", "ALL"), 5)
+        if isinstance(all_tickers, list):
+            for ticker in all_tickers:
+                if ticker.get("symbol") == symbol:
+                    return _cache_set(cache_key, ticker, 10)
     args = ["ticker24hr-price-change-statistics"]
     if symbol:
         args.extend(["--symbol", symbol])
-    return _run_binance_cli(args)  # type: ignore
+    return _cache_set(cache_key, _run_binance_cli(args), 5 if symbol is None else 10)  # type: ignore
 
 
 def fetch_open_interest(symbol: str) -> dict[str, Any]:
     """Fetch current open interest for a symbol."""
-    return _run_binance_cli(["open-interest", "--symbol", symbol])  # type: ignore
+    cache_key = ("open_interest", symbol)
+    cached = _cache_get(cache_key, 15)
+    if cached is not None:
+        return cached
+    return _cache_set(cache_key, _run_binance_cli(["open-interest", "--symbol", symbol]), 15)  # type: ignore
 
 
 def fetch_oi_statistics(symbol: str, period: str = "1h", limit: int = 24) -> list[dict[str, Any]]:
@@ -304,20 +348,50 @@ def fetch_oi_statistics(symbol: str, period: str = "1h", limit: int = 24) -> lis
     Note: New coins (like volatile meme coins) may have no OI history on testnet.
     Returns empty list [] if no data available - caller should handle gracefully.
     """
+    cache_key = ("oi_statistics", symbol, period, limit)
+    cached = _cache_get(cache_key, 120)
+    if cached is not None:
+        return cached
     try:
-        return _run_binance_cli(["open-interest-statistics", "--symbol", symbol, "--period", period, "--limit", str(limit)])  # type: ignore
+        data = _run_binance_cli(["open-interest-statistics", "--symbol", symbol, "--period", period, "--limit", str(limit)])  # type: ignore
+        return _cache_set(cache_key, data, 120)
     except RuntimeError:
         return []  # Handle new coins with no OI history
 
 
 def fetch_long_short_ratio(symbol: str, period: str = "1h", limit: int = 24) -> list[dict[str, Any]]:
     """Fetch long/short ratio history."""
-    return _run_binance_cli(["long-short-ratio", "--symbol", symbol, "--period", period, "--limit", str(limit)])  # type: ignore
+    cache_key = ("long_short_ratio", symbol, period, limit)
+    cached = _cache_get(cache_key, 120)
+    if cached is not None:
+        return cached
+    data = _run_binance_cli(["long-short-ratio", "--symbol", symbol, "--period", period, "--limit", str(limit)])  # type: ignore
+    return _cache_set(cache_key, data, 120)
 
 
 def fetch_funding_rate(symbol: str, limit: int = 3) -> list[dict[str, Any]]:
     """Fetch funding rate history."""
-    return _run_binance_cli(["get-funding-rate-history", "--symbol", symbol, "--limit", str(limit)])  # type: ignore
+    cache_key = ("funding_rate", symbol, limit)
+    cached = _cache_get(cache_key, 180)
+    if cached is not None:
+        return cached
+    data = _run_binance_cli(["get-funding-rate-history", "--symbol", symbol, "--limit", str(limit)])  # type: ignore
+    return _cache_set(cache_key, data, 180)
+
+
+def fetch_klines(symbol: str, interval: str = "1h", limit: int = 24) -> list[Any]:
+    """Fetch and cache kline data for scanner-only volume expansion."""
+    cache_key = ("klines", symbol, interval, limit)
+    cached = _cache_get(cache_key, 60)
+    if cached is not None:
+        return cached
+    data = _run_binance_cli([
+        "kline-candlestick-data",
+        "--symbol", symbol,
+        "--interval", interval,
+        "--limit", str(limit),
+    ])
+    return _cache_set(cache_key, data, 60)  # type: ignore
 
 
 def build_symbol_metrics(symbol: str) -> dict[str, Any] | None:
@@ -388,12 +462,7 @@ def build_symbol_metrics(symbol: str) -> dict[str, Any] | None:
     volume_24h_mult = 1.0
     try:
         # 获取 1h K 线数据（最近 24 根）
-        klines_data = _run_binance_cli([
-            "kline-candlestick-data",
-            "--symbol", symbol,
-            "--interval", "1h",
-            "--limit", "24"
-        ])
+        klines_data = fetch_klines(symbol, interval="1h", limit=24)
         
         if klines_data and isinstance(klines_data, list) and len(klines_data) >= 12:
             # 计算最近 12 小时的平均成交量
@@ -449,7 +518,7 @@ def build_symbol_metrics(symbol: str) -> dict[str, Any] | None:
     }
 
 
-def scan_symbols(symbols: list[str], min_stage: str | None = None, max_workers: int = 3) -> list[SymbolBreakoutResult]:
+def scan_symbols(symbols: list[str], min_stage: str | None = None, max_workers: int = 6) -> list[SymbolBreakoutResult]:
     """Scan multiple symbols and return breakout results.
     
     Two-stage scanning for efficiency:
@@ -598,6 +667,7 @@ def main():
     parser.add_argument("--top", "-t", type=int, default=10, help="Scan top N symbols by volume")
     parser.add_argument("--by-change", action="store_true", help="Scan top N symbols by 24h price change (妖币 mode)")
     parser.add_argument("--min-change", type=float, default=3.0, help="Minimum absolute change % for --by-change mode")
+    parser.add_argument("--max-workers", type=int, default=6, help="Deep scan concurrency (default: 6)")
     parser.add_argument("--min-stage", choices=["pre_break", "confirmed_breakout", "mania", "exhaustion"],
                         help="Filter to minimum stage")
     parser.add_argument("--json", action="store_true", help="Output as JSON")
@@ -610,7 +680,7 @@ def main():
     else:
         symbols = get_top_symbols_by_volume(args.top)
 
-    results = scan_symbols(symbols, min_stage=args.min_stage)
+    results = scan_symbols(symbols, min_stage=args.min_stage, max_workers=max(1, args.max_workers))
 
     if args.json:
         print(json.dumps([r.to_dict() for r in results], indent=2))

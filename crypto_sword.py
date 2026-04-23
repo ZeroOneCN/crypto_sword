@@ -136,6 +136,7 @@ class TradingConfig:
         # 扫描 - 弗丽嘉的鹰眼
         scan_top_n: int = 50,
         scan_interval_sec: int = 300,
+        scan_workers: int = 6,
         min_stage: str = "pre_break",
         scan_by_change: bool = True,
         min_change_pct: float = 3.0,
@@ -156,6 +157,7 @@ class TradingConfig:
         self.trailing_stop_enabled = trailing_stop_enabled
         self.scan_top_n = scan_top_n
         self.scan_interval_sec = scan_interval_sec
+        self.scan_workers = scan_workers
         self.min_stage = min_stage
         self.scan_by_change = scan_by_change
         self.min_change_pct = min_change_pct
@@ -1126,7 +1128,11 @@ class CryptoSword:
         self._record_latency_step(latency_steps, "select_symbols", step_started)
 
         step_started = time.perf_counter()
-        results = scan_symbols(symbols, min_stage=self.config.min_stage)
+        results = scan_symbols(
+            symbols,
+            min_stage=self.config.min_stage,
+            max_workers=self.config.scan_workers,
+        )
         self._record_latency_step(latency_steps, "deep_scan", step_started)
 
         signals = []
@@ -1755,6 +1761,7 @@ def main():
     # 扫描 - 弗丽嘉的鹰眼
     parser.add_argument("--top", type=int, default=50, help="扫描前 N 个币种 (默认：50)")
     parser.add_argument("--interval", "-i", type=int, default=300, help="扫描间隔秒数 (默认：300)")
+    parser.add_argument("--scan-workers", type=int, default=6, help="深度扫描并发数 (默认：6)")
     parser.add_argument("--min-change", type=float, default=3.0, help="最小涨幅 %% (默认：3%%)")
     parser.add_argument("--by-volume", action="store_true", help="按成交量排序（默认按涨幅）")
 
@@ -1796,6 +1803,7 @@ def main():
         trailing_stop_enabled=not args.no_trailing,
         scan_top_n=args.top,
         scan_interval_sec=args.interval,
+        scan_workers=max(1, args.scan_workers),
         min_stage="pre_break",
         scan_by_change=not args.by_volume,
         min_change_pct=args.min_change,
