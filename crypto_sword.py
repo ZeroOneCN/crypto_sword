@@ -51,6 +51,7 @@ try:
         fetch_open_algo_orders,
         fetch_open_orders,
         get_account_balance,
+        is_native_binance_configured,
         place_market_order,
         place_stop_loss_order,
         place_take_profit_order,
@@ -862,10 +863,13 @@ class CryptoSword:
         if not telegram_config.get("bot_token") or not telegram_config.get("chat_id"):
             raise RuntimeError("Telegram 未配置 bot_token/chat_id")
 
-        if not shutil.which("binance-cli"):
-            raise RuntimeError("未找到 binance-cli")
-
-        ensure_profile_selected("main")
+        native_ready = is_native_binance_configured()
+        if not native_ready:
+            if not shutil.which("binance-cli"):
+                raise RuntimeError("未找到 binance-cli，且原生 Binance API 未配置")
+            ensure_profile_selected("main")
+        else:
+            logger.info("🧬 原生 Binance API 只读通道已启用，binance-cli 保留为下单/备用通道")
 
         account_info = get_account_balance()
         if not isinstance(account_info, dict):

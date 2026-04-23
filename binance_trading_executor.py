@@ -13,6 +13,14 @@ import time
 from dataclasses import dataclass, field
 from typing import Any, List, Optional
 
+try:
+    from binance_api_client import get_native_binance_client, is_native_binance_configured
+except Exception:
+    get_native_binance_client = None
+
+    def is_native_binance_configured() -> bool:
+        return False
+
 
 logger = logging.getLogger(__name__)
 
@@ -162,7 +170,17 @@ def get_exchange_info() -> dict:
     now = time.time()
     if _exchange_info_cache and (now - _exchange_info_cache_time) < EXCHANGE_INFO_CACHE_TTL:
         return _exchange_info_cache
-    info = _run_binance_cli(["exchange-information"])
+
+    info = None
+    if is_native_binance_configured() and get_native_binance_client:
+        try:
+            info = get_native_binance_client().exchange_info()
+        except Exception as e:
+            logger.warning(f"原生 Binance API 获取交易所信息失败，回退 binance-cli：{e}")
+
+    if info is None:
+        info = _run_binance_cli(["exchange-information"])
+
     _exchange_info_cache = info
     _exchange_info_cache_time = now
     return info
@@ -260,6 +278,11 @@ def adjust_price_precision(symbol: str, price: float) -> float:
 
 def get_account_balance() -> dict[str, Any]:
     """Fetch futures account information."""
+    if is_native_binance_configured() and get_native_binance_client:
+        try:
+            return get_native_binance_client().account_information()  # type: ignore
+        except Exception as e:
+            logger.warning(f"原生 Binance API 获取账户失败，回退 binance-cli：{e}")
     return _run_binance_cli(["account-information-v2"])  # type: ignore
 
 
@@ -717,6 +740,12 @@ def cancel_stop_loss_order(symbol: str, order_id: int) -> bool:
 
 def fetch_open_orders(symbol: Optional[str] = None) -> list[dict[str, Any]]:
     """Best-effort fetch for normal open orders."""
+    if is_native_binance_configured() and get_native_binance_client:
+        try:
+            return get_native_binance_client().open_orders(symbol)  # type: ignore
+        except Exception as e:
+            logger.debug(f"原生 Binance API 获取普通开放订单失败，回退 binance-cli：{e}")
+
     candidates = [
         ["current-all-open-orders"],
         ["open-orders"],
@@ -738,6 +767,14 @@ def fetch_open_orders(symbol: Optional[str] = None) -> list[dict[str, Any]]:
 
 def fetch_open_algo_orders(symbol: Optional[str] = None) -> list[dict[str, Any]]:
     """Best-effort fetch for algo open orders such as STOP_MARKET / TAKE_PROFIT_MARKET."""
+    if is_native_binance_configured() and get_native_binance_client:
+        try:
+            native_orders = get_native_binance_client().open_algo_orders(symbol)  # type: ignore
+            if native_orders:
+                return native_orders
+        except Exception as e:
+            logger.debug(f"原生 Binance API 获取 Algo 开放订单失败，回退 binance-cli：{e}")
+
     candidates = [
         ["open-algo-orders"],
         ["current-all-open-algo-orders"],

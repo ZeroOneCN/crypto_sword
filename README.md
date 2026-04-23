@@ -27,7 +27,7 @@ python3 crypto_sword.py --live
 python3 crypto_sword.py --live --leverage 10 --risk 0.5 --stop-loss 8 --take-profit 20 --top 30 --interval 300 --trailing 5 --max-positions 5
 ```
 
-> ⚠️ **警告**：本系统仅支持实盘交易。首次使用请确保已配置好 `binance-cli` 实盘 profile，并从小杠杆（3-5x）和低风险（0.5-1%）开始测试。
+> ⚠️ **警告**：本系统仅支持实盘交易。首次使用请从小杠杆（3-5x）和低风险（0.5-1%）开始测试。系统已支持原生 Binance API 只读通道，并保留 `binance-cli` 作为下单/备用通道。
 
 ## 参数说明
 
@@ -72,10 +72,16 @@ scripts/
 ### Binance API
 
 ```bash
-# 使用 binance-cli 配置实盘 profile
+# 推荐：配置原生 Binance API 只读通道
+export BINANCE_API_KEY="YOUR_KEY"
+export BINANCE_API_SECRET="YOUR_SECRET"
+
+# 可选：继续配置 binance-cli 作为下单/备用通道
 binance-cli profile create --name main --env mainnet --api-key "YOUR_KEY" --api-secret "YOUR_SECRET" -f
 binance-cli profile select --name main
 ```
+
+当前迁移阶段中，账户、持仓、交易所规则和开放订单查询会优先使用原生 API；实盘下单、止损、止盈仍保留原来的 `binance-cli` 通道，验证稳定后再逐步切换。
 
 ### Telegram 通知
 
