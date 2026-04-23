@@ -141,6 +141,7 @@ class TradingConfig:
         # 扫描 - 弗丽嘉的鹰眼
         scan_top_n: int = 50,
         scan_interval_sec: int = 300,
+        fast_scan_interval_sec: int = 60,
         scan_workers: int = 6,
         min_stage: str = "pre_break",
         scan_by_change: bool = True,
@@ -162,6 +163,7 @@ class TradingConfig:
         self.trailing_stop_enabled = trailing_stop_enabled
         self.scan_top_n = scan_top_n
         self.scan_interval_sec = scan_interval_sec
+        self.fast_scan_interval_sec = fast_scan_interval_sec
         self.scan_workers = scan_workers
         self.min_stage = min_stage
         self.scan_by_change = scan_by_change
@@ -393,6 +395,10 @@ class CryptoSword:
         self._last_monitor_time: float = 0.0
         self._monitor_interval: int = 300
         self._latency_alert_threshold_ms: float = 5000.0
+        self._fast_candidates: list[str] = []
+        self._last_fast_scan_time: float = 0.0
+        self._last_deep_scan_time: float = 0.0
+        self._last_position_sync_time: float = 0.0
 
     def _new_session_id(self, symbol: str) -> str:
         return f"{symbol}-{datetime.now().strftime('%Y%m%d%H%M%S')}-{uuid4().hex[:8]}"
@@ -526,6 +532,47 @@ class CryptoSword:
         except Exception as e:
             logger.debug(f"WS异动榜不可用，回退REST：{e}")
             return []
+
+    def _fast_scan_candidates(self) -> list[str]:
+        """Refresh lightweight candidate pool from all-market WS."""
+        now = time.time()
+        min_gap = max(10, int(self.config.fast_scan_interval_sec))
+        if self._fast_candidates and now - self._last_fast_scan_time < min_gap:
+            return self._fast_candidates
+
+        candidates = []
+        if self.config.scan_by_change:
+            candidates = self._get_ws_top_symbols_by_change(
+                self.config.scan_top_n,
+                self.config.min_change_pct,
+            )
+
+        if candidates:
+            self._fast_candidates = candidates
+            self._last_fast_scan_time = now
+            logger.info(f"⚡ Fast scan candidates: {len(candidates)} symbols | {candidates[:5]}...")
+        elif self._fast_candidates:
+            logger.info(f"⚡ Fast scan keeps previous candidates: {self._fast_candidates[:5]}...")
+
+        return self._fast_candidates
+
+    def _select_deep_scan_symbols(self) -> list[str]:
+        """Pick symbols for expensive deep scan, preferring fresh fast-scan candidates."""
+        candidates = self._fast_scan_candidates()
+        if candidates:
+            return candidates[: self.config.scan_top_n]
+
+        if self.config.scan_by_change:
+            symbols = get_top_symbols_by_change(
+                self.config.scan_top_n,
+                min_change=self.config.min_change_pct,
+            )
+            logger.info(f"🔥 妖币模式(REST) - 扫描 {len(symbols)} 个异动币种：{symbols[:5]}...")
+            return symbols
+
+        symbols = get_top_symbols_by_volume(self.config.scan_top_n)
+        logger.info(f"📊 成交量模式 - 扫描 {len(symbols)} 个币种：{symbols[:5]}...")
+        return symbols
 
     def _refresh_price_stream(self, symbols: list[str]):
         """Keep a lightweight WebSocket price stream for open positions."""
@@ -1153,12 +1200,15 @@ class CryptoSword:
                 logger.warning(f"获取 {symbol} 价格失败：{e}")
         return prices
 
-    def scan_for_signals(self) -> List[dict]:
+    def scan_for_signals(self, symbols: Optional[List[str]] = None, scan_source: str = "deep") -> List[dict]:
         """扫描交易信号 - 弗丽嘉的鹰眼"""
         trace_started = time.perf_counter()
         latency_steps: list[tuple[str, float]] = []
         step_started = time.perf_counter()
-        if self.config.scan_by_change:
+        if symbols is not None:
+            symbols = list(dict.fromkeys(symbols))[: self.config.scan_top_n]
+            logger.info(f"⚡ Deep scan from {scan_source}: {len(symbols)} symbols | {symbols[:5]}...")
+        elif self.config.scan_by_change:
             symbols = self._get_ws_top_symbols_by_change(
                 self.config.scan_top_n,
                 self.config.min_change_pct,
@@ -1582,7 +1632,7 @@ class CryptoSword:
         self._emit_latency_trace("execute_exit_failed", trace_started, latency_steps, symbol=symbol)
         return False
 
-    def run_scan_cycle(self):
+    def _run_scan_cycle_legacy(self):
         """运行一次完整的扫描 - 交易循环"""
         trace_started = time.perf_counter()
         latency_steps: list[tuple[str, float]] = []
@@ -1656,6 +1706,101 @@ class CryptoSword:
 
         self.last_scan_time = datetime.now()
         self._emit_latency_trace("run_scan_cycle", trace_started, latency_steps)
+
+    def run_scan_cycle(self):
+        """Run one fast or deep trading cycle."""
+        trace_started = time.perf_counter()
+        latency_steps: list[tuple[str, float]] = []
+        now = time.time()
+        deep_due = self._last_deep_scan_time <= 0 or now - self._last_deep_scan_time >= self._current_scan_interval
+
+        step_started = time.perf_counter()
+        self._check_new_day()
+        if deep_due:
+            self._refresh_market_profile()
+        if deep_due or now - self._last_position_sync_time >= max(180, self._current_scan_interval):
+            with self._state_lock:
+                self._sync_positions_with_exchange()
+            self._last_position_sync_time = now
+        self._record_latency_step(latency_steps, "daily_market_position_sync", step_started)
+
+        cycle_type = "deep" if deep_due else "fast"
+        logger.info("=" * 60)
+        logger.info(
+            f"Scan cycle start | type={cycle_type} | "
+            f"positions={self.tracker.get_open_count()}/{self.config.max_open_positions}"
+        )
+
+        open_symbols = list(self.tracker.positions.keys())
+        if open_symbols:
+            step_started = time.perf_counter()
+            prices = self.get_current_prices(open_symbols)
+            self.tracker.update_all_prices(prices, self.config.trailing_stop_pct)
+
+            exits = self.tracker.check_all_exits(prices)
+            for symbol, reason in exits.items():
+                logger.info(f"Exit trigger {symbol}: {reason}")
+                self.execute_exit(symbol, reason)
+            self._record_latency_step(latency_steps, "manage_open_positions", step_started)
+
+        step_started = time.perf_counter()
+        candidates = self._fast_scan_candidates()
+        self._record_latency_step(latency_steps, "fast_scan_candidates", step_started)
+
+        signals = []
+        if deep_due:
+            step_started = time.perf_counter()
+            deep_symbols = candidates[: self.config.scan_top_n] if candidates else None
+            signals = self.scan_for_signals(deep_symbols, scan_source="fast_candidates")
+            self._last_deep_scan_time = now
+            self._record_latency_step(latency_steps, "deep_scan_signals", step_started)
+            logger.info(f"Trade signals found: {len(signals)}")
+            self._send_scan_monitor(signals)
+        else:
+            next_deep_sec = max(0, int(self._current_scan_interval - (now - self._last_deep_scan_time)))
+            logger.info(f"Fast scan only | candidates={len(candidates)} | next_deep={next_deep_sec}s")
+
+        if self._is_daily_loss_limit_hit():
+            if not self._daily_loss_alert_sent:
+                limit_amount = self.day_start_balance * (self.config.max_daily_loss_pct / 100.0)
+                msg = format_error_msg(
+                    error_type="日内熔断",
+                    message=f"当日亏损已达到 {self.daily_pnl:.2f} USDT，超过限制 {-limit_amount:.2f} USDT，暂停新开仓",
+                    component="risk_guard",
+                )
+                send_telegram_message(msg)
+                self._daily_loss_alert_sent = True
+            signals = []
+
+        step_started = time.perf_counter()
+        if deep_due:
+            for signal in signals:
+                if self.tracker.get_open_count() >= self.config.max_open_positions:
+                    logger.info(f"Max open positions reached ({self.config.max_open_positions})")
+                    break
+
+                position = self.execute_entry(signal)
+                if position:
+                    with self._state_lock:
+                        self.tracker.add_position(position)
+                        self.traded_symbols_today.add(signal["symbol"])
+        self._record_latency_step(latency_steps, "execute_entries", step_started)
+
+        step_started = time.perf_counter()
+        summary = self.tracker.get_summary()
+        logger.info(
+            f"Position summary: {summary['open_positions']} open | "
+            f"unrealized PnL=${summary['total_unrealized_pnl']:.2f}"
+        )
+
+        current_time = time.time()
+        if current_time - self._last_summary_time >= self._summary_interval:
+            self._send_position_summary(summary)
+            self._last_summary_time = current_time
+        self._record_latency_step(latency_steps, "summary_notify", step_started)
+
+        self.last_scan_time = datetime.now()
+        self._emit_latency_trace(f"run_scan_cycle_{cycle_type}", trace_started, latency_steps)
 
     def _send_position_summary(self, summary: dict):
         """发送持仓汇总通知"""
@@ -1736,8 +1881,9 @@ class CryptoSword:
         while self.running:
             try:
                 self.run_scan_cycle()
-                logger.info(f"⏳ 等待 {self._current_scan_interval}s 后下次扫描...")
-                time.sleep(self._current_scan_interval)
+                sleep_sec = max(10, min(self.config.fast_scan_interval_sec, self._current_scan_interval))
+                logger.info(f"⏳ 等待 {sleep_sec}s 后下次扫描...")
+                time.sleep(sleep_sec)
             except KeyboardInterrupt:
                 logger.info("\n🛑 用户中断，正在停止...")
                 self.running = False
