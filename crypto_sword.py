@@ -146,6 +146,11 @@ class TradingConfig:
         min_stage: str = "pre_break",
         scan_by_change: bool = True,
         min_change_pct: float = 3.0,
+        max_chase_change_pct: float = 25.0,
+        min_pullback_pct: float = 3.0,
+        max_range_position_pct: float = 88.0,
+        max_abs_funding_rate: float = 0.003,
+        max_oi_change_pct: float = 120.0,
         # 目标 - 矮人锻造的利刃
         target_altcoins: bool = True,
         target_memes: bool = True,
@@ -168,6 +173,11 @@ class TradingConfig:
         self.min_stage = min_stage
         self.scan_by_change = scan_by_change
         self.min_change_pct = min_change_pct
+        self.max_chase_change_pct = max_chase_change_pct
+        self.min_pullback_pct = min_pullback_pct
+        self.max_range_position_pct = max_range_position_pct
+        self.max_abs_funding_rate = max_abs_funding_rate
+        self.max_oi_change_pct = max_oi_change_pct
         self.target_altcoins = target_altcoins
         self.target_memes = target_memes
 
@@ -1200,6 +1210,41 @@ class CryptoSword:
                 logger.warning(f"获取 {symbol} 价格失败：{e}")
         return prices
 
+    def _entry_rejection_reason(self, symbol: str, direction: str, metrics: dict) -> str:
+        """Reject obvious chase entries before expensive scoring and live orders."""
+        change_24h = float(metrics.get("change_24h_pct", 0.0) or 0.0)
+        drawdown = float(metrics.get("drawdown_from_24h_high_pct", 0.0) or 0.0)
+        range_position = float(metrics.get("range_position_24h_pct", 50.0) or 50.0)
+        funding = float(metrics.get("funding_rate", 0.0) or 0.0)
+        oi_change = float(metrics.get("oi_24h_pct", 0.0) or 0.0)
+        volume_mult = float(metrics.get("volume_24h_mult", 1.0) or 1.0)
+
+        if abs(funding) >= self.config.max_abs_funding_rate:
+            return f"资金费率过热 {funding * 100:.3f}%"
+        if oi_change >= self.config.max_oi_change_pct:
+            return f"OI过热 {oi_change:.1f}%"
+
+        if direction == "LONG":
+            if change_24h <= -12:
+                return f"大跌中不接多 {change_24h:.1f}%"
+            if change_24h >= self.config.max_chase_change_pct:
+                return f"24h涨幅过大 {change_24h:.1f}%"
+            if change_24h >= 12 and drawdown < self.config.min_pullback_pct:
+                return f"未回踩，距24h高点仅回落 {drawdown:.1f}%"
+            if change_24h >= 8 and range_position >= self.config.max_range_position_pct:
+                return f"价格处于24h区间高位 {range_position:.1f}%"
+        elif direction == "SHORT":
+            if change_24h >= 12:
+                return f"大涨中不追空 {change_24h:.1f}%"
+            if change_24h <= -self.config.max_chase_change_pct:
+                return f"24h跌幅过大 {change_24h:.1f}%"
+            if change_24h <= -12 and range_position <= 100 - self.config.max_range_position_pct:
+                return f"价格处于24h区间低位 {range_position:.1f}%"
+
+        if volume_mult < 0.8 and abs(change_24h) >= 10:
+            return f"量能不足 volume_mult={volume_mult:.2f}"
+        return ""
+
     def scan_for_signals(self, symbols: Optional[List[str]] = None, scan_source: str = "deep") -> List[dict]:
         """扫描交易信号 - 弗丽嘉的鹰眼"""
         trace_started = time.perf_counter()
@@ -1244,6 +1289,10 @@ class CryptoSword:
             if r.symbol in self.tracker.positions:
                 continue
             if r.symbol in self.traded_symbols_today:
+                continue
+            rejection_reason = self._entry_rejection_reason(r.symbol, r.direction, r.metrics)
+            if rejection_reason:
+                logger.info(f"🧊 {r.symbol} 入场过滤：{rejection_reason}")
                 continue
 
             # 🎯 信号质量评分
