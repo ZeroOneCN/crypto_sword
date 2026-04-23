@@ -333,6 +333,40 @@ def format_scan_monitor_msg(signals: list[dict[str, Any]], scanned_count: int = 
     return msg
 
 
+def format_latency_alert_msg(
+    flow: str,
+    total_ms: float,
+    steps: list[tuple[str, float]],
+    symbol: str = "",
+    threshold_ms: float = 5000,
+) -> str:
+    """Format slow-path latency alert."""
+    slowest_name = ""
+    slowest_ms = 0.0
+    if steps:
+        slowest_name, slowest_ms = max(steps, key=lambda item: item[1])
+
+    lines = [
+        "⏱️ <b>宙斯交易中枢 | 延迟告警</b>",
+        "",
+        f"<b>流程</b>  <code>{_escape(flow)}</code>",
+        f"<b>总耗时</b>  <code>{total_ms:.0f} ms</code>",
+        f"<b>阈值</b>  <code>{threshold_ms:.0f} ms</code>",
+    ]
+    if symbol:
+        lines.append(f"<b>标的</b>  <code>{_escape(symbol)}</code>")
+    if slowest_name:
+        lines.append(f"<b>最慢步骤</b>  <code>{_escape(slowest_name)} {slowest_ms:.0f} ms</code>")
+
+    if steps:
+        lines.append("")
+        lines.append("<b>分段耗时</b>")
+        for name, elapsed_ms in steps:
+            lines.append(f"• {_escape(name)}  <code>{elapsed_ms:.0f} ms</code>")
+
+    return "\n".join(lines)
+
+
 def format_summary_msg(positions: list, total_pnl: float, realized_pnl: float) -> str:
     """格式化持仓汇总通知"""
     msg = f"""📊 <b>宙斯交易中枢 | 持仓汇总</b>

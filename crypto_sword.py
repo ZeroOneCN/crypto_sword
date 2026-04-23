@@ -60,6 +60,7 @@ try:
     from telegram_notifier import (
         format_close_position_msg,
         format_error_msg,
+        format_latency_alert_msg,
         format_partial_take_profit_msg,
         format_protection_status_msg,
         format_scan_monitor_msg,
@@ -383,9 +384,40 @@ class CryptoSword:
         self._startup_audit_started = False
         self._last_monitor_time: float = 0.0
         self._monitor_interval: int = 300
+        self._latency_alert_threshold_ms: float = 5000.0
 
     def _new_session_id(self, symbol: str) -> str:
         return f"{symbol}-{datetime.now().strftime('%Y%m%d%H%M%S')}-{uuid4().hex[:8]}"
+
+    def _record_latency_step(self, steps: list[tuple[str, float]], name: str, started_at: float):
+        steps.append((name, (time.perf_counter() - started_at) * 1000.0))
+
+    def _emit_latency_trace(
+        self,
+        flow: str,
+        started_at: float,
+        steps: list[tuple[str, float]],
+        symbol: str = "",
+        threshold_ms: float | None = None,
+    ):
+        total_ms = (time.perf_counter() - started_at) * 1000.0
+        threshold = threshold_ms if threshold_ms is not None else self._latency_alert_threshold_ms
+        step_text = " | ".join(f"{name}={elapsed_ms:.0f}ms" for name, elapsed_ms in steps)
+        logger.info(
+            f"⏱️ {flow} latency{f' {symbol}' if symbol else ''}: "
+            f"total={total_ms:.0f}ms"
+            + (f" | {step_text}" if step_text else "")
+        )
+        if total_ms >= threshold:
+            send_telegram_message(
+                format_latency_alert_msg(
+                    flow=flow,
+                    symbol=symbol,
+                    total_ms=total_ms,
+                    steps=steps,
+                    threshold_ms=threshold,
+                )
+            )
 
     def _refresh_market_profile(self):
         """Update market-aware scan interval and TP multiplier."""
@@ -1079,6 +1111,9 @@ class CryptoSword:
 
     def scan_for_signals(self) -> List[dict]:
         """扫描交易信号 - 弗丽嘉的鹰眼"""
+        trace_started = time.perf_counter()
+        latency_steps: list[tuple[str, float]] = []
+        step_started = time.perf_counter()
         if self.config.scan_by_change:
             symbols = get_top_symbols_by_change(
                 self.config.scan_top_n,
@@ -1088,10 +1123,14 @@ class CryptoSword:
         else:
             symbols = get_top_symbols_by_volume(self.config.scan_top_n)
             logger.info(f"📊 成交量模式 - 扫描 {len(symbols)} 个币种：{symbols[:5]}...")
+        self._record_latency_step(latency_steps, "select_symbols", step_started)
 
+        step_started = time.perf_counter()
         results = scan_symbols(symbols, min_stage=self.config.min_stage)
+        self._record_latency_step(latency_steps, "deep_scan", step_started)
 
         signals = []
+        step_started = time.perf_counter()
         for r in results:
             if r.stage in {"neutral", "error"}:
                 continue
@@ -1136,8 +1175,10 @@ class CryptoSword:
 
         # 按评分排序
         signals.sort(key=lambda s: s.get("score", {}).get("total_score", 0), reverse=True)
+        self._record_latency_step(latency_steps, "score_filter", step_started)
         
         logger.info(f"📡 发现 {len(signals)} 个有效信号（已按质量排序）")
+        self._emit_latency_trace("scan_for_signals", trace_started, latency_steps)
 
         return signals
 
@@ -1146,6 +1187,8 @@ class CryptoSword:
         symbol = signal["symbol"]
         direction = signal["direction"]
         price = signal["price"]
+        trace_started = time.perf_counter()
+        latency_steps: list[tuple[str, float]] = []
 
         if self._new_entries_suspended:
             logger.warning(f"🛡️ {symbol} 新开仓暂停：存在保护单不完整的持仓")
@@ -1176,6 +1219,7 @@ class CryptoSword:
                 return None
 
             # 获取账户余额
+            step_started = time.perf_counter()
             try:
                 balance_info = get_account_balance()
                 if isinstance(balance_info, dict):
@@ -1184,11 +1228,13 @@ class CryptoSword:
                     balance = 10000
             except Exception:
                 balance = 10000
+            self._record_latency_step(latency_steps, "account_query", step_started)
 
             quantity = None
             stop_loss = None
 
             # 🛡️ 风控评估
+            step_started = time.perf_counter()
             try:
                 existing_positions = []
                 for pos_symbol, pos in self.tracker.positions.items():
@@ -1243,9 +1289,11 @@ class CryptoSword:
 
             except Exception as e:
                 logger.warning(f"🛡️ 风控评估失败 {symbol}: {e}，回退到执行器默认计算")
+            self._record_latency_step(latency_steps, "risk_assessment", step_started)
 
             # 执行交易（优先使用风控计算的仓位和止损）
             take_profit_target_pcts, take_profit_ratios = self._build_take_profit_plan()
+            step_started = time.perf_counter()
             result = execute_trade(
                 signal=trading_signal,
                 account_balance=balance,
@@ -1260,9 +1308,11 @@ class CryptoSword:
                 take_profit_ratios=take_profit_ratios,
                 take_profit_mode=self.config.take_profit_mode,
             )
+            self._record_latency_step(latency_steps, "execute_trade", step_started)
 
             if result.get("action") != "EXECUTED":
                 logger.warning(f"❌ {symbol} 开仓失败：{result.get('reason', 'Unknown')}")
+                self._emit_latency_trace("execute_entry_failed", trace_started, latency_steps, symbol=symbol)
                 return None
 
             entry_order = result.get("entry_order", {})
@@ -1296,8 +1346,10 @@ class CryptoSword:
                 take_profit_targets=take_profit_targets,
                 take_profit_order_ids=[int(item.get("order_id", 0) or 0) for item in take_profit_targets if item.get("order_id")],
             )
+            step_started = time.perf_counter()
             self._ensure_position_protection(position)
             self._send_protection_status(position, source="entry_confirm", force=True)
+            self._record_latency_step(latency_steps, "protection_confirm", step_started)
 
             from telegram_notifier import format_open_position_msg
 
@@ -1348,8 +1400,11 @@ class CryptoSword:
                 market_snapshot=signal.get("metrics", {}),
                 notes=";".join(notes_parts),
             )
+            step_started = time.perf_counter()
             trade_id = self.db.add_trade(trade)
             logger.info(f"📜 交易已记录 (ID: {trade_id})")
+            self._record_latency_step(latency_steps, "db_write", step_started)
+            self._emit_latency_trace("execute_entry", trace_started, latency_steps, symbol=symbol)
 
             return position
 
@@ -1365,6 +1420,7 @@ class CryptoSword:
                     component="execute_entry",
                 )
             )
+            self._emit_latency_trace("execute_entry_exception", trace_started, latency_steps, symbol=symbol)
             return None
 
     def execute_exit(self, symbol: str, reason: str) -> bool:
@@ -1372,18 +1428,23 @@ class CryptoSword:
         position = self.tracker.get_position(symbol)
         if not position:
             return False
+        trace_started = time.perf_counter()
+        latency_steps: list[tuple[str, float]] = []
 
+        step_started = time.perf_counter()
         try:
             prices = self.get_current_prices([symbol])
             current_price = prices.get(symbol, 0)
         except Exception:
             current_price = 0
+        self._record_latency_step(latency_steps, "price_fetch", step_started)
 
         close_side = "SELL" if position.side == "BUY" else "BUY"
         position_side = "LONG" if position.side == "BUY" else "SHORT"
 
         # 实盘平仓
         try:
+            step_started = time.perf_counter()
             result = place_market_order(
                 symbol,
                 close_side,
@@ -1391,6 +1452,7 @@ class CryptoSword:
                 position_side=position_side,
                 reduce_only=True,
             )
+            self._record_latency_step(latency_steps, "market_close", step_started)
 
             if result.status == "FILLED":
                 if position.side == "BUY":
@@ -1406,9 +1468,12 @@ class CryptoSword:
 
                 self.tracker.remove_position(symbol)
                 self.daily_pnl += pnl
+                step_started = time.perf_counter()
                 self._cancel_position_protection(position)
+                self._record_latency_step(latency_steps, "cancel_protection", step_started)
 
                 duration_hours = (position.exit_time - position.entry_time).total_seconds() / 3600
+                step_started = time.perf_counter()
                 send_telegram_message(
                     format_close_position_msg(
                         symbol=symbol,
@@ -1423,8 +1488,10 @@ class CryptoSword:
                         session_id=position.session_id,
                     )
                 )
+                self._record_latency_step(latency_steps, "telegram_notify", step_started)
 
                 # 📜 更新交易日志
+                step_started = time.perf_counter()
                 open_trades = self.db.get_open_trades(mode=self.config.mode)
                 for t in open_trades:
                     if t.symbol == symbol:
@@ -1438,6 +1505,8 @@ class CryptoSword:
                         )
                         logger.info(f"📜 交易已更新 (ID: {t.id})")
                         break
+                self._record_latency_step(latency_steps, "db_update", step_started)
+                self._emit_latency_trace("execute_exit", trace_started, latency_steps, symbol=symbol)
 
                 return True
 
@@ -1452,21 +1521,29 @@ class CryptoSword:
                     component="execute_exit",
                 )
             )
+            self._emit_latency_trace("execute_exit_exception", trace_started, latency_steps, symbol=symbol)
+            return False
 
+        self._emit_latency_trace("execute_exit_failed", trace_started, latency_steps, symbol=symbol)
         return False
 
     def run_scan_cycle(self):
         """运行一次完整的扫描 - 交易循环"""
+        trace_started = time.perf_counter()
+        latency_steps: list[tuple[str, float]] = []
+        step_started = time.perf_counter()
         self._check_new_day()
         self._refresh_market_profile()
         with self._state_lock:
             self._sync_positions_with_exchange()
+        self._record_latency_step(latency_steps, "daily_market_position_sync", step_started)
         logger.info("=" * 60)
         logger.info(f"🔄 扫描周期开始 | 持仓：{self.tracker.get_open_count()}/{self.config.max_open_positions}")
 
         # 1. 更新持仓价格并检查平仓
         open_symbols = list(self.tracker.positions.keys())
         if open_symbols:
+            step_started = time.perf_counter()
             prices = self.get_current_prices(open_symbols)
             self.tracker.update_all_prices(prices, self.config.trailing_stop_pct)
 
@@ -1474,9 +1551,12 @@ class CryptoSword:
             for symbol, reason in exits.items():
                 logger.info(f"🚨 {symbol} 触发 {reason}")
                 self.execute_exit(symbol, reason)
+            self._record_latency_step(latency_steps, "manage_open_positions", step_started)
 
         # 2. 扫描新信号
+        step_started = time.perf_counter()
         signals = self.scan_for_signals()
+        self._record_latency_step(latency_steps, "scan_for_signals", step_started)
         logger.info(f"📡 发现 {len(signals)} 个交易信号")
         self._send_scan_monitor(signals)
 
@@ -1493,6 +1573,7 @@ class CryptoSword:
             signals = []
 
         # 3. 执行开仓
+        step_started = time.perf_counter()
         for signal in signals:
             if self.tracker.get_open_count() >= self.config.max_open_positions:
                 logger.info(f"⏸️ 已达最大持仓数 ({self.config.max_open_positions})")
@@ -1503,8 +1584,10 @@ class CryptoSword:
                 with self._state_lock:
                     self.tracker.add_position(position)
                     self.traded_symbols_today.add(signal["symbol"])
+        self._record_latency_step(latency_steps, "execute_entries", step_started)
 
         # 4. 发送持仓摘要（日志 + 定期 Telegram 通知）
+        step_started = time.perf_counter()
         summary = self.tracker.get_summary()
         logger.info(f"📊 持仓摘要：{summary['open_positions']} 个 | 未实现 PnL: ${summary['total_unrealized_pnl']:.2f}")
 
@@ -1514,8 +1597,10 @@ class CryptoSword:
         if current_time - self._last_summary_time >= self._summary_interval:
             self._send_position_summary(summary)
             self._last_summary_time = current_time
+        self._record_latency_step(latency_steps, "summary_notify", step_started)
 
         self.last_scan_time = datetime.now()
+        self._emit_latency_trace("run_scan_cycle", trace_started, latency_steps)
 
     def _send_position_summary(self, summary: dict):
         """发送持仓汇总通知"""
