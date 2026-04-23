@@ -151,6 +151,12 @@ class TradingConfig:
         max_range_position_pct: float = 88.0,
         max_abs_funding_rate: float = 0.003,
         max_oi_change_pct: float = 120.0,
+        max_entry_slippage_pct: float = 0.8,
+        symbol_cooldown_sec: int = 24 * 3600,
+        max_consecutive_losses: int = 2,
+        loss_pause_sec: int = 60 * 60,
+        breakeven_after_tp: bool = True,
+        breakeven_offset_pct: float = 0.10,
         # 目标 - 矮人锻造的利刃
         target_altcoins: bool = True,
         target_memes: bool = True,
@@ -178,6 +184,12 @@ class TradingConfig:
         self.max_range_position_pct = max_range_position_pct
         self.max_abs_funding_rate = max_abs_funding_rate
         self.max_oi_change_pct = max_oi_change_pct
+        self.max_entry_slippage_pct = max_entry_slippage_pct
+        self.symbol_cooldown_sec = symbol_cooldown_sec
+        self.max_consecutive_losses = max_consecutive_losses
+        self.loss_pause_sec = loss_pause_sec
+        self.breakeven_after_tp = breakeven_after_tp
+        self.breakeven_offset_pct = breakeven_offset_pct
         self.target_altcoins = target_altcoins
         self.target_memes = target_memes
 
@@ -409,6 +421,9 @@ class CryptoSword:
         self._last_fast_scan_time: float = 0.0
         self._last_deep_scan_time: float = 0.0
         self._last_position_sync_time: float = 0.0
+        self._symbol_cooldowns: dict[str, float] = {}
+        self._consecutive_losses: int = 0
+        self._loss_pause_until: float = 0.0
 
     def _new_session_id(self, symbol: str) -> str:
         return f"{symbol}-{datetime.now().strftime('%Y%m%d%H%M%S')}-{uuid4().hex[:8]}"
@@ -726,6 +741,89 @@ class CryptoSword:
             else:
                 logger.warning(f"⚠️ {position.symbol} 止盈委托撤销失败：{order_id}")
 
+    def _record_closed_trade_result(self, position: Position, pnl: float):
+        """Update cooldown and consecutive-loss guards from a closed trade."""
+        now = time.time()
+        if pnl < 0:
+            self._consecutive_losses += 1
+            self._symbol_cooldowns[position.symbol] = now + self.config.symbol_cooldown_sec
+            logger.warning(
+                f"🧊 {position.symbol} 亏损冷却 {int(self.config.symbol_cooldown_sec / 60)} 分钟 | "
+                f"连续亏损={self._consecutive_losses}"
+            )
+            if self._consecutive_losses >= self.config.max_consecutive_losses:
+                self._loss_pause_until = now + self.config.loss_pause_sec
+                logger.warning(
+                    f"🛑 连续亏损达到 {self._consecutive_losses} 笔，暂停新开仓 "
+                    f"{int(self.config.loss_pause_sec / 60)} 分钟"
+                )
+                send_telegram_message(
+                    format_error_msg(
+                        error_type="连续亏损熔断",
+                        message=(
+                            f"连续亏损 {self._consecutive_losses} 笔，暂停新开仓 "
+                            f"{int(self.config.loss_pause_sec / 60)} 分钟"
+                        ),
+                        symbol=position.symbol,
+                        session_id=position.session_id,
+                        component="loss_guard",
+                    )
+                )
+        else:
+            self._consecutive_losses = 0
+
+    def _move_stop_to_breakeven(self, position: Position, remaining_qty: float) -> bool:
+        """After first TP, move stop loss near breakeven so winners do not turn red."""
+        if not self.config.breakeven_after_tp or remaining_qty <= 0:
+            return False
+
+        if position.side == "BUY":
+            breakeven_price = position.entry_price * (1 + self.config.breakeven_offset_pct / 100.0)
+            close_side = "SELL"
+            position_side = "LONG"
+            if position.current_stop >= breakeven_price:
+                return True
+        else:
+            breakeven_price = position.entry_price * (1 - self.config.breakeven_offset_pct / 100.0)
+            close_side = "BUY"
+            position_side = "SHORT"
+            if position.current_stop <= breakeven_price:
+                return True
+
+        old_order_id = position.stop_loss_order_id
+        if old_order_id and not cancel_stop_loss_order(position.symbol, old_order_id):
+            logger.warning(f"⚠️ {position.symbol} 保本止损移动失败：旧止损撤销失败 {old_order_id}")
+            return False
+
+        sl_result = place_stop_loss_order(
+            position.symbol,
+            close_side,
+            remaining_qty,
+            breakeven_price,
+            position_side=position_side,
+            reduce_only=True,
+        )
+        if sl_result.status != "ERROR" and sl_result.order_id:
+            position.stop_loss_order_id = sl_result.order_id
+            position.stop_loss_price = breakeven_price
+            position.current_stop = breakeven_price
+            logger.warning(f"🛡️ {position.symbol} TP后止损已移动到保本：{sl_result.order_id} @ {breakeven_price:.8f}")
+            return True
+
+        position.stop_loss_order_id = 0
+        position.protection_failures += 1
+        position.last_protection_error = sl_result.message
+        send_telegram_message(
+            format_error_msg(
+                error_type="保本止损移动失败",
+                message=sl_result.message,
+                symbol=position.symbol,
+                session_id=position.session_id,
+                component="breakeven_stop",
+            )
+        )
+        return False
+
     def _position_protection_status(self, position: Position) -> dict[str, Any]:
         stop_loss_ok = bool(position.stop_loss_order_id)
         take_profit_ids = [int(x) for x in position.take_profit_order_ids if x]
@@ -999,6 +1097,7 @@ class CryptoSword:
                 position.pnl = pnl
                 position.pnl_pct = pnl / (position.entry_price * position.quantity) * 100 if position.entry_price and position.quantity else 0.0
                 self.daily_pnl += pnl
+                self._record_closed_trade_result(position, pnl)
 
                 self._cancel_position_protection(position)
                 self.tracker.remove_position(symbol)
@@ -1040,6 +1139,7 @@ class CryptoSword:
                 logger.info(f"🎯 {symbol} 交易所已部分止盈：减少 {reduced_qty:.6f}，剩余 {live_qty:.6f}")
                 current_price = self.get_current_prices([symbol]).get(symbol, position.take_profit_price)
                 self._notify_partial_take_profit(position, reduced_qty, live_qty, current_price)
+                self._move_stop_to_breakeven(position, live_qty)
             position.quantity = live_qty
             position.last_synced_quantity = live_qty
             self._ensure_position_protection(position)
@@ -1053,6 +1153,9 @@ class CryptoSword:
             self.traded_symbols_today.clear()
             self.tracker.reset_daily_summary()
             self._daily_loss_alert_sent = False
+            self._symbol_cooldowns.clear()
+            self._consecutive_losses = 0
+            self._loss_pause_until = 0.0
             try:
                 balance_info = get_account_balance()
                 if isinstance(balance_info, dict):
@@ -1065,6 +1168,9 @@ class CryptoSword:
             return False
         limit_amount = self.day_start_balance * (self.config.max_daily_loss_pct / 100.0)
         return self.daily_pnl <= -limit_amount
+
+    def _is_loss_pause_active(self) -> bool:
+        return self._loss_pause_until > time.time()
 
     def _passes_liquidity_filter(self, symbol: str, desired_position_value: float) -> bool:
         try:
@@ -1218,6 +1324,15 @@ class CryptoSword:
         funding = float(metrics.get("funding_rate", 0.0) or 0.0)
         oi_change = float(metrics.get("oi_24h_pct", 0.0) or 0.0)
         volume_mult = float(metrics.get("volume_24h_mult", 1.0) or 1.0)
+        now = time.time()
+
+        if self._is_loss_pause_active():
+            remaining_min = max(1, int((self._loss_pause_until - now) / 60))
+            return f"连续亏损暂停中，剩余 {remaining_min} 分钟"
+        cooldown_until = self._symbol_cooldowns.get(symbol, 0.0)
+        if cooldown_until > now:
+            remaining_min = max(1, int((cooldown_until - now) / 60))
+            return f"亏损冷却中，剩余 {remaining_min} 分钟"
 
         if abs(funding) >= self.config.max_abs_funding_rate:
             return f"资金费率过热 {funding * 100:.3f}%"
@@ -1383,6 +1498,24 @@ class CryptoSword:
             except Exception:
                 balance = 10000
             self._record_latency_step(latency_steps, "account_query", step_started)
+
+            step_started = time.perf_counter()
+            latest_price = self.get_current_prices([symbol]).get(symbol, price)
+            if latest_price and price > 0:
+                if direction == "LONG":
+                    slippage_pct = (latest_price - price) / price * 100.0
+                else:
+                    slippage_pct = (price - latest_price) / price * 100.0
+                if slippage_pct > self.config.max_entry_slippage_pct:
+                    logger.warning(
+                        f"🧊 {symbol} 下单前价格偏移过大，放弃开仓: signal={price:.8f}, latest={latest_price:.8f}, "
+                        f"slippage={slippage_pct:.2f}%"
+                    )
+                    return None
+                if latest_price > 0:
+                    price = latest_price
+                    trading_signal.entry_price = latest_price
+            self._record_latency_step(latency_steps, "price_recheck", step_started)
 
             quantity = None
             stop_loss = None
@@ -1622,6 +1755,7 @@ class CryptoSword:
 
                 self.tracker.remove_position(symbol)
                 self.daily_pnl += pnl
+                self._record_closed_trade_result(position, pnl)
                 step_started = time.perf_counter()
                 self._cancel_position_protection(position)
                 self._record_latency_step(latency_steps, "cancel_protection", step_started)
