@@ -22,7 +22,7 @@ import os
 import sys
 import threading
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 from uuid import uuid4
@@ -59,6 +59,7 @@ try:
     )
     from telegram_notifier import (
         format_close_position_msg,
+        format_daily_report_msg,
         format_error_msg,
         format_latency_alert_msg,
         format_partial_take_profit_msg,
@@ -77,6 +78,8 @@ try:
         get_social_mindshare,
     )
     from signal_enhancer import (  # 🎯 信号增强
+        analyze_trend,
+        get_klines,
         score_signal,
         SignalScore,
     )
@@ -157,6 +160,10 @@ class TradingConfig:
         loss_pause_sec: int = 60 * 60,
         breakeven_after_tp: bool = True,
         breakeven_offset_pct: float = 0.10,
+        entry_confirmation_enabled: bool = True,
+        entry_confirmation_timeout_sec: int = 30 * 60,
+        daily_report_enabled: bool = True,
+        daily_report_on_first_cycle: bool = True,
         # 目标 - 矮人锻造的利刃
         target_altcoins: bool = True,
         target_memes: bool = True,
@@ -190,6 +197,10 @@ class TradingConfig:
         self.loss_pause_sec = loss_pause_sec
         self.breakeven_after_tp = breakeven_after_tp
         self.breakeven_offset_pct = breakeven_offset_pct
+        self.entry_confirmation_enabled = entry_confirmation_enabled
+        self.entry_confirmation_timeout_sec = entry_confirmation_timeout_sec
+        self.daily_report_enabled = daily_report_enabled
+        self.daily_report_on_first_cycle = daily_report_on_first_cycle
         self.target_altcoins = target_altcoins
         self.target_memes = target_memes
 
@@ -424,6 +435,8 @@ class CryptoSword:
         self._symbol_cooldowns: dict[str, float] = {}
         self._consecutive_losses: int = 0
         self._loss_pause_until: float = 0.0
+        self._entry_watchlist: dict[str, dict[str, Any]] = {}
+        self._last_daily_report_sent_for: str = ""
 
     def _new_session_id(self, symbol: str) -> str:
         return f"{symbol}-{datetime.now().strftime('%Y%m%d%H%M%S')}-{uuid4().hex[:8]}"
@@ -580,6 +593,137 @@ class CryptoSword:
             logger.info(f"⚡ Fast scan keeps previous candidates: {self._fast_candidates[:5]}...")
 
         return self._fast_candidates
+
+    def _prune_entry_watchlist(self):
+        """Drop expired observation candidates so stale breakouts do not auto-fire later."""
+        if not self._entry_watchlist:
+            return
+        now = time.time()
+        timeout_sec = max(300, int(self.config.entry_confirmation_timeout_sec))
+        expired_symbols = [
+            symbol
+            for symbol, item in self._entry_watchlist.items()
+            if now - float(item.get("first_seen_ts", now)) >= timeout_sec
+        ]
+        for symbol in expired_symbols:
+            self._entry_watchlist.pop(symbol, None)
+            logger.info(f"🗑️ {symbol} 候选观察超时，已淘汰")
+
+    def _load_confirmation_trend(self, symbol: str) -> dict[str, Any]:
+        """Reuse cached 1h klines to confirm trend/moving-average recovery."""
+        klines = get_klines(symbol, interval="1h", limit=50)
+        if not klines:
+            return {}
+        return analyze_trend(klines)
+
+    def _apply_entry_confirmation(self, signal: dict[str, Any]) -> dict[str, Any]:
+        """Convert raw signal into watch/ready/invalid states."""
+        signal["entry_status"] = "ready"
+        signal["entry_status_text"] = "确认入场"
+        signal["entry_note"] = ""
+        if not self.config.entry_confirmation_enabled:
+            return signal
+
+        symbol = signal["symbol"]
+        direction = signal["direction"]
+        current_price = float(signal.get("price", 0) or 0)
+        score_total = float((signal.get("score") or {}).get("total_score", 0) or 0)
+        now = time.time()
+
+        watch = self._entry_watchlist.get(symbol)
+        if watch and watch.get("direction") != direction:
+            self._entry_watchlist.pop(symbol, None)
+            signal["entry_status"] = "invalid"
+            signal["entry_status_text"] = "失效淘汰"
+            signal["entry_note"] = "方向反转"
+            return signal
+
+        if watch and score_total > 0:
+            previous_score = float(watch.get("score_total", 0) or 0)
+            threshold = max(40.0, previous_score * 0.7) if previous_score > 0 else 40.0
+            if score_total < threshold:
+                self._entry_watchlist.pop(symbol, None)
+                signal["entry_status"] = "invalid"
+                signal["entry_status_text"] = "失效淘汰"
+                signal["entry_note"] = f"评分回落至 {score_total:.1f}"
+                return signal
+
+        if not watch:
+            self._entry_watchlist[symbol] = {
+                "symbol": symbol,
+                "direction": direction,
+                "stage": signal.get("stage", ""),
+                "first_seen_ts": now,
+                "last_seen_ts": now,
+                "first_price": current_price,
+                "highest_price": current_price,
+                "lowest_price": current_price,
+                "score_total": score_total,
+                "pullback_seen": False,
+            }
+            signal["entry_status"] = "watch"
+            signal["entry_status_text"] = "观察中"
+            signal["entry_note"] = "首次发现，等待回踩确认"
+            return signal
+
+        watch["last_seen_ts"] = now
+        watch["stage"] = signal.get("stage", watch.get("stage", ""))
+        watch["score_total"] = score_total or float(watch.get("score_total", 0) or 0)
+        if current_price > 0:
+            watch["highest_price"] = max(float(watch.get("highest_price", current_price) or current_price), current_price)
+            low_seed = float(watch.get("lowest_price", current_price) or current_price)
+            watch["lowest_price"] = current_price if low_seed <= 0 else min(low_seed, current_price)
+
+        if direction == "LONG":
+            anchor_price = max(float(watch.get("highest_price", current_price) or current_price), current_price)
+            pullback_pct = ((anchor_price - current_price) / anchor_price * 100.0) if anchor_price > 0 else 0.0
+        else:
+            anchor_price = min(float(watch.get("lowest_price", current_price) or current_price), current_price)
+            pullback_pct = ((current_price - anchor_price) / anchor_price * 100.0) if anchor_price > 0 else 0.0
+
+        if pullback_pct >= self.config.min_pullback_pct:
+            watch["pullback_seen"] = True
+
+        if not watch.get("pullback_seen"):
+            signal["entry_status"] = "watch"
+            signal["entry_status_text"] = "观察中"
+            signal["entry_note"] = f"等待至少 {self.config.min_pullback_pct:.1f}% 回踩"
+            return signal
+
+        trend = self._load_confirmation_trend(symbol)
+        ma5 = float(trend.get("ma5", 0) or 0)
+        ma_alignment = str(trend.get("ma_alignment", "NEUTRAL") or "NEUTRAL")
+        trend_ok = False
+        if direction == "LONG":
+            trend_ok = ma_alignment == "BULLISH" and current_price >= ma5 > 0
+        else:
+            trend_ok = ma_alignment == "BEARISH" and 0 < current_price <= ma5
+
+        if not trend_ok:
+            signal["entry_status"] = "watch"
+            signal["entry_status_text"] = "观察中"
+            signal["entry_note"] = "已回踩，等待重站均线"
+            return signal
+
+        self._entry_watchlist.pop(symbol, None)
+        signal["entry_status"] = "ready"
+        signal["entry_status_text"] = "确认入场"
+        signal["entry_note"] = f"回踩 {pullback_pct:.2f}% 后重站均线"
+        signal["confirmation_trend"] = trend
+        return signal
+
+    def _send_daily_report_if_due(self):
+        if not self.config.daily_report_enabled or not self.config.daily_report_on_first_cycle:
+            return
+
+        today = datetime.now().date().isoformat()
+        if self._last_daily_report_sent_for == today:
+            return
+
+        report_date = (datetime.now().date() - timedelta(days=1)).isoformat()
+        report = self.db.get_daily_report(report_date=report_date, mode=self.config.mode)
+        send_telegram_message(format_daily_report_msg(report))
+        self._last_daily_report_sent_for = today
 
     def _select_deep_scan_symbols(self) -> list[str]:
         """Pick symbols for expensive deep scan, preferring fresh fast-scan candidates."""
@@ -1156,6 +1300,7 @@ class CryptoSword:
             self._symbol_cooldowns.clear()
             self._consecutive_losses = 0
             self._loss_pause_until = 0.0
+            self._entry_watchlist.clear()
             try:
                 balance_info = get_account_balance()
                 if isinstance(balance_info, dict):
@@ -1364,6 +1509,7 @@ class CryptoSword:
         """扫描交易信号 - 弗丽嘉的鹰眼"""
         trace_started = time.perf_counter()
         latency_steps: list[tuple[str, float]] = []
+        self._prune_entry_watchlist()
         step_started = time.perf_counter()
         if symbols is not None:
             symbols = list(dict.fromkeys(symbols))[: self.config.scan_top_n]
@@ -1431,7 +1577,7 @@ class CryptoSword:
                 logger.warning(f"信号评分失败 {r.symbol}: {e}")
                 signal_score = None
 
-            signals.append({
+            signal_data = {
                 "symbol": r.symbol,
                 "stage": r.stage,
                 "direction": r.direction,
@@ -1440,7 +1586,8 @@ class CryptoSword:
                 "trigger": r.trigger,
                 "risk": r.risk,
                 "score": signal_score.to_dict() if signal_score else None,
-            })
+            }
+            signals.append(self._apply_entry_confirmation(signal_data))
 
         # 按评分排序
         signals.sort(key=lambda s: s.get("score", {}).get("total_score", 0), reverse=True)
@@ -1821,6 +1968,7 @@ class CryptoSword:
         latency_steps: list[tuple[str, float]] = []
         step_started = time.perf_counter()
         self._check_new_day()
+        self._send_daily_report_if_due()
         self._refresh_market_profile()
         with self._state_lock:
             self._sync_positions_with_exchange()
@@ -1866,12 +2014,15 @@ class CryptoSword:
             if self.tracker.get_open_count() >= self.config.max_open_positions:
                 logger.info(f"⏸️ 已达最大持仓数 ({self.config.max_open_positions})")
                 break
+            if signal.get("entry_status") != "ready":
+                continue
 
             position = self.execute_entry(signal)
             if position:
                 with self._state_lock:
                     self.tracker.add_position(position)
                     self.traded_symbols_today.add(signal["symbol"])
+                    self._entry_watchlist.pop(signal["symbol"], None)
         self._record_latency_step(latency_steps, "execute_entries", step_started)
 
         # 4. 发送持仓摘要（日志 + 定期 Telegram 通知）
@@ -1899,6 +2050,7 @@ class CryptoSword:
 
         step_started = time.perf_counter()
         self._check_new_day()
+        self._send_daily_report_if_due()
         if deep_due:
             self._refresh_market_profile()
         if deep_due or now - self._last_position_sync_time >= max(180, self._current_scan_interval):
@@ -1937,7 +2089,9 @@ class CryptoSword:
             signals = self.scan_for_signals(deep_symbols, scan_source="fast_candidates")
             self._last_deep_scan_time = now
             self._record_latency_step(latency_steps, "deep_scan_signals", step_started)
-            logger.info(f"Trade signals found: {len(signals)}")
+            ready_count = sum(1 for item in signals if item.get("entry_status") == "ready")
+            watch_count = sum(1 for item in signals if item.get("entry_status") == "watch")
+            logger.info(f"Trade signals found: {len(signals)} | ready={ready_count} | watch={watch_count}")
             self._send_scan_monitor(signals)
         else:
             next_deep_sec = max(0, int(self._current_scan_interval - (now - self._last_deep_scan_time)))
@@ -1961,12 +2115,15 @@ class CryptoSword:
                 if self.tracker.get_open_count() >= self.config.max_open_positions:
                     logger.info(f"Max open positions reached ({self.config.max_open_positions})")
                     break
+                if signal.get("entry_status") != "ready":
+                    continue
 
                 position = self.execute_entry(signal)
                 if position:
                     with self._state_lock:
                         self.tracker.add_position(position)
                         self.traded_symbols_today.add(signal["symbol"])
+                        self._entry_watchlist.pop(signal["symbol"], None)
         self._record_latency_step(latency_steps, "execute_entries", step_started)
 
         step_started = time.perf_counter()
@@ -2148,6 +2305,9 @@ def main():
     parser.add_argument("--scan-workers", type=int, default=6, help="深度扫描并发数 (默认：6)")
     parser.add_argument("--min-change", type=float, default=3.0, help="最小涨幅 %% (默认：3%%)")
     parser.add_argument("--by-volume", action="store_true", help="按成交量排序（默认按涨幅）")
+    parser.add_argument("--no-entry-confirm", action="store_true", help="禁用回踩确认入场")
+    parser.add_argument("--entry-confirm-timeout", type=int, default=1800, help="候选观察超时秒数")
+    parser.add_argument("--no-daily-report", action="store_true", help="禁用每日复盘通知")
 
     # 追踪止损 - 海姆达尔的守望
     parser.add_argument("--trailing", type=float, default=5.0, help="追踪止损 %% (默认：5%%)")
@@ -2191,6 +2351,9 @@ def main():
         min_stage="pre_break",
         scan_by_change=not args.by_volume,
         min_change_pct=args.min_change,
+        entry_confirmation_enabled=not args.no_entry_confirm,
+        entry_confirmation_timeout_sec=max(300, args.entry_confirm_timeout),
+        daily_report_enabled=not args.no_daily_report,
     )
 
     # 启动交易引擎

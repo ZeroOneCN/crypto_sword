@@ -528,6 +528,107 @@ def send_signal_alert(signal: dict[str, Any], trade_result: dict[str, Any]) -> b
     return send_telegram_message(message)
 
 
+def format_scan_monitor_msg(signals: list[dict[str, Any]], scanned_count: int = 0, max_items: int = 5) -> str:
+    """Format a compact real-time scanner monitor report with entry-confirmation states."""
+    now_text = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    msg = f"""📡 <b>宙斯交易中枢 | 妖币扫描报告</b>
+<code>{now_text}</code>
+
+<b>扫描数量</b>  <code>{scanned_count}</code>
+<b>有效信号</b>  <code>{len(signals)}</code>"""
+
+    if not signals:
+        return msg + "\n\n📭 暂无有效信号"
+
+    for item in signals[:max_items]:
+        symbol = item.get("symbol", "UNKNOWN")
+        direction = item.get("direction", "UNKNOWN")
+        score = (item.get("score") or {}).get("total_score", 0)
+        confidence = (item.get("score") or {}).get("confidence", "")
+        metrics = item.get("metrics", {}) or {}
+        funding = float(metrics.get("funding_rate", 0) or 0) * 100
+        price = float(metrics.get("last_price", item.get("price", 0)) or 0)
+        change_24h = float(metrics.get("change_24h_pct", 0) or 0)
+        oi_24h = float(metrics.get("oi_24h_pct", 0) or 0)
+        entry_status_text = item.get("entry_status_text", "")
+        entry_note = item.get("entry_note", "")
+        tag = "跟多信号" if direction in {"LONG", "CONSIDER_LONG"} else "跟空信号"
+        funding_tag = "极负费率" if funding <= -0.5 else "负费率" if funding < 0 else "正费率"
+
+        msg += f"""
+
+📨 <b>{_escape(tag)} ({_escape(funding_tag)})</b>
+• <code>{_escape(symbol)}</code> 评分 <code>{float(score):.1f}</code> {_escape(str(confidence))}
+• 费率 <code>{funding:+.4f}%</code>  价格 <code>{change_24h:+.2f}%</code>
+• OI <code>{oi_24h:+.2f}%</code>  现价 <code>${price:,.6f}</code>"""
+        if entry_status_text:
+            msg += f"\n• 状态 <code>{_escape(entry_status_text)}</code>"
+        if entry_note:
+            msg += f"\n• 说明 <code>{_escape(entry_note)}</code>"
+
+    return msg
+
+
+def format_daily_report_msg(report: dict[str, Any]) -> str:
+    """Format a compact daily trading review."""
+    report_date = _escape(report.get("date", ""))
+    closed_trades = int(report.get("closed_trades", 0) or 0)
+    total_pnl = float(report.get("total_pnl", 0) or 0)
+    win_rate = float(report.get("win_rate", 0) or 0)
+    avg_pnl = float(report.get("avg_pnl", 0) or 0)
+    winning = int(report.get("winning_trades", 0) or 0)
+    losing = int(report.get("losing_trades", 0) or 0)
+    pnl_emoji = "🟢" if total_pnl >= 0 else "🔴"
+
+    msg = f"""📘 <b>宙斯交易中枢 | 每日复盘</b>
+<code>{report_date}</code>
+
+<b>已平仓</b>  <code>{closed_trades}</code>
+<b>总盈亏</b>  <code>{total_pnl:+,.2f} USDT</code> {pnl_emoji}
+<b>胜率</b>  <code>{win_rate:.2f}%</code>
+<b>平均盈亏</b>  <code>{avg_pnl:+,.2f} USDT</code>
+<b>胜 / 负</b>  <code>{winning}</code> / <code>{losing}</code>"""
+
+    if closed_trades <= 0:
+        return msg + "\n\n📭 昨日无已平仓交易，系统继续观察中。"
+
+    best_trade = report.get("best_trade") or {}
+    if best_trade:
+        msg += (
+            f"\n\n<b>最佳交易</b>  <code>{_escape(best_trade.get('symbol', ''))}</code>"
+            f"\n盈亏 <code>{float(best_trade.get('pnl', 0) or 0):+,.2f} USDT</code>"
+            f" / <code>{float(best_trade.get('pnl_pct', 0) or 0):+,.2f}%</code>"
+        )
+
+    worst_trade = report.get("worst_trade") or {}
+    if worst_trade:
+        msg += (
+            f"\n\n<b>最差交易</b>  <code>{_escape(worst_trade.get('symbol', ''))}</code>"
+            f"\n盈亏 <code>{float(worst_trade.get('pnl', 0) or 0):+,.2f} USDT</code>"
+            f" / <code>{float(worst_trade.get('pnl_pct', 0) or 0):+,.2f}%</code>"
+        )
+
+    reason_counts = report.get("reason_counts") or {}
+    if reason_counts:
+        reason_text = " | ".join(
+            f"{_escape(str(key))}: <code>{int(value)}</code>"
+            for key, value in reason_counts.items()
+        )
+        msg += f"\n\n<b>平仓分布</b>  {reason_text}"
+
+    side_stats = report.get("side_stats") or {}
+    long_stats = side_stats.get("LONG", {})
+    short_stats = side_stats.get("SHORT", {})
+    msg += (
+        f"\n\n<b>LONG</b>  <code>{int(long_stats.get('count', 0) or 0)}</code> 笔 / "
+        f"<code>{float(long_stats.get('pnl', 0) or 0):+,.2f} USDT</code>"
+        f"\n<b>SHORT</b>  <code>{int(short_stats.get('count', 0) or 0)}</code> 笔 / "
+        f"<code>{float(short_stats.get('pnl', 0) or 0):+,.2f} USDT</code>"
+    )
+
+    return msg
+
+
 def send_daily_summary(trades: list[dict], pnl: float, balance: float) -> bool:
     """Send daily trading summary.
 

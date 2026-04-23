@@ -312,7 +312,87 @@ class TradeDatabase:
         
         conn.close()
         return stats
-    
+
+    def get_daily_report(self, report_date: str, mode: str = None) -> Dict[str, Any]:
+        """按自然日聚合已平仓交易，用于 Telegram 精简日报。"""
+        conn = self._get_connection()
+        cursor = conn.cursor()
+
+        sql = """
+            SELECT * FROM trades
+            WHERE exit_price IS NOT NULL
+            AND date(exit_time) = ?
+        """
+        params: list[Any] = [report_date]
+        if mode:
+            sql += " AND mode = ?"
+            params.append(mode)
+        sql += " ORDER BY exit_time DESC"
+
+        cursor.execute(sql, params)
+        trades = [self._row_to_trade(row) for row in cursor.fetchall()]
+        conn.close()
+
+        closed_count = len(trades)
+        total_pnl = round(sum(float(t.pnl or 0) for t in trades), 2)
+        winning = [t for t in trades if float(t.pnl or 0) > 0]
+        losing = [t for t in trades if float(t.pnl or 0) < 0]
+        avg_pnl = round(total_pnl / closed_count, 2) if closed_count else 0.0
+        win_rate = round(len(winning) / closed_count * 100, 2) if closed_count else 0.0
+
+        best_trade = max(trades, key=lambda t: float(t.pnl or 0), default=None)
+        worst_trade = min(trades, key=lambda t: float(t.pnl or 0), default=None)
+
+        reason_counts: Dict[str, int] = {}
+        side_stats: Dict[str, Dict[str, Any]] = {
+            "LONG": {"count": 0, "pnl": 0.0},
+            "SHORT": {"count": 0, "pnl": 0.0},
+        }
+        for trade in trades:
+            reason = (trade.exit_reason or "UNKNOWN").upper()
+            if "TAKE_PROFIT" in reason:
+                reason_key = "TAKE_PROFIT"
+            elif "STOP_LOSS" in reason:
+                reason_key = "STOP_LOSS"
+            elif "TRAIL" in reason:
+                reason_key = "TRAILING"
+            elif "MANUAL" in reason:
+                reason_key = "MANUAL"
+            else:
+                reason_key = reason
+            reason_counts[reason_key] = reason_counts.get(reason_key, 0) + 1
+
+            side_key = (trade.side or "").upper()
+            if side_key in side_stats:
+                side_stats[side_key]["count"] += 1
+                side_stats[side_key]["pnl"] = round(side_stats[side_key]["pnl"] + float(trade.pnl or 0), 2)
+
+        def _trade_summary(trade: Optional[TradeRecord]) -> Optional[Dict[str, Any]]:
+            if not trade:
+                return None
+            return {
+                "symbol": trade.symbol,
+                "side": trade.side,
+                "pnl": round(float(trade.pnl or 0), 2),
+                "pnl_pct": round(float(trade.pnl_pct or 0), 2),
+                "exit_reason": trade.exit_reason or "",
+            }
+
+        return {
+            "date": report_date,
+            "mode": mode or "all",
+            "closed_trades": closed_count,
+            "winning_trades": len(winning),
+            "losing_trades": len(losing),
+            "win_rate": win_rate,
+            "total_pnl": total_pnl,
+            "avg_pnl": avg_pnl,
+            "best_trade": _trade_summary(best_trade),
+            "worst_trade": _trade_summary(worst_trade),
+            "reason_counts": reason_counts,
+            "side_stats": side_stats,
+        }
+
     def export_to_csv(self, output_path: Path, days: int = 30):
         """导出交易记录到 CSV"""
         import csv
