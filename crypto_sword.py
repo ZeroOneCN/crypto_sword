@@ -509,7 +509,10 @@ class CryptoSword:
             return
 
         try:
-            self._ws_client = BinanceWebSocketClient(sorted(symbol_set))
+            self._ws_client = BinanceWebSocketClient(
+                sorted(symbol_set),
+                stream_types=["mark_price"],
+            )
             self._ws_client.start()
             logger.info(f"📡 WebSocket 实时价格监听已启动：{', '.join(sorted(symbol_set))}")
         except Exception as e:
@@ -520,9 +523,7 @@ class CryptoSword:
         if not self._ws_client:
             return 0.0
         try:
-            ticker = self._ws_client.tickers.get(symbol.lower())
-            if ticker and ticker.price > 0 and time.time() - ticker.last_update <= 15:
-                return ticker.price
+            return float(self._ws_client.get_price(symbol, max_age_sec=10))
         except Exception:
             return 0.0
         return 0.0

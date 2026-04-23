@@ -59,6 +59,7 @@ class BinanceWebSocketClient:
         symbols: list[str],
         callbacks: Optional[dict[str, Callable]] = None,
         base_ws_url: str | None = None,
+        stream_types: Optional[list[str]] = None,
     ):
         """Initialize WebSocket client.
 
@@ -72,6 +73,7 @@ class BinanceWebSocketClient:
         self.symbols = [s.lower() for s in symbols]
         self.callbacks = callbacks or {}
         self.base_ws_url = (base_ws_url or _get_default_ws_base_url()).rstrip("/")
+        self.stream_types = stream_types or ["mark_price"]
 
         self.tickers: dict[str, TickerData] = {}
         self.orderbooks: dict[str, OrderBookData] = {}
@@ -80,6 +82,7 @@ class BinanceWebSocketClient:
         self.ws: Optional[websocket.WebSocketApp] = None
         self.running = False
         self._thread: Optional[threading.Thread] = None
+        self._lock = threading.RLock()
 
         # Initialize ticker data
         for symbol in self.symbols:
@@ -90,12 +93,14 @@ class BinanceWebSocketClient:
         """Build WebSocket stream URLs."""
         streams = []
         for symbol in self.symbols:
-            # Ticker stream
-            streams.append(f"{symbol}@ticker")
-            # Orderbook depth (top 20)
-            streams.append(f"{symbol}@depth20@100ms")
-            # Trade stream
-            streams.append(f"{symbol}@trade")
+            if "mark_price" in self.stream_types:
+                streams.append(f"{symbol}@markPrice@1s")
+            if "ticker" in self.stream_types:
+                streams.append(f"{symbol}@ticker")
+            if "orderbook" in self.stream_types:
+                streams.append(f"{symbol}@depth5@100ms")
+            if "trade" in self.stream_types:
+                streams.append(f"{symbol}@trade")
         return streams
 
     def _on_message(self, ws, message: str):
@@ -106,18 +111,31 @@ class BinanceWebSocketClient:
             if "data" in data:
                 data = data["data"]
 
-            # Ticker update
-            if "e" in data and data["e"] == "24hrTicker":
+            # Mark price update. This is the lightest stream for position monitoring.
+            if "e" in data and data["e"] == "markPriceUpdate":
                 symbol = data["s"].lower()
                 if symbol in self.tickers:
-                    ticker = self.tickers[symbol]
-                    ticker.price = float(data["c"])
-                    ticker.price_change_pct = float(data["P"])
-                    ticker.high_24h = float(data["h"])
-                    ticker.low_24h = float(data["l"])
-                    ticker.volume_24h = float(data["v"])
-                    ticker.quote_volume_24h = float(data["q"])
-                    ticker.last_update = time.time()
+                    with self._lock:
+                        ticker = self.tickers[symbol]
+                        ticker.price = float(data["p"])
+                        ticker.last_update = time.time()
+
+                    if "on_ticker" in self.callbacks:
+                        self.callbacks["on_ticker"](ticker)
+
+            # Ticker update
+            elif "e" in data and data["e"] == "24hrTicker":
+                symbol = data["s"].lower()
+                if symbol in self.tickers:
+                    with self._lock:
+                        ticker = self.tickers[symbol]
+                        ticker.price = float(data["c"])
+                        ticker.price_change_pct = float(data["P"])
+                        ticker.high_24h = float(data["h"])
+                        ticker.low_24h = float(data["l"])
+                        ticker.volume_24h = float(data["v"])
+                        ticker.quote_volume_24h = float(data["q"])
+                        ticker.last_update = time.time()
 
                     if "on_ticker" in self.callbacks:
                         self.callbacks["on_ticker"](ticker)
@@ -128,10 +146,11 @@ class BinanceWebSocketClient:
                 if not symbol and "@" in stream_name:
                     symbol = stream_name.split("@", 1)[0]
                 if symbol in self.orderbooks:
-                    ob = self.orderbooks[symbol]
-                    ob.bids = [(float(b[0]), float(b[1])) for b in data["bids"]]
-                    ob.asks = [(float(a[0]), float(a[1])) for a in data["asks"]]
-                    ob.last_update = time.time()
+                    with self._lock:
+                        ob = self.orderbooks[symbol]
+                        ob.bids = [(float(b[0]), float(b[1])) for b in data["bids"]]
+                        ob.asks = [(float(a[0]), float(a[1])) for a in data["asks"]]
+                        ob.last_update = time.time()
 
                     if "on_orderbook" in self.callbacks:
                         self.callbacks["on_orderbook"](ob)
@@ -160,7 +179,6 @@ class BinanceWebSocketClient:
     def _on_close(self, ws, close_status_code, close_msg):
         """Handle WebSocket close."""
         logger.info(f"WebSocket closed: {close_status_code} {close_msg}")
-        self.running = False
 
     def _on_open(self, ws):
         """Handle WebSocket open."""
@@ -168,18 +186,27 @@ class BinanceWebSocketClient:
 
     def _run_ws(self):
         """Run WebSocket loop in background thread."""
+        reconnect_delay = 1.0
         streams = "/".join(self._get_streams())
         url = f"{self.base_ws_url}/stream?streams={streams}"
 
-        self.ws = websocket.WebSocketApp(
-            url,
-            on_open=self._on_open,
-            on_message=self._on_message,
-            on_error=self._on_error,
-            on_close=self._on_close,
-        )
+        while self.running:
+            try:
+                self.ws = websocket.WebSocketApp(
+                    url,
+                    on_open=self._on_open,
+                    on_message=self._on_message,
+                    on_error=self._on_error,
+                    on_close=self._on_close,
+                )
+                self.ws.run_forever(ping_interval=30, ping_timeout=10)
+            except Exception as e:
+                logger.warning(f"WebSocket loop failed: {e}")
 
-        self.ws.run_forever(ping_interval=60, ping_timeout=10)
+            if self.running:
+                logger.info(f"WebSocket reconnecting in {reconnect_delay:.1f}s")
+                time.sleep(reconnect_delay)
+                reconnect_delay = min(reconnect_delay * 1.5, 15.0)
 
     def start(self):
         """Start WebSocket connection in background thread."""
@@ -203,28 +230,31 @@ class BinanceWebSocketClient:
         if self._thread:
             self._thread.join(timeout=5)
 
-    def get_price(self, symbol: str) -> float:
+    def get_price(self, symbol: str, max_age_sec: float = 10.0) -> float:
         """Get latest price for a symbol."""
         symbol = symbol.lower()
-        if symbol in self.tickers:
-            return self.tickers[symbol].price
+        with self._lock:
+            ticker = self.tickers.get(symbol)
+            if ticker and ticker.price > 0:
+                if max_age_sec <= 0 or time.time() - ticker.last_update <= max_age_sec:
+                    return ticker.price
         return 0.0
 
     def get_spread(self, symbol: str) -> float:
         """Get bid-ask spread for a symbol."""
         symbol = symbol.lower()
-        if symbol in self.orderbooks:
-            ob = self.orderbooks[symbol]
-            if ob.bids and ob.asks:
+        with self._lock:
+            ob = self.orderbooks.get(symbol)
+            if ob and ob.bids and ob.asks:
                 return ob.asks[0][0] - ob.bids[0][0]
         return 0.0
 
     def get_mid_price(self, symbol: str) -> float:
         """Get mid price for a symbol."""
         symbol = symbol.lower()
-        if symbol in self.orderbooks:
-            ob = self.orderbooks[symbol]
-            if ob.bids and ob.asks:
+        with self._lock:
+            ob = self.orderbooks.get(symbol)
+            if ob and ob.bids and ob.asks:
                 return (ob.bids[0][0] + ob.asks[0][0]) / 2
         return self.get_price(symbol)
 
