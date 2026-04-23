@@ -86,8 +86,13 @@ try:
         calculate_position_size,
     )
     try:
-        from binance_websocket import BinanceUserDataWebSocketClient, BinanceWebSocketClient
+        from binance_websocket import (
+            BinanceAllMarketTickerWebSocketClient,
+            BinanceUserDataWebSocketClient,
+            BinanceWebSocketClient,
+        )
     except Exception:
+        BinanceAllMarketTickerWebSocketClient = None
         BinanceUserDataWebSocketClient = None
         BinanceWebSocketClient = None
 except ImportError as e:
@@ -375,6 +380,7 @@ class CryptoSword:
         self._current_scan_interval = config.scan_interval_sec
         self._market_overview: dict[str, Any] = {}
         self._tp_multiplier: float = 1.0
+        self._market_ws_client = None
         self._ws_client = None
         self._user_ws_client = None
         self._ws_symbols: set[str] = set()
@@ -485,6 +491,41 @@ class CryptoSword:
         if side == "BUY":
             return entry_price * (1 + price_move_pct / 100.0)
         return entry_price * (1 - price_move_pct / 100.0)
+
+    def _start_market_ticker_stream(self):
+        """Start all-market mini ticker stream for fast anomaly ranking."""
+        if BinanceAllMarketTickerWebSocketClient is None:
+            logger.warning("All-market WebSocket unavailable; scanner will use REST ranking")
+            return
+        if self._market_ws_client:
+            return
+
+        try:
+            self._market_ws_client = BinanceAllMarketTickerWebSocketClient()
+            self._market_ws_client.start()
+            logger.info("All-market WebSocket started: realtime anomaly ranking enabled")
+        except Exception as e:
+            self._market_ws_client = None
+            logger.warning(f"All-market WebSocket start failed; scanner will use REST ranking: {e}")
+
+    def _get_ws_top_symbols_by_change(self, limit: int, min_change: float) -> list[str]:
+        if not self._market_ws_client:
+            return []
+        try:
+            symbols = self._market_ws_client.get_top_symbols_by_change(
+                limit=limit,
+                min_change=min_change,
+                max_age_sec=max(180, self._current_scan_interval * 2),
+            )
+            if symbols:
+                logger.info(
+                    f"📡 WS异动榜命中 {len(symbols)} 个币种 "
+                    f"(缓存新鲜币种 {self._market_ws_client.size()}): {symbols[:5]}..."
+                )
+            return symbols
+        except Exception as e:
+            logger.debug(f"WS异动榜不可用，回退REST：{e}")
+            return []
 
     def _refresh_price_stream(self, symbols: list[str]):
         """Keep a lightweight WebSocket price stream for open positions."""
@@ -1118,11 +1159,18 @@ class CryptoSword:
         latency_steps: list[tuple[str, float]] = []
         step_started = time.perf_counter()
         if self.config.scan_by_change:
-            symbols = get_top_symbols_by_change(
+            symbols = self._get_ws_top_symbols_by_change(
                 self.config.scan_top_n,
-                min_change=self.config.min_change_pct
+                self.config.min_change_pct,
             )
-            logger.info(f"🔥 妖币模式 - 扫描 {len(symbols)} 个异动币种：{symbols[:5]}...")
+            if not symbols:
+                symbols = get_top_symbols_by_change(
+                    self.config.scan_top_n,
+                    min_change=self.config.min_change_pct
+                )
+                logger.info(f"🔥 妖币模式(REST) - 扫描 {len(symbols)} 个异动币种：{symbols[:5]}...")
+            else:
+                logger.info(f"🔥 妖币模式(WS) - 扫描 {len(symbols)} 个异动币种：{symbols[:5]}...")
         else:
             symbols = get_top_symbols_by_volume(self.config.scan_top_n)
             logger.info(f"📊 成交量模式 - 扫描 {len(symbols)} 个币种：{symbols[:5]}...")
@@ -1652,6 +1700,7 @@ class CryptoSword:
 
         try:
             self.day_start_balance = self._run_health_checks()
+            self._start_market_ticker_stream()
             self._start_user_data_stream()
             self._start_background_protection_audit(source="startup_audit")
             logger.info(f"🩺 启动健康检查通过 | 可用余额: ${self.day_start_balance:.2f}")
@@ -1715,6 +1764,11 @@ class CryptoSword:
         if self._ws_client:
             try:
                 self._ws_client.stop()
+            except Exception:
+                pass
+        if self._market_ws_client:
+            try:
+                self._market_ws_client.stop()
             except Exception:
                 pass
         if self._user_ws_client:

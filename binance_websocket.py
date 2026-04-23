@@ -259,6 +259,138 @@ class BinanceWebSocketClient:
         return self.get_price(symbol)
 
 
+class BinanceAllMarketTickerWebSocketClient:
+    """Lightweight all-market mini ticker stream for fast anomaly ranking."""
+
+    def __init__(
+        self,
+        callbacks: Optional[dict[str, Callable]] = None,
+        base_ws_url: str | None = None,
+    ):
+        self.callbacks = callbacks or {}
+        self.base_ws_url = (base_ws_url or _get_default_ws_base_url()).rstrip("/")
+        self.tickers: dict[str, TickerData] = {}
+        self.ws: Optional[websocket.WebSocketApp] = None
+        self.running = False
+        self._thread: Optional[threading.Thread] = None
+        self._lock = threading.RLock()
+        self._last_event_time = 0.0
+
+    def _on_message(self, ws, message: str):
+        try:
+            payload = json.loads(message)
+            if isinstance(payload, dict) and "data" in payload:
+                payload = payload["data"]
+            if isinstance(payload, dict):
+                payload = [payload]
+            if not isinstance(payload, list):
+                return
+
+            now = time.time()
+            updated = 0
+            with self._lock:
+                for item in payload:
+                    if not isinstance(item, dict):
+                        continue
+                    symbol = str(item.get("s", "")).upper()
+                    if not symbol.endswith("USDT"):
+                        continue
+                    last_price = float(item.get("c", 0) or 0)
+                    open_price = float(item.get("o", 0) or 0)
+                    change_pct = 0.0
+                    if open_price > 0 and last_price > 0:
+                        change_pct = (last_price / open_price - 1.0) * 100.0
+                    self.tickers[symbol] = TickerData(
+                        symbol=symbol,
+                        price=last_price,
+                        price_change_pct=change_pct,
+                        high_24h=float(item.get("h", 0) or 0),
+                        low_24h=float(item.get("l", 0) or 0),
+                        volume_24h=float(item.get("v", 0) or 0),
+                        quote_volume_24h=float(item.get("q", 0) or 0),
+                        last_update=now,
+                    )
+                    updated += 1
+                if updated:
+                    self._last_event_time = now
+
+            if updated and "on_batch" in self.callbacks:
+                self.callbacks["on_batch"](updated)
+        except Exception as e:
+            logger.error(f"Error processing all-market WebSocket message: {e}")
+
+    def _on_error(self, ws, error):
+        logger.error(f"All-market WebSocket error: {error}")
+
+    def _on_close(self, ws, close_status_code, close_msg):
+        logger.info(f"All-market WebSocket closed: {close_status_code} {close_msg}")
+
+    def _on_open(self, ws):
+        logger.info("All-market WebSocket connected")
+
+    def _run_ws(self):
+        reconnect_delay = 1.0
+        url = f"{self.base_ws_url}/ws/!miniTicker@arr"
+        while self.running:
+            try:
+                self.ws = websocket.WebSocketApp(
+                    url,
+                    on_open=self._on_open,
+                    on_message=self._on_message,
+                    on_error=self._on_error,
+                    on_close=self._on_close,
+                )
+                self.ws.run_forever(ping_interval=30, ping_timeout=10)
+            except Exception as e:
+                logger.warning(f"All-market WebSocket loop failed: {e}")
+
+            if self.running:
+                logger.info(f"All-market WebSocket reconnecting in {reconnect_delay:.1f}s")
+                time.sleep(reconnect_delay)
+                reconnect_delay = min(reconnect_delay * 1.5, 15.0)
+
+    def start(self):
+        if websocket is None:
+            raise RuntimeError("websocket-client is not installed")
+        if self.running:
+            return
+        self.running = True
+        self._thread = threading.Thread(target=self._run_ws, daemon=True)
+        self._thread.start()
+        time.sleep(0.1)
+
+    def stop(self):
+        self.running = False
+        if self.ws:
+            self.ws.close()
+        if self._thread:
+            self._thread.join(timeout=5)
+
+    def get_top_symbols_by_change(
+        self,
+        limit: int,
+        min_change: float = 3.0,
+        max_age_sec: float = 180.0,
+    ) -> list[str]:
+        exclude_patterns = ("USDC", "FDUSD", "TUSD", "UP", "DOWN", "BULL", "BEAR")
+        now = time.time()
+        with self._lock:
+            fresh = [
+                ticker
+                for ticker in self.tickers.values()
+                if now - ticker.last_update <= max_age_sec
+                and abs(ticker.price_change_pct) >= min_change
+                and not any(pattern in ticker.symbol for pattern in exclude_patterns)
+            ]
+        fresh.sort(key=lambda ticker: abs(ticker.price_change_pct), reverse=True)
+        return [ticker.symbol for ticker in fresh[:limit]]
+
+    def size(self, max_age_sec: float = 180.0) -> int:
+        now = time.time()
+        with self._lock:
+            return sum(1 for ticker in self.tickers.values() if now - ticker.last_update <= max_age_sec)
+
+
 class BinanceUserDataWebSocketClient:
     """Binance futures user data stream for order and account updates."""
 
