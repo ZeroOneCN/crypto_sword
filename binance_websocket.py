@@ -13,7 +13,10 @@ from collections import deque
 from dataclasses import dataclass, field
 from typing import Any, Callable, Optional
 
-import websocket  # pip install websocket-client
+try:
+    import websocket  # pip install websocket-client
+except Exception:  # pragma: no cover - optional runtime dependency
+    websocket = None
 
 logger = logging.getLogger(__name__)
 
@@ -85,6 +88,9 @@ class BinanceWebSocketClient:
         """Handle incoming WebSocket message."""
         try:
             data = json.loads(message)
+            stream_name = data.get("stream", "")
+            if "data" in data:
+                data = data["data"]
 
             # Ticker update
             if "e" in data and data["e"] == "24hrTicker":
@@ -104,7 +110,9 @@ class BinanceWebSocketClient:
 
             # Orderbook update
             elif "lastUpdateId" in data and "bids" in data:
-                symbol = data.get("symbol", "").lower() or list(self.orderbooks.keys())[0]
+                symbol = data.get("s", data.get("symbol", "")).lower()
+                if not symbol and "@" in stream_name:
+                    symbol = stream_name.split("@", 1)[0]
                 if symbol in self.orderbooks:
                     ob = self.orderbooks[symbol]
                     ob.bids = [(float(b[0]), float(b[1])) for b in data["bids"]]
@@ -147,7 +155,7 @@ class BinanceWebSocketClient:
     def _run_ws(self):
         """Run WebSocket loop in background thread."""
         streams = "/".join(self._get_streams())
-        url = f"wss://fstream.binance.com/ws/{streams}"
+        url = f"wss://fstream.binance.com/stream?streams={streams}"
 
         self.ws = websocket.WebSocketApp(
             url,
@@ -161,6 +169,8 @@ class BinanceWebSocketClient:
 
     def start(self):
         """Start WebSocket connection in background thread."""
+        if websocket is None:
+            raise RuntimeError("websocket-client is not installed")
         if self.running:
             return
 

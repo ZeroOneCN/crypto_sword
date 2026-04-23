@@ -48,6 +48,8 @@ try:
         cancel_stop_loss_order,
         ensure_profile_selected,
         execute_trade,
+        fetch_open_algo_orders,
+        fetch_open_orders,
         get_account_balance,
         place_market_order,
         place_stop_loss_order,
@@ -58,6 +60,7 @@ try:
     from telegram_notifier import (
         format_close_position_msg,
         format_error_msg,
+        format_partial_take_profit_msg,
         format_shutdown_msg,
         format_summary_msg,
         format_startup_msg,
@@ -79,6 +82,10 @@ try:
         RiskConfig,
         calculate_position_size,
     )
+    try:
+        from binance_websocket import BinanceWebSocketClient
+    except Exception:
+        BinanceWebSocketClient = None
 except ImportError as e:
     print(f"❌ 导入失败：{e}")
     print("请确保所有脚本位于 /root/.hermes/scripts/")
@@ -199,6 +206,8 @@ class Position:
         self.take_profit_targets = take_profit_targets or []
         self.take_profit_order_ids = take_profit_order_ids or []
         self.initial_quantity = quantity
+        self.last_synced_quantity = quantity
+        self.partial_tp_count = 0
 
         # 动态跟踪
         self.highest_price: float = entry_price
@@ -354,13 +363,59 @@ class CryptoSword:
         # 通知控制
         self._last_summary_time: float = 0
         self._summary_interval: int = 6 * 3600  # 每 6 小时发送一次持仓汇总
+        self._base_scan_interval = config.scan_interval_sec
+        self._current_scan_interval = config.scan_interval_sec
+        self._market_overview: dict[str, Any] = {}
+        self._tp_multiplier: float = 1.0
+        self._ws_client = None
+        self._ws_symbols: set[str] = set()
+        self._ws_last_refresh: float = 0.0
 
     def _new_session_id(self, symbol: str) -> str:
         return f"{symbol}-{datetime.now().strftime('%Y%m%d%H%M%S')}-{uuid4().hex[:8]}"
 
+    def _refresh_market_profile(self):
+        """Update market-aware scan interval and TP multiplier."""
+        try:
+            overview = get_market_overview()
+            self._market_overview = overview if isinstance(overview, dict) else {}
+        except Exception as e:
+            logger.warning(f"🌊 市场环境刷新失败：{e}")
+            return
+
+        fear_greed = self._market_overview.get("fear_greed", {})
+        fear_greed_value = 50
+        if isinstance(fear_greed, dict):
+            fear_greed_value = int(float(fear_greed.get("value", fear_greed.get("score", 50)) or 50))
+        liquidation_risk = str(self._market_overview.get("liquidation_risk", "LOW")).upper()
+        sentiment = str(self._market_overview.get("market_sentiment", "NEUTRAL")).upper()
+
+        interval = self._base_scan_interval
+        tp_multiplier = 1.0
+
+        if liquidation_risk in {"HIGH", "EXTREME"}:
+            interval = max(60, min(interval, 120))
+            tp_multiplier = 0.75
+        elif sentiment in {"BULLISH", "RISK_ON"} and fear_greed_value >= 55:
+            interval = max(90, min(interval, 180))
+            tp_multiplier = 1.2
+        elif fear_greed_value <= 30:
+            interval = max(90, min(interval, 180))
+            tp_multiplier = 0.8
+        else:
+            interval = max(120, interval)
+
+        self._current_scan_interval = int(interval)
+        self.config.scan_interval_sec = int(interval)
+        self._tp_multiplier = tp_multiplier
+        logger.info(
+            f"🌊 动态参数：扫描间隔={self._current_scan_interval}s, TP倍率={self._tp_multiplier:.2f}, "
+            f"情绪={sentiment}, 恐贪={fear_greed_value}, 清算={liquidation_risk}"
+        )
+
     def _build_take_profit_plan(self) -> tuple[list[float], list[float]]:
         """Build default staged take-profit plan around the configured TP percentage."""
-        base_pct = max(float(self.config.take_profit_pct), 0.0)
+        base_pct = max(float(self.config.take_profit_pct) * self._tp_multiplier, 0.0)
         if base_pct <= 0:
             return [0.0], [1.0]
 
@@ -383,6 +438,47 @@ class CryptoSword:
         if side == "BUY":
             return entry_price * (1 + price_move_pct / 100.0)
         return entry_price * (1 - price_move_pct / 100.0)
+
+    def _refresh_price_stream(self, symbols: list[str]):
+        """Keep a lightweight WebSocket price stream for open positions."""
+        if BinanceWebSocketClient is None:
+            return
+
+        symbol_set = {symbol.upper() for symbol in symbols if symbol}
+        now = time.time()
+        if symbol_set == self._ws_symbols and self._ws_client and now - self._ws_last_refresh < 300:
+            return
+
+        if self._ws_client:
+            try:
+                self._ws_client.stop()
+            except Exception:
+                pass
+            self._ws_client = None
+
+        self._ws_symbols = symbol_set
+        self._ws_last_refresh = now
+        if not symbol_set:
+            return
+
+        try:
+            self._ws_client = BinanceWebSocketClient(sorted(symbol_set))
+            self._ws_client.start()
+            logger.info(f"📡 WebSocket 实时价格监听已启动：{', '.join(sorted(symbol_set))}")
+        except Exception as e:
+            self._ws_client = None
+            logger.warning(f"📡 WebSocket 启动失败，继续使用 REST 价格：{e}")
+
+    def _get_ws_price(self, symbol: str) -> float:
+        if not self._ws_client:
+            return 0.0
+        try:
+            ticker = self._ws_client.tickers.get(symbol.lower())
+            if ticker and ticker.price > 0 and time.time() - ticker.last_update <= 15:
+                return ticker.price
+        except Exception:
+            return 0.0
+        return 0.0
 
     def _parse_trade_notes(self, notes: str) -> dict[str, str]:
         parsed: dict[str, str] = {}
@@ -499,6 +595,63 @@ class CryptoSword:
 
         position.take_profit_order_ids = new_tp_order_ids
 
+    def _notify_partial_take_profit(self, position: Position, reduced_qty: float, remaining_qty: float, price: float):
+        if reduced_qty <= 0 or price <= 0:
+            return
+
+        if position.side == "BUY":
+            pnl = (price - position.entry_price) * reduced_qty
+        else:
+            pnl = (position.entry_price - price) * reduced_qty
+
+        notional = position.entry_price * reduced_qty
+        pnl_pct = pnl / notional * 100 if notional > 0 else 0.0
+        position.partial_tp_count += 1
+        self.daily_pnl += pnl
+        send_telegram_message(
+            format_partial_take_profit_msg(
+                symbol=position.symbol,
+                direction="LONG" if position.side == "BUY" else "SHORT",
+                entry_price=position.entry_price,
+                exit_price=price,
+                quantity=reduced_qty,
+                remaining_quantity=remaining_qty,
+                pnl=pnl,
+                pnl_pct=pnl_pct,
+                level=position.partial_tp_count,
+                session_id=position.session_id,
+            )
+        )
+
+    def _sync_protective_order_snapshot(self, position: Position):
+        """Best-effort order snapshot check without blocking trading."""
+        try:
+            normal_orders = fetch_open_orders(position.symbol)
+            algo_orders = fetch_open_algo_orders(position.symbol)
+        except Exception as e:
+            logger.debug(f"{position.symbol} 委托快照同步跳过：{e}")
+            return
+
+        open_ids = set()
+        for order in (normal_orders or []) + (algo_orders or []):
+            for key in ("algoId", "orderId", "orderID"):
+                if key in order and order.get(key):
+                    try:
+                        open_ids.add(int(order.get(key)))
+                    except Exception:
+                        pass
+
+        if not open_ids:
+            return
+
+        expected_ids = set(position.take_profit_order_ids)
+        if position.stop_loss_order_id:
+            expected_ids.add(position.stop_loss_order_id)
+
+        missing_ids = sorted(order_id for order_id in expected_ids if order_id and order_id not in open_ids)
+        if missing_ids:
+            logger.warning(f"⚠️ {position.symbol} 保护委托可能已成交/失效：{missing_ids}")
+
     def _sync_positions_with_exchange(self):
         """Sync local tracked positions with real exchange positions for staged TP fills."""
         if not self.tracker.positions:
@@ -574,8 +727,12 @@ class CryptoSword:
             if live_qty + 1e-9 < position.quantity:
                 reduced_qty = position.quantity - live_qty
                 logger.info(f"🎯 {symbol} 交易所已部分止盈：减少 {reduced_qty:.6f}，剩余 {live_qty:.6f}")
+                current_price = self.get_current_prices([symbol]).get(symbol, position.take_profit_price)
+                self._notify_partial_take_profit(position, reduced_qty, live_qty, current_price)
             position.quantity = live_qty
+            position.last_synced_quantity = live_qty
             self._ensure_position_protection(position)
+            self._sync_protective_order_snapshot(position)
 
     def _check_new_day(self):
         today = datetime.now().date().isoformat()
@@ -729,8 +886,13 @@ class CryptoSword:
     def get_current_prices(self, symbols: List[str]) -> Dict[str, float]:
         """获取当前价格"""
         prices = {}
+        self._refresh_price_stream(symbols)
         for symbol in symbols:
             try:
+                ws_price = self._get_ws_price(symbol)
+                if ws_price > 0:
+                    prices[symbol] = ws_price
+                    continue
                 ticker = fetch_ticker_24hr(symbol)
                 prices[symbol] = float(ticker.get("lastPrice", 0))
             except Exception as e:
@@ -973,6 +1135,7 @@ class CryptoSword:
                 f"target_roi_pct={primary_target_roi_pct}",
                 f"price_move_pct={primary_price_move_pct}",
                 f"take_profit_mode={self.config.take_profit_mode}",
+                f"tp_multiplier={self._tp_multiplier}",
                 f"tp_plan={json.dumps(take_profit_targets, separators=(',', ':'))}",
                 f"tp_order_ids={','.join(str(int(item.get('order_id', 0))) for item in take_profit_targets if item.get('order_id'))}",
             ]
@@ -1102,6 +1265,7 @@ class CryptoSword:
     def run_scan_cycle(self):
         """运行一次完整的扫描 - 交易循环"""
         self._check_new_day()
+        self._refresh_market_profile()
         self._sync_positions_with_exchange()
         logger.info("=" * 60)
         logger.info(f"🔄 扫描周期开始 | 持仓：{self.tracker.get_open_count()}/{self.config.max_open_positions}")
@@ -1210,20 +1374,14 @@ class CryptoSword:
         )
 
         # 🌊 获取市场概览（Surf 数据增强）
-        try:
-            market_overview = get_market_overview()
-            logger.info(f"🌊 市场环境：{market_overview.get('market_sentiment', 'NEUTRAL')}")
-            logger.info(f"🌊 恐慌贪婪：{market_overview.get('fear_greed', {})}")
-            logger.info(f"🌊 清算风险：{market_overview.get('liquidation_risk', 'LOW')}")
-        except Exception as e:
-            logger.warning(f"🌊 获取市场概览失败：{e}")
+        self._refresh_market_profile()
 
         # 主循环
         while self.running:
             try:
                 self.run_scan_cycle()
-                logger.info(f"⏳ 等待 {self.config.scan_interval_sec}s 后下次扫描...")
-                time.sleep(self.config.scan_interval_sec)
+                logger.info(f"⏳ 等待 {self._current_scan_interval}s 后下次扫描...")
+                time.sleep(self._current_scan_interval)
             except KeyboardInterrupt:
                 logger.info("\n🛑 用户中断，正在停止...")
                 self.running = False
@@ -1247,6 +1405,11 @@ class CryptoSword:
                 unrealized_pnl=summary["total_unrealized_pnl"],
             )
         )
+        if self._ws_client:
+            try:
+                self._ws_client.stop()
+            except Exception:
+                pass
 
 
 # ═══════════════════════════════════════════════════════════════

@@ -715,6 +715,49 @@ def cancel_stop_loss_order(symbol: str, order_id: int) -> bool:
     return cancel_protective_order(symbol, order_id)
 
 
+def fetch_open_orders(symbol: Optional[str] = None) -> list[dict[str, Any]]:
+    """Best-effort fetch for normal open orders."""
+    candidates = [
+        ["current-all-open-orders"],
+        ["open-orders"],
+    ]
+    if symbol:
+        candidates = [args + ["--symbol", symbol] for args in candidates]
+
+    for args in candidates:
+        try:
+            result = _run_binance_cli(args, max_retries=1)
+            if isinstance(result, list):
+                return result
+            if isinstance(result, dict):
+                return result.get("orders", result.get("data", [])) or []
+        except Exception:
+            continue
+    return []
+
+
+def fetch_open_algo_orders(symbol: Optional[str] = None) -> list[dict[str, Any]]:
+    """Best-effort fetch for algo open orders such as STOP_MARKET / TAKE_PROFIT_MARKET."""
+    candidates = [
+        ["open-algo-orders"],
+        ["current-all-open-algo-orders"],
+        ["query-current-algo-open-orders"],
+    ]
+    if symbol:
+        candidates = [args + ["--symbol", symbol] for args in candidates]
+
+    for args in candidates:
+        try:
+            result = _run_binance_cli(args, max_retries=1)
+            if isinstance(result, list):
+                return result
+            if isinstance(result, dict):
+                return result.get("orders", result.get("data", [])) or []
+        except Exception:
+            continue
+    return []
+
+
 def execute_trade(
     signal: TradingSignal,
     account_balance: float,

@@ -205,6 +205,40 @@ def format_close_position_msg(symbol: str, direction: str, entry_price: float, e
     return msg
 
 
+def format_partial_take_profit_msg(
+    symbol: str,
+    direction: str,
+    entry_price: float,
+    exit_price: float,
+    quantity: float,
+    remaining_quantity: float,
+    pnl: float,
+    pnl_pct: float,
+    level: int = 0,
+    session_id: str = "",
+) -> str:
+    """格式化分批止盈成交通知"""
+    direction_text = "做多 LONG" if direction == "LONG" else "做空 SHORT"
+    pnl_sign = "+" if pnl >= 0 else ""
+    level_text = f"TP{level}" if level else "部分止盈"
+
+    msg = f"""🎯 <b>宙斯交易中枢 | 分批止盈成交</b>
+
+<b>标的</b>  <code>{_escape(symbol)}</code>
+<b>方向</b>  {direction_text}
+<b>档位</b>  <code>{_escape(level_text)}</code>
+<b>入场</b>  <code>${entry_price:,.4f}</code>
+<b>成交价</b>  <code>${exit_price:,.4f}</code>
+<b>止盈数量</b>  <code>{quantity}</code>
+<b>剩余数量</b>  <code>{remaining_quantity}</code>
+<b>本次盈亏</b>  🟢 <b>{pnl_sign}${pnl:,.2f}</b>  ({pnl_sign}{pnl_pct:.2f}%)"""
+
+    if session_id:
+        msg += f"\n<b>流水号</b>  <code>{_escape(session_id)}</code>"
+
+    return msg
+
+
 def format_summary_msg(positions: list, total_pnl: float, realized_pnl: float) -> str:
     """格式化持仓汇总通知"""
     msg = f"""📊 <b>宙斯交易中枢 | 持仓汇总</b>
