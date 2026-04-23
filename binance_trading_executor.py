@@ -685,7 +685,7 @@ def execute_trade(
     take_profit_roi_pcts: Optional[list[float]] = None,
     take_profit_price_pcts: Optional[list[float]] = None,
     take_profit_ratios: Optional[list[float]] = None,
-    take_profit_mode: str = "price",
+    take_profit_mode: str = "roi",
 ) -> dict[str, Any]:
     """Execute a trade based on a signal.
 

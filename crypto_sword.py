@@ -131,7 +131,7 @@ class TradingConfig:
         risk_per_trade_pct: float = 0.5,
         stop_loss_pct: float = 8.0,
         take_profit_pct: float = 20.0,
-        take_profit_mode: str = "price",
+        take_profit_mode: str = "roi",
         max_position_pct: float = 20.0,
         max_daily_loss_pct: float = 5.0,
         max_open_positions: int = 5,
@@ -2002,8 +2002,8 @@ def main():
     parser.add_argument(
         "--take-profit-mode",
         choices=["price", "roi"],
-        default="price",
-        help="止盈百分比口径：price=标的价格涨跌幅，roi=杠杆后收益率 (默认：price)",
+        default="roi",
+        help="止盈百分比口径：roi=杠杆后收益率，price=标的价格涨跌幅 (默认：roi)",
     )
     parser.add_argument("--max-positions", "-m", type=int, default=5, help="最大持仓数 (默认：5)")
     parser.add_argument("--max-daily-loss", type=float, default=5.0, help="每日最大亏损 %% (默认：5%%)")
