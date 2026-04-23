@@ -1,6 +1,0 @@
-{
-  "testnet": false,
-  "api_key": "YOUR_API_KEY",
-  "api_secret": "YOUR_API_KEY_SECRET",
-  "endpoint": "https://fapi.binance.com"
-}
