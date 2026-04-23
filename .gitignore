@@ -14,8 +14,8 @@ build/
 
 # Config with secrets
 config/binance_testnet.json
-config/telegram.json
-config/binance.json
+#config/telegram.json
+#config/binance.json
 config/binance_live.json
 
 # Environment
