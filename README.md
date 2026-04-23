@@ -81,6 +81,8 @@ export BINANCE_API_SECRET="YOUR_SECRET"
 
 系统同时接入 Binance USD-M Futures WebSocket：公开行情流用于持仓价格监听，用户数据流用于订单成交、账户和持仓变化同步；REST 仍作为最终下单和状态校准通道。
 
+短线风控保护：启动时会审计所有持仓保护单，开仓后会发送交易所止损/止盈委托确认；若发现持仓缺少保护单，系统会暂停新开仓并持续尝试补挂。
+
 ### Telegram 通知
 
 编辑 `config/telegram.json`:

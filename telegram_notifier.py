@@ -264,6 +264,39 @@ def format_partial_take_profit_msg(
     return msg
 
 
+def format_protection_status_msg(
+    symbol: str,
+    stop_loss_ok: bool,
+    take_profit_ok: bool,
+    stop_loss_order_id: int = 0,
+    take_profit_order_ids: list[int] = None,
+    session_id: str = "",
+    source: str = "audit",
+    message: str = "",
+) -> str:
+    """Format exchange-side protection status notification."""
+    tp_ids = take_profit_order_ids or []
+    ok = stop_loss_ok and take_profit_ok
+    title = "🛡️ 宙斯交易中枢 | 保护单确认" if ok else "🚨 宙斯交易中枢 | 裸仓风险"
+    status_text = "✅ 已受保护" if ok else "❌ 保护不完整"
+    sl_text = f"✅ {stop_loss_order_id}" if stop_loss_ok else "❌ 缺失"
+    tp_text = f"✅ {', '.join(str(x) for x in tp_ids)}" if take_profit_ok else "❌ 缺失"
+
+    msg = f"""{title}
+
+<b>标的</b>  <code>{_escape(symbol)}</code>
+<b>状态</b>  <code>{_escape(status_text)}</code>
+<b>止损单</b>  <code>{_escape(sl_text)}</code>
+<b>止盈单</b>  <code>{_escape(tp_text)}</code>
+<b>来源</b>  <code>{_escape(source)}</code>"""
+
+    if message:
+        msg += f"\n<b>说明</b>  <code>{_escape(message)}</code>"
+    if session_id:
+        msg += f"\n<b>流水号</b>  <code>{_escape(session_id)}</code>"
+    return msg
+
+
 def format_summary_msg(positions: list, total_pnl: float, realized_pnl: float) -> str:
     """格式化持仓汇总通知"""
     msg = f"""📊 <b>宙斯交易中枢 | 持仓汇总</b>

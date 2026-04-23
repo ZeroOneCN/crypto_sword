@@ -259,6 +259,11 @@ class BinanceUserDataWebSocketClient:
                 self.callbacks["on_order_update"](data)
             elif event_type == "ACCOUNT_UPDATE" and "on_account_update" in self.callbacks:
                 self.callbacks["on_account_update"](data)
+            elif (
+                ("ALGO" in event_type or "CONDITIONAL" in event_type)
+                and "on_algo_update" in self.callbacks
+            ):
+                self.callbacks["on_algo_update"](data)
             elif event_type == "listenKeyExpired":
                 logger.warning("Binance user data listenKey expired; reconnecting")
                 self._reconnect_async()

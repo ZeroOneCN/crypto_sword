@@ -166,7 +166,7 @@ def get_symbol_min_notional(symbol: str, default: float = 5.0) -> float:
     return default
 
 
-def calculate_min_quantity_for_notional(symbol: str, price: float, min_notional: float | None = None, buffer_pct: float = 3.0) -> float:
+def calculate_min_quantity_for_notional(symbol: str, price: float, min_notional: float | None = None, buffer_pct: float = 8.0) -> float:
     """Calculate a step-aligned quantity that remains above min notional after truncation."""
     if price <= 0:
         return 0.0

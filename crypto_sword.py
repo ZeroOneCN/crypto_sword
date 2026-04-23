@@ -61,6 +61,7 @@ try:
         format_close_position_msg,
         format_error_msg,
         format_partial_take_profit_msg,
+        format_protection_status_msg,
         format_shutdown_msg,
         format_summary_msg,
         format_startup_msg,
@@ -209,6 +210,8 @@ class Position:
         self.initial_quantity = quantity
         self.last_synced_quantity = quantity
         self.partial_tp_count = 0
+        self.protection_failures = 0
+        self.last_protection_error = ""
 
         # 动态跟踪
         self.highest_price: float = entry_price
@@ -374,6 +377,8 @@ class CryptoSword:
         self._ws_last_refresh: float = 0.0
         self._state_lock = threading.RLock()
         self._last_user_stream_sync: float = 0.0
+        self._new_entries_suspended = False
+        self._new_entries_suspended_alert_sent = False
 
     def _new_session_id(self, symbol: str) -> str:
         return f"{symbol}-{datetime.now().strftime('%Y%m%d%H%M%S')}-{uuid4().hex[:8]}"
@@ -497,6 +502,7 @@ class CryptoSword:
                 callbacks={
                     "on_order_update": self._handle_ws_order_update,
                     "on_account_update": self._handle_ws_account_update,
+                    "on_algo_update": self._handle_ws_algo_update,
                 }
             )
             self._user_ws_client.start()
@@ -543,6 +549,13 @@ class CryptoSword:
             logger.info(f"WS position update: {', '.join(changed_symbols[:8])}")
         self._request_state_sync_from_ws("ACCOUNT_UPDATE", changed_symbols[0] if changed_symbols else "")
 
+    def _handle_ws_algo_update(self, event: dict[str, Any]):
+        """React to conditional/algo order updates from user stream."""
+        symbol = str(event.get("s", event.get("symbol", "")) or "")
+        event_type = str(event.get("e", "") or "ALGO_UPDATE")
+        logger.info(f"WS algo update: {event_type}{f' | {symbol}' if symbol else ''}")
+        self._request_state_sync_from_ws(event_type, symbol)
+
     def _parse_trade_notes(self, notes: str) -> dict[str, str]:
         parsed: dict[str, str] = {}
         for note in (notes or "").split(";"):
@@ -576,6 +589,60 @@ class CryptoSword:
             else:
                 logger.warning(f"⚠️ {position.symbol} 止盈委托撤销失败：{order_id}")
 
+    def _position_protection_status(self, position: Position) -> dict[str, Any]:
+        stop_loss_ok = bool(position.stop_loss_order_id)
+        take_profit_ids = [int(x) for x in position.take_profit_order_ids if x]
+        expected_tp_count = len(position.take_profit_targets) if position.take_profit_targets else 1
+        take_profit_ok = bool(take_profit_ids)
+        return {
+            "stop_loss_ok": stop_loss_ok,
+            "take_profit_ok": take_profit_ok,
+            "protected": stop_loss_ok and take_profit_ok,
+            "take_profit_order_ids": take_profit_ids,
+            "expected_tp_count": expected_tp_count,
+        }
+
+    def _send_protection_status(self, position: Position, source: str, force: bool = False):
+        status = self._position_protection_status(position)
+        if not force and status["protected"]:
+            return
+        send_telegram_message(
+            format_protection_status_msg(
+                symbol=position.symbol,
+                stop_loss_ok=status["stop_loss_ok"],
+                take_profit_ok=status["take_profit_ok"],
+                stop_loss_order_id=position.stop_loss_order_id,
+                take_profit_order_ids=status["take_profit_order_ids"],
+                session_id=position.session_id,
+                source=source,
+                message=position.last_protection_error,
+            )
+        )
+
+    def _refresh_protection_risk_switch(self):
+        naked = []
+        for position in self.tracker.positions.values():
+            status = self._position_protection_status(position)
+            if not status["protected"]:
+                naked.append(position.symbol)
+
+        if naked:
+            self._new_entries_suspended = True
+            if not self._new_entries_suspended_alert_sent:
+                send_telegram_message(
+                    format_error_msg(
+                        error_type="裸仓保护失败，暂停新开仓",
+                        message=f"以下持仓保护单不完整：{', '.join(naked)}。系统会继续管理已有持仓，但暂停新开仓。",
+                        component="protection_guard",
+                    )
+                )
+                self._new_entries_suspended_alert_sent = True
+        else:
+            if self._new_entries_suspended:
+                logger.warning("🛡️ 所有持仓保护单已恢复，新开仓限制解除")
+            self._new_entries_suspended = False
+            self._new_entries_suspended_alert_sent = False
+
     def _ensure_position_protection(self, position: Position):
         """Place missing exchange-side SL/TP orders for tracked or restored positions."""
         close_side = "SELL" if position.side == "BUY" else "BUY"
@@ -594,6 +661,8 @@ class CryptoSword:
                 position.stop_loss_order_id = sl_result.order_id
                 logger.warning(f"🛡️ {position.symbol} 已补挂交易所止损单：{sl_result.order_id}")
             else:
+                position.protection_failures += 1
+                position.last_protection_error = sl_result.message
                 send_telegram_message(
                     format_error_msg(
                         error_type="保护止损补挂失败",
@@ -613,7 +682,8 @@ class CryptoSword:
             "price_move_pct": abs(position.take_profit_price - position.entry_price) / position.entry_price * 100 if position.entry_price else 0.0,
         }]
         if position.take_profit_order_ids:
-            return
+            self._refresh_protection_risk_switch()
+            return self._position_protection_status(position)["protected"]
 
         new_tp_order_ids: list[int] = []
         target_ratios = [max(float(target.get("ratio", 0) or 0), 0.0) for target in active_tp_targets]
@@ -646,6 +716,8 @@ class CryptoSword:
                 new_tp_order_ids.append(tp_result.order_id)
                 logger.warning(f"🎯 {position.symbol} 已补挂交易所止盈单：{tp_result.order_id} @ {tp_price}")
             else:
+                position.protection_failures += 1
+                position.last_protection_error = tp_result.message
                 send_telegram_message(
                     format_error_msg(
                         error_type="保护止盈补挂失败",
@@ -657,6 +729,12 @@ class CryptoSword:
                 )
 
         position.take_profit_order_ids = new_tp_order_ids
+        protected = self._position_protection_status(position)["protected"]
+        if protected:
+            position.protection_failures = 0
+            position.last_protection_error = ""
+        self._refresh_protection_risk_switch()
+        return protected
 
     def _notify_partial_take_profit(self, position: Position, reduced_qty: float, remaining_qty: float, price: float):
         if reduced_qty <= 0 or price <= 0:
@@ -714,6 +792,23 @@ class CryptoSword:
         missing_ids = sorted(order_id for order_id in expected_ids if order_id and order_id not in open_ids)
         if missing_ids:
             logger.warning(f"⚠️ {position.symbol} 保护委托可能已成交/失效：{missing_ids}")
+            position.last_protection_error = f"missing_order_ids={missing_ids}"
+            if position.stop_loss_order_id in missing_ids:
+                position.stop_loss_order_id = 0
+            position.take_profit_order_ids = [oid for oid in position.take_profit_order_ids if oid not in missing_ids]
+            self._refresh_protection_risk_switch()
+
+    def _audit_all_position_protection(self, source: str = "startup_audit"):
+        """Audit all tracked positions and confirm exchange-side protection."""
+        if not self.tracker.positions:
+            return
+
+        for position in list(self.tracker.positions.values()):
+            self._ensure_position_protection(position)
+            self._sync_protective_order_snapshot(position)
+            self._send_protection_status(position, source=source, force=True)
+
+        self._refresh_protection_risk_switch()
 
     def _sync_positions_with_exchange(self):
         """Sync local tracked positions with real exchange positions for staged TP fills."""
@@ -944,6 +1039,7 @@ class CryptoSword:
             raise RuntimeError(f"日志目录不可写: {log_dir}")
 
         self._restore_positions(account_info)
+        self._audit_all_position_protection(source="startup_audit")
         return balance
 
     def get_current_prices(self, symbols: List[str]) -> Dict[str, float]:
@@ -1031,6 +1127,20 @@ class CryptoSword:
         symbol = signal["symbol"]
         direction = signal["direction"]
         price = signal["price"]
+
+        if self._new_entries_suspended:
+            logger.warning(f"🛡️ {symbol} 新开仓暂停：存在保护单不完整的持仓")
+            if not self._new_entries_suspended_alert_sent:
+                send_telegram_message(
+                    format_error_msg(
+                        error_type="新开仓已暂停",
+                        message="存在未完整受保护的持仓，请先确认止损/止盈保护单。",
+                        symbol=symbol,
+                        component="protection_guard",
+                    )
+                )
+                self._new_entries_suspended_alert_sent = True
+            return None
 
         try:
             trading_signal = TradingSignal(
@@ -1168,6 +1278,7 @@ class CryptoSword:
                 take_profit_order_ids=[int(item.get("order_id", 0) or 0) for item in take_profit_targets if item.get("order_id")],
             )
             self._ensure_position_protection(position)
+            self._send_protection_status(position, source="entry_confirm", force=True)
 
             from telegram_notifier import format_open_position_msg
 
