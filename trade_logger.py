@@ -348,6 +348,8 @@ class TradeDatabase:
             "LONG": {"count": 0, "pnl": 0.0},
             "SHORT": {"count": 0, "pnl": 0.0},
         }
+        stage_stats: Dict[str, Dict[str, Any]] = {}
+        loss_patterns: Dict[str, Dict[str, Any]] = {}
         for trade in trades:
             reason = (trade.exit_reason or "UNKNOWN").upper()
             if "TAKE_PROFIT" in reason:
@@ -366,6 +368,46 @@ class TradeDatabase:
             if side_key in side_stats:
                 side_stats[side_key]["count"] += 1
                 side_stats[side_key]["pnl"] = round(side_stats[side_key]["pnl"] + float(trade.pnl or 0), 2)
+
+            stage_key = trade.stage or "UNKNOWN"
+            if stage_key not in stage_stats:
+                stage_stats[stage_key] = {"count": 0, "pnl": 0.0}
+            stage_stats[stage_key]["count"] += 1
+            stage_stats[stage_key]["pnl"] = round(stage_stats[stage_key]["pnl"] + float(trade.pnl or 0), 2)
+
+            funding_rate = 0.0
+            oi_24h = 0.0
+            snapshot = trade.market_snapshot or {}
+            try:
+                funding_rate = float(snapshot.get("funding_rate", 0) or 0)
+            except Exception:
+                funding_rate = 0.0
+            try:
+                oi_24h = float(snapshot.get("oi_24h_pct", 0) or 0)
+            except Exception:
+                oi_24h = 0.0
+
+            if funding_rate <= -0.003:
+                funding_bucket = "极负费率"
+            elif funding_rate < 0:
+                funding_bucket = "负费率"
+            elif funding_rate >= 0.003:
+                funding_bucket = "极正费率"
+            else:
+                funding_bucket = "正费率"
+
+            if oi_24h >= 120:
+                oi_bucket = "OI过热"
+            elif oi_24h >= 60:
+                oi_bucket = "OI偏热"
+            else:
+                oi_bucket = "OI正常"
+
+            pattern_key = f"{stage_key} | {funding_bucket} | {oi_bucket}"
+            if pattern_key not in loss_patterns:
+                loss_patterns[pattern_key] = {"count": 0, "pnl": 0.0}
+            loss_patterns[pattern_key]["count"] += 1
+            loss_patterns[pattern_key]["pnl"] = round(loss_patterns[pattern_key]["pnl"] + float(trade.pnl or 0), 2)
 
         def _trade_summary(trade: Optional[TradeRecord]) -> Optional[Dict[str, Any]]:
             if not trade:
@@ -391,6 +433,22 @@ class TradeDatabase:
             "worst_trade": _trade_summary(worst_trade),
             "reason_counts": reason_counts,
             "side_stats": side_stats,
+            "worst_stage": (
+                min(stage_stats.items(), key=lambda item: item[1]["pnl"])[0]
+                if stage_stats else ""
+            ),
+            "worst_stage_pnl": (
+                round(min(stage_stats.items(), key=lambda item: item[1]["pnl"])[1]["pnl"], 2)
+                if stage_stats else 0.0
+            ),
+            "worst_pattern": (
+                min(loss_patterns.items(), key=lambda item: item[1]["pnl"])[0]
+                if loss_patterns else ""
+            ),
+            "worst_pattern_pnl": (
+                round(min(loss_patterns.items(), key=lambda item: item[1]["pnl"])[1]["pnl"], 2)
+                if loss_patterns else 0.0
+            ),
         }
 
     def export_to_csv(self, output_path: Path, days: int = 30):

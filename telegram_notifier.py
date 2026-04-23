@@ -626,6 +626,16 @@ def format_daily_report_msg(report: dict[str, Any]) -> str:
         f"<code>{float(short_stats.get('pnl', 0) or 0):+,.2f} USDT</code>"
     )
 
+    worst_stage = report.get("worst_stage") or ""
+    worst_stage_pnl = float(report.get("worst_stage_pnl", 0) or 0)
+    if worst_stage:
+        msg += f"\n\n<b>最亏阶段</b>  <code>{_escape(worst_stage)}</code> / <code>{worst_stage_pnl:+,.2f} USDT</code>"
+
+    worst_pattern = report.get("worst_pattern") or ""
+    worst_pattern_pnl = float(report.get("worst_pattern_pnl", 0) or 0)
+    if worst_pattern:
+        msg += f"\n<b>最亏模式</b>  <code>{_escape(worst_pattern)}</code> / <code>{worst_pattern_pnl:+,.2f} USDT</code>"
+
     return msg
 
 

@@ -610,11 +610,13 @@ class CryptoSword:
             logger.info(f"🗑️ {symbol} 候选观察超时，已淘汰")
 
     def _load_confirmation_trend(self, symbol: str) -> dict[str, Any]:
-        """Reuse cached 1h klines to confirm trend/moving-average recovery."""
-        klines = get_klines(symbol, interval="1h", limit=50)
-        if not klines:
-            return {}
-        return analyze_trend(klines)
+        """Reuse cached klines to confirm 1h trend and 15m reclaim."""
+        trend_1h = analyze_trend(get_klines(symbol, interval="1h", limit=50) or [])
+        trend_15m = analyze_trend(get_klines(symbol, interval="15m", limit=50) or [])
+        return {
+            "1h": trend_1h,
+            "15m": trend_15m,
+        }
 
     def _apply_entry_confirmation(self, signal: dict[str, Any]) -> dict[str, Any]:
         """Convert raw signal into watch/ready/invalid states."""
@@ -691,24 +693,27 @@ class CryptoSword:
             return signal
 
         trend = self._load_confirmation_trend(symbol)
-        ma5 = float(trend.get("ma5", 0) or 0)
-        ma_alignment = str(trend.get("ma_alignment", "NEUTRAL") or "NEUTRAL")
+        trend_1h = trend.get("1h", {}) or {}
+        trend_15m = trend.get("15m", {}) or {}
+        ma5 = float(trend_15m.get("ma5", 0) or 0)
+        ma_alignment = str(trend_15m.get("ma_alignment", "NEUTRAL") or "NEUTRAL")
+        higher_alignment = str(trend_1h.get("ma_alignment", "NEUTRAL") or "NEUTRAL")
         trend_ok = False
         if direction == "LONG":
-            trend_ok = ma_alignment == "BULLISH" and current_price >= ma5 > 0
+            trend_ok = higher_alignment == "BULLISH" and ma_alignment == "BULLISH" and current_price >= ma5 > 0
         else:
-            trend_ok = ma_alignment == "BEARISH" and 0 < current_price <= ma5
+            trend_ok = higher_alignment == "BEARISH" and ma_alignment == "BEARISH" and 0 < current_price <= ma5
 
         if not trend_ok:
             signal["entry_status"] = "watch"
             signal["entry_status_text"] = "观察中"
-            signal["entry_note"] = "已回踩，等待重站均线"
+            signal["entry_note"] = "已回踩，等待 15m 重站均线"
             return signal
 
         self._entry_watchlist.pop(symbol, None)
         signal["entry_status"] = "ready"
         signal["entry_status_text"] = "确认入场"
-        signal["entry_note"] = f"回踩 {pullback_pct:.2f}% 后重站均线"
+        signal["entry_note"] = f"回踩 {pullback_pct:.2f}% 后重站 15m 均线"
         signal["confirmation_trend"] = trend
         return signal
 
