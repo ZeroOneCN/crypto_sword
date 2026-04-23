@@ -144,7 +144,7 @@ class PositionRisk:
 # Binance CLI 封装
 # ═══════════════════════════════════════════════════════════════
 
-def run_binance_cli(args: List[str], timeout: int = 60, max_retries: int = 5) -> Optional[Any]:
+def run_native_binance_compat(args: List[str], timeout: int = 60, max_retries: int = 5) -> Optional[Any]:
     """Compatibility wrapper backed by native Binance REST.
     
     Added retry logic and empty response handling to prevent JSON parse errors.
@@ -175,7 +175,7 @@ def run_binance_cli(args: List[str], timeout: int = 60, max_retries: int = 5) ->
 
 def get_klines(symbol: str, interval: str = "1h", limit: int = 50) -> Optional[List[Dict]]:
     """获取 K 线数据"""
-    data = run_binance_cli([
+    data = run_native_binance_compat([
         "kline-candlestick-data",
         "--symbol", symbol,
         "--interval", interval,

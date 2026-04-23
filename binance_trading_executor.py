@@ -59,7 +59,7 @@ class OrderResult:
         }
 
 
-def _run_binance_cli(args: list[str], max_retries: int = 5) -> dict[str, Any] | list[Any]:
+def _run_native_binance_compat(args: list[str], max_retries: int = 5) -> dict[str, Any] | list[Any]:
     """Compatibility wrapper backed by native Binance REST."""
     if not get_native_binance_client:
         raise RuntimeError("原生 Binance API 客户端不可用")

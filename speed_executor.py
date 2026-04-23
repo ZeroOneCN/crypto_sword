@@ -295,7 +295,7 @@ class ConditionOrderManager:
 # 快速平仓通道 - 阿瑞斯的战斧
 # ═══════════════════════════════════════════════════════════════
 
-def run_binance_cli(args: List[str], timeout: int = 10) -> Optional[Any]:
+def run_native_binance_compat(args: List[str], timeout: int = 10) -> Optional[Any]:
     """Compatibility wrapper backed by native Binance REST."""
     try:
         if get_native_binance_client is None:

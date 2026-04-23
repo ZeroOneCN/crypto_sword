@@ -145,7 +145,7 @@ def _throttle_api_call():
 # Binance CLI 封装 - 赫尔墨斯的信使
 # ═══════════════════════════════════════════════════════════════
 
-def run_binance_cli(args: List[str], timeout: int = 60, max_retries: int = 5) -> Optional[Any]:
+def run_native_binance_compat(args: List[str], timeout: int = 60, max_retries: int = 5) -> Optional[Any]:
     """Compatibility wrapper backed by native Binance REST.
     
     Added retry logic and empty response handling to prevent JSON parse errors.
@@ -191,7 +191,7 @@ def get_klines(symbol: str, interval: str = "1h", limit: int = 50, use_cache: bo
         if cached is not None:
             return cached
     
-    data = run_binance_cli([
+    data = run_native_binance_compat([
         "kline-candlestick-data",
         "--symbol", symbol,
         "--interval", interval,

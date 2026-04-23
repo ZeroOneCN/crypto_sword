@@ -290,7 +290,7 @@ class SymbolBreakoutResult:
         }
 
 
-def _run_binance_cli(args: list[str], max_retries: int = 5) -> dict[str, Any] | list[Any]:
+def _run_native_binance_compat(args: list[str], max_retries: int = 5) -> dict[str, Any] | list[Any]:
     """Compatibility wrapper backed by native Binance REST.
     
     Added retry logic and empty response handling to prevent JSON parse errors.
@@ -330,7 +330,7 @@ def fetch_ticker_24hr(symbol: str | None = None) -> dict[str, Any]:
     args = ["ticker24hr-price-change-statistics"]
     if symbol:
         args.extend(["--symbol", symbol])
-    return _cache_set(cache_key, _run_binance_cli(args), 5 if symbol is None else 10)  # type: ignore
+    return _cache_set(cache_key, _run_native_binance_compat(args), 5 if symbol is None else 10)  # type: ignore
 
 
 def fetch_open_interest(symbol: str) -> dict[str, Any]:
@@ -339,7 +339,7 @@ def fetch_open_interest(symbol: str) -> dict[str, Any]:
     cached = _cache_get(cache_key, 15)
     if cached is not None:
         return cached
-    return _cache_set(cache_key, _run_binance_cli(["open-interest", "--symbol", symbol]), 15)  # type: ignore
+    return _cache_set(cache_key, _run_native_binance_compat(["open-interest", "--symbol", symbol]), 15)  # type: ignore
 
 
 def fetch_oi_statistics(symbol: str, period: str = "1h", limit: int = 24) -> list[dict[str, Any]]:
@@ -353,7 +353,7 @@ def fetch_oi_statistics(symbol: str, period: str = "1h", limit: int = 24) -> lis
     if cached is not None:
         return cached
     try:
-        data = _run_binance_cli(["open-interest-statistics", "--symbol", symbol, "--period", period, "--limit", str(limit)])  # type: ignore
+        data = _run_native_binance_compat(["open-interest-statistics", "--symbol", symbol, "--period", period, "--limit", str(limit)])  # type: ignore
         return _cache_set(cache_key, data, 120)
     except RuntimeError:
         return []  # Handle new coins with no OI history
@@ -365,7 +365,7 @@ def fetch_long_short_ratio(symbol: str, period: str = "1h", limit: int = 24) -> 
     cached = _cache_get(cache_key, 120)
     if cached is not None:
         return cached
-    data = _run_binance_cli(["long-short-ratio", "--symbol", symbol, "--period", period, "--limit", str(limit)])  # type: ignore
+    data = _run_native_binance_compat(["long-short-ratio", "--symbol", symbol, "--period", period, "--limit", str(limit)])  # type: ignore
     return _cache_set(cache_key, data, 120)
 
 
@@ -375,7 +375,7 @@ def fetch_funding_rate(symbol: str, limit: int = 3) -> list[dict[str, Any]]:
     cached = _cache_get(cache_key, 180)
     if cached is not None:
         return cached
-    data = _run_binance_cli(["get-funding-rate-history", "--symbol", symbol, "--limit", str(limit)])  # type: ignore
+    data = _run_native_binance_compat(["get-funding-rate-history", "--symbol", symbol, "--limit", str(limit)])  # type: ignore
     return _cache_set(cache_key, data, 180)
 
 
@@ -385,7 +385,7 @@ def fetch_klines(symbol: str, interval: str = "1h", limit: int = 24) -> list[Any
     cached = _cache_get(cache_key, 60)
     if cached is not None:
         return cached
-    data = _run_binance_cli([
+    data = _run_native_binance_compat([
         "kline-candlestick-data",
         "--symbol", symbol,
         "--interval", interval,
