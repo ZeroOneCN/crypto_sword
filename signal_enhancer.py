@@ -10,6 +10,7 @@
 """
 
 import logging
+import os
 import time
 from typing import Dict, Any, Optional, List, Tuple
 from pathlib import Path
@@ -126,7 +127,9 @@ class SignalScore:
 # API 调用限流 - 避免 Binance 限流
 # ═══════════════════════════════════════════════
 _last_api_call_time = 0.0
-_API_CALL_INTERVAL = 0.5  # 每次 API 调用间隔 0.5 秒
+_API_CALL_INTERVAL = float(os.getenv("HERMES_SIGNAL_API_THROTTLE_SEC", "0.05"))
+_MARKET_ENV_CACHE: Tuple[Dict[str, Any], float] | None = None
+_MARKET_ENV_CACHE_TTL = float(os.getenv("HERMES_MARKET_ENV_CACHE_TTL_SEC", "300"))
 
 def _throttle_api_call():
     """限流：确保 API 调用间隔"""
@@ -158,7 +161,9 @@ def run_binance_cli(args: List[str], timeout: int = 60, max_retries: int = 5) ->
 
     for attempt in range(max_retries + 1):
         try:
-            time.sleep(0.2)
+            public_throttle = float(os.getenv("HERMES_SIGNAL_PUBLIC_THROTTLE_SEC", "0.05"))
+            if public_throttle > 0:
+                time.sleep(public_throttle)
             return get_native_binance_client().command_compat(list(args))  # type: ignore
         except Exception as e:
             if attempt < max_retries:
@@ -547,6 +552,13 @@ def score_market_environment() -> Dict[str, Any]:
             "fear_greed": dict,
         }
     """
+    global _MARKET_ENV_CACHE
+    now = time.time()
+    if _MARKET_ENV_CACHE is not None:
+        cached, cached_at = _MARKET_ENV_CACHE
+        if now - cached_at < _MARKET_ENV_CACHE_TTL:
+            return cached
+
     try:
         from surf_enhancer import get_market_overview
         overview = get_market_overview()
@@ -575,21 +587,25 @@ def score_market_environment() -> Dict[str, Any]:
         elif liquidation_risk == "中":
             fg_score -= 10
         
-        return {
+        result = {
             "sentiment": sentiment,
             "score": max(0, min(100, fg_score)),
             "fear_greed": fg,
             "liquidation_risk": liquidation_risk,
         }
+        _MARKET_ENV_CACHE = (result, now)
+        return result
         
     except Exception as e:
         logger.warning(f"获取市场环境失败：{e}")
-        return {
+        result = {
             "sentiment": "中性",
             "score": 50,
             "fear_greed": {},
             "liquidation_risk": "未知",
         }
+        _MARKET_ENV_CACHE = (result, now)
+        return result
 
 
 # ═══════════════════════════════════════════════════════════════
