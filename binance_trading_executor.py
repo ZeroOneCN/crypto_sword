@@ -533,21 +533,21 @@ def place_stop_loss_order(
         stop_price = adjust_price_precision(symbol, stop_price)
         resolved_position_side = position_side or ("LONG" if side == "SELL" else "SHORT")
 
-        result = get_native_binance_client().new_order(  # type: ignore
+        result = get_native_binance_client().new_algo_order(  # type: ignore
             symbol=symbol,
             side=side,
             order_type="STOP_MARKET",
             quantity=quantity,
             position_side=resolved_position_side,
             reduce_only=reduce_only,
-            stop_price=stop_price,
+            trigger_price=stop_price,
             working_type="MARK_PRICE",
             new_order_resp_type="RESULT",
         )
         
         executed_qty = float(result.get("executedQty", 0))
-        order_id = int(result.get("orderId", result.get("orderID", 0)))
-        status = result.get("status", "ORDER_PLACED")
+        order_id = int(result.get("algoId", result.get("orderId", result.get("orderID", 0))))
+        status = result.get("status", result.get("algoStatus", "ALGO_ORDER_PLACED"))
 
         return OrderResult(
             symbol=symbol,
@@ -587,21 +587,21 @@ def place_take_profit_order(
         trigger_price = adjust_price_precision(symbol, trigger_price)
         resolved_position_side = position_side or ("LONG" if side == "SELL" else "SHORT")
 
-        result = get_native_binance_client().new_order(  # type: ignore
+        result = get_native_binance_client().new_algo_order(  # type: ignore
             symbol=symbol,
             side=side,
             order_type="TAKE_PROFIT_MARKET",
             quantity=quantity,
             position_side=resolved_position_side,
             reduce_only=reduce_only,
-            stop_price=trigger_price,
+            trigger_price=trigger_price,
             working_type="MARK_PRICE",
             new_order_resp_type="RESULT",
         )
 
         executed_qty = float(result.get("executedQty", 0))
-        order_id = int(result.get("orderId", result.get("orderID", 0)))
-        status = result.get("status", "ORDER_PLACED")
+        order_id = int(result.get("algoId", result.get("orderId", result.get("orderID", 0))))
+        status = result.get("status", result.get("algoStatus", "ALGO_ORDER_PLACED"))
 
         return OrderResult(
             symbol=symbol,
@@ -630,15 +630,21 @@ def cancel_protective_order(symbol: str, order_id: int) -> bool:
         return False
 
     if not is_native_binance_configured() or not get_native_binance_client:
-        raise RuntimeError("原生 Binance API 未配置，无法撤单")
+        raise RuntimeError("Native Binance API is not configured; cannot cancel order")
 
     try:
-        get_native_binance_client().cancel_order(symbol, order_id)  # type: ignore
+        get_native_binance_client().cancel_algo_order(symbol, order_id)  # type: ignore
         return True
-    except Exception as e:
-        logger.warning(f"{symbol} 原生撤单失败 order_id={order_id}: {e}")
-        return False
-
+    except Exception as algo_error:
+        try:
+            get_native_binance_client().cancel_order(symbol, order_id)  # type: ignore
+            return True
+        except Exception as order_error:
+            logger.warning(
+                f"{symbol} native cancel failed id={order_id}: "
+                f"algo={algo_error}; order={order_error}"
+            )
+            return False
 
 def cancel_stop_loss_order(symbol: str, order_id: int) -> bool:
     """Backward-compatible stop-loss cancellation wrapper."""

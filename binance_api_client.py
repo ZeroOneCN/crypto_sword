@@ -214,11 +214,51 @@ class BinanceApiClient:
 
         return self._request("POST", "/fapi/v1/order", params=params, signed=True)
 
+    def new_algo_order(
+        self,
+        symbol: str,
+        side: str,
+        order_type: str,
+        quantity: float | None = None,
+        position_side: str | None = None,
+        reduce_only: bool = False,
+        trigger_price: float | None = None,
+        working_type: str = "MARK_PRICE",
+        new_order_resp_type: str = "RESULT",
+    ) -> dict[str, Any]:
+        """Create a USD-M Futures conditional algo order."""
+        params: dict[str, Any] = {
+            "algoType": "CONDITIONAL",
+            "symbol": symbol,
+            "side": side,
+            "type": order_type,
+            "newOrderRespType": new_order_resp_type,
+        }
+        if quantity is not None:
+            params["quantity"] = _format_decimal(quantity)
+        if position_side:
+            params["positionSide"] = position_side
+        if reduce_only:
+            params["reduceOnly"] = "true"
+        if trigger_price is not None:
+            params["triggerPrice"] = _format_decimal(trigger_price)
+            params["workingType"] = working_type
+
+        return self._request("POST", "/fapi/v1/algoOrder", params=params, signed=True)
+
     def cancel_order(self, symbol: str, order_id: int) -> dict[str, Any]:
         return self._request(
             "DELETE",
             "/fapi/v1/order",
             params={"symbol": symbol, "orderId": order_id},
+            signed=True,
+        )
+
+    def cancel_algo_order(self, symbol: str, algo_id: int) -> dict[str, Any]:
+        return self._request(
+            "DELETE",
+            "/fapi/v1/algoOrder",
+            params={"symbol": symbol, "algoId": algo_id},
             signed=True,
         )
 
