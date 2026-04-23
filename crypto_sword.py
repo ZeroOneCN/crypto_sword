@@ -62,6 +62,7 @@ try:
         format_error_msg,
         format_partial_take_profit_msg,
         format_protection_status_msg,
+        format_scan_monitor_msg,
         format_shutdown_msg,
         format_summary_msg,
         format_startup_msg,
@@ -379,6 +380,9 @@ class CryptoSword:
         self._last_user_stream_sync: float = 0.0
         self._new_entries_suspended = False
         self._new_entries_suspended_alert_sent = False
+        self._startup_audit_started = False
+        self._last_monitor_time: float = 0.0
+        self._monitor_interval: int = 300
 
     def _new_session_id(self, symbol: str) -> str:
         return f"{symbol}-{datetime.now().strftime('%Y%m%d%H%M%S')}-{uuid4().hex[:8]}"
@@ -810,6 +814,22 @@ class CryptoSword:
 
         self._refresh_protection_risk_switch()
 
+    def _start_background_protection_audit(self, source: str = "startup_audit"):
+        """Run protection audit outside the startup critical path."""
+        if self._startup_audit_started:
+            return
+        self._startup_audit_started = True
+
+        def worker():
+            try:
+                logger.info("🛡️ 后台保护单审计启动")
+                self._audit_all_position_protection(source=source)
+                logger.info("🛡️ 后台保护单审计完成")
+            except Exception as e:
+                logger.warning(f"后台保护单审计失败：{e}")
+
+        threading.Thread(target=worker, daemon=True).start()
+
     def _sync_positions_with_exchange(self):
         """Sync local tracked positions with real exchange positions for staged TP fills."""
         if not self.tracker.positions:
@@ -1039,7 +1059,6 @@ class CryptoSword:
             raise RuntimeError(f"日志目录不可写: {log_dir}")
 
         self._restore_positions(account_info)
-        self._audit_all_position_protection(source="startup_audit")
         return balance
 
     def get_current_prices(self, symbols: List[str]) -> Dict[str, float]:
@@ -1459,6 +1478,7 @@ class CryptoSword:
         # 2. 扫描新信号
         signals = self.scan_for_signals()
         logger.info(f"📡 发现 {len(signals)} 个交易信号")
+        self._send_scan_monitor(signals)
 
         if self._is_daily_loss_limit_hit():
             if not self._daily_loss_alert_sent:
@@ -1507,6 +1527,23 @@ class CryptoSword:
         msg += f"\n\n<b>已平仓</b>  <code>{summary['closed_today']}</code> 笔"
         send_telegram_message(msg)
 
+    def _send_scan_monitor(self, signals: list[dict]):
+        """Send a compact Telegram scanner monitor report."""
+        now = time.time()
+        interval = max(60, min(self._monitor_interval, self._current_scan_interval))
+        if now - self._last_monitor_time < interval:
+            return
+        self._last_monitor_time = now
+        try:
+            msg = format_scan_monitor_msg(
+                signals=signals,
+                scanned_count=self.config.scan_top_n,
+                max_items=5,
+            )
+            send_telegram_message(msg)
+        except Exception as e:
+            logger.debug(f"扫描监控通知发送失败：{e}")
+
     def run(self):
         """主循环 - 诸神黄昏的永恒之战"""
         mode_text = f"{self.config.mode_emoji} {self.config.mode_name} 模式"
@@ -1524,6 +1561,7 @@ class CryptoSword:
         try:
             self.day_start_balance = self._run_health_checks()
             self._start_user_data_stream()
+            self._start_background_protection_audit(source="startup_audit")
             logger.info(f"🩺 启动健康检查通过 | 可用余额: ${self.day_start_balance:.2f}")
         except Exception as e:
             logger.error(f"❌ 启动健康检查失败：{e}")

@@ -83,6 +83,8 @@ export BINANCE_API_SECRET="YOUR_SECRET"
 
 短线风控保护：启动时会审计所有持仓保护单，开仓后会发送交易所止损/止盈委托确认；若发现持仓缺少保护单，系统会暂停新开仓并持续尝试补挂。
 
+实时监控：每轮扫描会通过 Telegram 发送紧凑版“妖币扫描报告”，展示有效信号、方向、评分、资金费率、24h 价格变化、OI 和现价。
+
 ### Telegram 通知
 
 编辑 `config/telegram.json`:

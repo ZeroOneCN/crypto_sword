@@ -23,6 +23,7 @@ except Exception:
 
 
 logger = logging.getLogger(__name__)
+_leverage_cache: dict[str, int] = {}
 
 
 @dataclass
@@ -465,8 +466,9 @@ def place_market_order(
             raise RuntimeError("原生 Binance API 未配置，无法下单")
 
         resolved_position_side = position_side or ("LONG" if side == "BUY" else "SHORT")
-        if not reduce_only:
+        if not reduce_only and _leverage_cache.get(symbol) != leverage:
             get_native_binance_client().change_leverage(symbol, leverage)  # type: ignore
+            _leverage_cache[symbol] = leverage
 
         result = get_native_binance_client().new_order(  # type: ignore
             symbol=symbol,

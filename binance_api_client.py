@@ -238,7 +238,9 @@ class BinanceApiClient:
             params["quantity"] = _format_decimal(quantity)
         if position_side:
             params["positionSide"] = position_side
-        if reduce_only:
+        # Hedge Mode uses positionSide to determine which leg is closed.
+        # Binance rejects reduceOnly when it is not required for this endpoint.
+        if reduce_only and not position_side:
             params["reduceOnly"] = "true"
         if trigger_price is not None:
             params["triggerPrice"] = _format_decimal(trigger_price)

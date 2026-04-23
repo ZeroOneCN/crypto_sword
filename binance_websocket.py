@@ -192,8 +192,8 @@ class BinanceWebSocketClient:
         self._thread = threading.Thread(target=self._run_ws, daemon=True)
         self._thread.start()
 
-        # Wait for connection
-        time.sleep(2)
+        # Do not block trading; first ticks will arrive asynchronously.
+        time.sleep(0.1)
 
     def stop(self):
         """Stop WebSocket connection."""
@@ -338,7 +338,8 @@ class BinanceUserDataWebSocketClient:
         self._thread.start()
         self._keepalive_thread = threading.Thread(target=self._run_keepalive, daemon=True)
         self._keepalive_thread.start()
-        time.sleep(1)
+        # Startup should not wait for the socket handshake; REST remains authoritative.
+        time.sleep(0.1)
 
     def stop(self):
         """Stop user data stream and close listenKey."""
