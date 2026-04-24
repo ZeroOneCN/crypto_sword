@@ -16,12 +16,9 @@ from typing import Dict, Any, Optional, List, Tuple
 from pathlib import Path
 from dataclasses import dataclass
 
-logger = logging.getLogger(__name__)
+from binance_compat import run_native_binance_compat
 
-try:
-    from binance_api_client import get_native_binance_client
-except Exception:
-    get_native_binance_client = None
+logger = logging.getLogger(__name__)
 
 # ═══════════════════════════════════════════════
 # K 线缓存 - 减少 API 调用
@@ -123,57 +120,8 @@ class SignalScore:
         }
 
 
-# ═══════════════════════════════════════════════
-# API 调用限流 - 避免 Binance 限流
-# ═══════════════════════════════════════════════
-_last_api_call_time = 0.0
-_API_CALL_INTERVAL = float(os.getenv("HERMES_SIGNAL_API_THROTTLE_SEC", "0.05"))
 _MARKET_ENV_CACHE: Tuple[Dict[str, Any], float] | None = None
 _MARKET_ENV_CACHE_TTL = float(os.getenv("HERMES_MARKET_ENV_CACHE_TTL_SEC", "300"))
-
-def _throttle_api_call():
-    """限流：确保 API 调用间隔"""
-    global _last_api_call_time
-    now = time.time()
-    elapsed = now - _last_api_call_time
-    if elapsed < _API_CALL_INTERVAL:
-        time.sleep(_API_CALL_INTERVAL - elapsed)
-    _last_api_call_time = time.time()
-
-
-# ═══════════════════════════════════════════════════════════════
-# Binance CLI 封装 - 赫尔墨斯的信使
-# ═══════════════════════════════════════════════════════════════
-
-def run_native_binance_compat(args: List[str], timeout: int = 60, max_retries: int = 5) -> Optional[Any]:
-    """Compatibility wrapper backed by native Binance REST.
-    
-    Added retry logic and empty response handling to prevent JSON parse errors.
-    Increased retries to 5 with exponential backoff for rate limit handling.
-    Added API call throttling to avoid rate limiting.
-    """
-    # 限流：确保 API 调用间隔
-    _throttle_api_call()
-    
-    if get_native_binance_client is None:
-        logger.error("原生 Binance API 客户端不可用")
-        return None
-
-    for attempt in range(max_retries + 1):
-        try:
-            public_throttle = float(os.getenv("HERMES_SIGNAL_PUBLIC_THROTTLE_SEC", "0.05"))
-            if public_throttle > 0:
-                time.sleep(public_throttle)
-            return get_native_binance_client().command_compat(list(args))  # type: ignore
-        except Exception as e:
-            if attempt < max_retries:
-                time.sleep(2 ** attempt)
-                continue
-            logger.error(f"原生 Binance API 异常：{e}")
-            return None
-
-    return None
-
 
 # ═══════════════════════════════════════════════════════════════
 # 多时间框架分析 - 克罗诺斯的时间之轮

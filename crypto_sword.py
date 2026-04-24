@@ -88,6 +88,7 @@ try:
         RiskConfig,
         calculate_position_size,
     )
+    from speed_executor import quick_close_position
     try:
         from binance_websocket import (
             BinanceAllMarketTickerWebSocketClient,
@@ -162,6 +163,10 @@ class TradingConfig:
         breakeven_offset_pct: float = 0.10,
         entry_confirmation_enabled: bool = True,
         entry_confirmation_timeout_sec: int = 30 * 60,
+        momentum_entry_enabled: bool = True,
+        momentum_entry_score: float = 72.0,
+        momentum_entry_min_change_pct: float = 12.0,
+        momentum_entry_min_oi_pct: float = 50.0,
         daily_report_enabled: bool = True,
         daily_report_on_first_cycle: bool = True,
         # 目标 - 矮人锻造的利刃
@@ -199,6 +204,10 @@ class TradingConfig:
         self.breakeven_offset_pct = breakeven_offset_pct
         self.entry_confirmation_enabled = entry_confirmation_enabled
         self.entry_confirmation_timeout_sec = entry_confirmation_timeout_sec
+        self.momentum_entry_enabled = momentum_entry_enabled
+        self.momentum_entry_score = momentum_entry_score
+        self.momentum_entry_min_change_pct = momentum_entry_min_change_pct
+        self.momentum_entry_min_oi_pct = momentum_entry_min_oi_pct
         self.daily_report_enabled = daily_report_enabled
         self.daily_report_on_first_cycle = daily_report_on_first_cycle
         self.target_altcoins = target_altcoins
@@ -618,6 +627,54 @@ class CryptoSword:
             "15m": trend_15m,
         }
 
+    def _is_momentum_entry_ready(
+        self,
+        signal: dict[str, Any],
+        trend: dict[str, Any],
+        current_price: float,
+    ) -> tuple[bool, str]:
+        """Allow exceptional momentum entries when waiting for pullback misses the move."""
+        if not self.config.momentum_entry_enabled:
+            return False, ""
+
+        direction = signal.get("direction", "")
+        metrics = signal.get("metrics", {}) or {}
+        score_total = float((signal.get("score") or {}).get("total_score", 0) or 0)
+        change_24h = float(metrics.get("change_24h_pct", 0) or 0)
+        oi_change = float(metrics.get("oi_24h_pct", 0) or 0)
+        funding = abs(float(metrics.get("funding_rate", 0) or 0))
+
+        if score_total < self.config.momentum_entry_score:
+            return False, ""
+        if abs(change_24h) < self.config.momentum_entry_min_change_pct:
+            return False, ""
+        if oi_change < self.config.momentum_entry_min_oi_pct:
+            return False, ""
+        if funding >= self.config.max_abs_funding_rate:
+            return False, ""
+
+        trend_1h = trend.get("1h", {}) or {}
+        trend_15m = trend.get("15m", {}) or {}
+        ma5 = float(trend_15m.get("ma5", 0) or 0)
+        ma_alignment = str(trend_15m.get("ma_alignment", "NEUTRAL") or "NEUTRAL")
+        higher_alignment = str(trend_1h.get("ma_alignment", "NEUTRAL") or "NEUTRAL")
+
+        if direction == "LONG":
+            if change_24h <= 0:
+                return False, ""
+            ready = higher_alignment == "BULLISH" and ma_alignment == "BULLISH" and current_price >= ma5 > 0
+        else:
+            if change_24h >= 0:
+                return False, ""
+            ready = higher_alignment == "BEARISH" and ma_alignment == "BEARISH" and 0 < current_price <= ma5
+
+        if not ready:
+            return False, ""
+        return True, (
+            f"强趋势动量确认：评分 {score_total:.1f}，24h {change_24h:+.1f}%，"
+            f"OI {oi_change:+.1f}%"
+        )
+
     def _apply_entry_confirmation(self, signal: dict[str, Any]) -> dict[str, Any]:
         """Convert raw signal into watch/ready/invalid states."""
         signal["entry_status"] = "ready"
@@ -687,6 +744,16 @@ class CryptoSword:
             watch["pullback_seen"] = True
 
         if not watch.get("pullback_seen"):
+            trend = self._load_confirmation_trend(symbol)
+            momentum_ready, momentum_note = self._is_momentum_entry_ready(signal, trend, current_price)
+            if momentum_ready:
+                self._entry_watchlist.pop(symbol, None)
+                signal["entry_status"] = "ready"
+                signal["entry_status_text"] = "动量确认入场"
+                signal["entry_note"] = momentum_note
+                signal["confirmation_trend"] = trend
+                return signal
+
             signal["entry_status"] = "watch"
             signal["entry_status_text"] = "观察中"
             signal["entry_note"] = f"等待至少 {self.config.min_pullback_pct:.1f}% 回踩"
@@ -1891,6 +1958,24 @@ class CryptoSword:
                 position_side=position_side,
                 reduce_only=True,
             )
+            if result.status != "FILLED":
+                fast_result = quick_close_position(
+                    symbol=symbol,
+                    side=close_side,
+                    quantity=position.quantity,
+                    reason=reason,
+                )
+                if fast_result.get("success"):
+                    fallback_price = float(fast_result.get("executed_price", 0) or current_price or position.entry_price)
+                    result = OrderResult(
+                        symbol=symbol,
+                        side=close_side,
+                        quantity=float(fast_result.get("quantity", position.quantity) or position.quantity),
+                        executed_price=fallback_price,
+                        order_id=int(fast_result.get("order_id", 0) or 0),
+                        status="FILLED",
+                        message=f"fast_exit_fallback elapsed={fast_result.get('elapsed_ms')}ms",
+                    )
             self._record_latency_step(latency_steps, "market_close", step_started)
 
             if result.status == "FILLED":
@@ -1966,85 +2051,6 @@ class CryptoSword:
 
         self._emit_latency_trace("execute_exit_failed", trace_started, latency_steps, symbol=symbol)
         return False
-
-    def _deprecated_run_scan_cycle_legacy(self):
-        """Deprecated legacy full-scan loop retained only for historical reference."""
-        trace_started = time.perf_counter()
-        latency_steps: list[tuple[str, float]] = []
-        step_started = time.perf_counter()
-        self._check_new_day()
-        self._send_daily_report_if_due()
-        self._refresh_market_profile()
-        with self._state_lock:
-            self._sync_positions_with_exchange()
-        self._record_latency_step(latency_steps, "daily_market_position_sync", step_started)
-        logger.info("=" * 60)
-        logger.info(f"🔄 扫描周期开始 | 持仓：{self.tracker.get_open_count()}/{self.config.max_open_positions}")
-
-        # 1. 更新持仓价格并检查平仓
-        open_symbols = list(self.tracker.positions.keys())
-        if open_symbols:
-            step_started = time.perf_counter()
-            prices = self.get_current_prices(open_symbols)
-            self.tracker.update_all_prices(prices, self.config.trailing_stop_pct)
-
-            exits = self.tracker.check_all_exits(prices)
-            for symbol, reason in exits.items():
-                logger.info(f"🚨 {symbol} 触发 {reason}")
-                self.execute_exit(symbol, reason)
-            self._record_latency_step(latency_steps, "manage_open_positions", step_started)
-
-        # 2. 扫描新信号
-        step_started = time.perf_counter()
-        signals = self.scan_for_signals()
-        self._record_latency_step(latency_steps, "scan_for_signals", step_started)
-        logger.info(f"📡 发现 {len(signals)} 个交易信号")
-        self._send_scan_monitor(signals)
-
-        if self._is_daily_loss_limit_hit():
-            if not self._daily_loss_alert_sent:
-                limit_amount = self.day_start_balance * (self.config.max_daily_loss_pct / 100.0)
-                msg = format_error_msg(
-                    error_type="日内熔断",
-                    message=f"当日亏损已达到 {self.daily_pnl:.2f} USDT，超过限制 {-limit_amount:.2f} USDT，暂停新开仓",
-                    component="risk_guard",
-                )
-                send_telegram_message(msg)
-                self._daily_loss_alert_sent = True
-            signals = []
-
-        # 3. 执行开仓
-        step_started = time.perf_counter()
-        for signal in signals:
-            if self.tracker.get_open_count() >= self.config.max_open_positions:
-                logger.info(f"⏸️ 已达最大持仓数 ({self.config.max_open_positions})")
-                break
-            if signal.get("entry_status") != "ready":
-                continue
-
-            position = self.execute_entry(signal)
-            if position:
-                with self._state_lock:
-                    self.tracker.add_position(position)
-                    self.traded_symbols_today.add(signal["symbol"])
-                    self._entry_watchlist.pop(signal["symbol"], None)
-        self._record_latency_step(latency_steps, "execute_entries", step_started)
-
-        # 4. 发送持仓摘要（日志 + 定期 Telegram 通知）
-        step_started = time.perf_counter()
-        summary = self.tracker.get_summary()
-        logger.info(f"📊 持仓摘要：{summary['open_positions']} 个 | 未实现 PnL: ${summary['total_unrealized_pnl']:.2f}")
-
-        # 定期发送 Telegram 持仓汇总（每 6 小时）
-        import time
-        current_time = time.time()
-        if current_time - self._last_summary_time >= self._summary_interval:
-            self._send_position_summary(summary)
-            self._last_summary_time = current_time
-        self._record_latency_step(latency_steps, "summary_notify", step_started)
-
-        self.last_scan_time = datetime.now()
-        self._emit_latency_trace("run_scan_cycle", trace_started, latency_steps)
 
     def run_scan_cycle(self):
         """Run one fast or deep trading cycle."""
@@ -2312,6 +2318,8 @@ def main():
     parser.add_argument("--by-volume", action="store_true", help="按成交量排序（默认按涨幅）")
     parser.add_argument("--no-entry-confirm", action="store_true", help="禁用回踩确认入场")
     parser.add_argument("--entry-confirm-timeout", type=int, default=1800, help="候选观察超时秒数")
+    parser.add_argument("--no-momentum-entry", action="store_true", help="禁用强趋势动量确认入场")
+    parser.add_argument("--momentum-score", type=float, default=72.0, help="动量入场最低评分 (默认：72)")
     parser.add_argument("--no-daily-report", action="store_true", help="禁用每日复盘通知")
 
     # 追踪止损 - 海姆达尔的守望
@@ -2358,6 +2366,8 @@ def main():
         min_change_pct=args.min_change,
         entry_confirmation_enabled=not args.no_entry_confirm,
         entry_confirmation_timeout_sec=max(300, args.entry_confirm_timeout),
+        momentum_entry_enabled=not args.no_momentum_entry,
+        momentum_entry_score=max(0.0, args.momentum_score),
         daily_report_enabled=not args.no_daily_report,
     )
 

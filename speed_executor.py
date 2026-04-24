@@ -1,11 +1,10 @@
 #!/usr/bin/env python3
 """
-⚡ SPEED EXECUTOR - 高速执行系统（可选/高级功能）
+⚡ SPEED EXECUTOR - 高速执行工具集（主链复用 + 可选高级功能）
 
-⚠️  警告：此为独立的高级工具，使用 WebSocket 实时推送。
-请勿与 crypto_sword.py 同时运行，否则会导致：
-- 重复开仓/平仓
-- 持仓跟踪冲突
+主程序会复用这里的快速平仓函数作为失败兜底。下面的 WebSocket
+条件单执行器仍是独立高级工具，请勿与 crypto_sword.py 同时单独启动，
+否则会导致重复开仓/平仓和持仓跟踪冲突。
 
 适用场景：
 - 需要极低延迟的短线交易
@@ -31,6 +30,8 @@ from typing import Dict, Any, Optional, List, Callable
 from pathlib import Path
 from dataclasses import dataclass, field
 from collections import defaultdict
+
+from binance_compat import run_native_binance_compat as run_shared_native_binance_compat
 
 try:
     from binance_api_client import get_native_binance_client
@@ -297,14 +298,7 @@ class ConditionOrderManager:
 
 def run_native_binance_compat(args: List[str], timeout: int = 10) -> Optional[Any]:
     """Compatibility wrapper backed by native Binance REST."""
-    try:
-        if get_native_binance_client is None:
-            return None
-        return get_native_binance_client().command_compat(list(args))  # type: ignore
-        
-    except Exception as e:
-        logger.error(f"原生 Binance API 异常：{e}")
-        return None
+    return run_shared_native_binance_compat(args, timeout=timeout, max_retries=2, throttle_sec=0.0)
 
 
 def quick_close_position(
