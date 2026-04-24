@@ -809,6 +809,54 @@ class CryptoSword:
             f"OI {oi_change:+.1f}%"
         )
 
+    def _is_trend_continuation_ready(
+        self,
+        signal: dict[str, Any],
+        trend: dict[str, Any],
+        current_price: float,
+    ) -> tuple[bool, str]:
+        """More aggressive breakout continuation entry for fresh hot symbols."""
+        direction = signal.get("direction", "")
+        metrics = signal.get("metrics", {}) or {}
+        score_total = float((signal.get("score") or {}).get("total_score", 0) or 0)
+        change_24h = float(metrics.get("change_24h_pct", 0) or 0)
+        funding = abs(float(metrics.get("funding_rate", 0) or 0))
+
+        if score_total < 58:
+            return False, ""
+        if abs(change_24h) < max(self.config.momentum_entry_min_change_pct, 10.0):
+            return False, ""
+        if funding >= self.config.max_abs_funding_rate * 0.95:
+            return False, ""
+
+        trend_1h = trend.get("1h", {}) or {}
+        trend_15m = trend.get("15m", {}) or {}
+        ma5_15m = float(trend_15m.get("ma5", 0) or 0)
+        ma_alignment_15m = str(trend_15m.get("ma_alignment", "NEUTRAL") or "NEUTRAL")
+        ma_alignment_1h = str(trend_1h.get("ma_alignment", "NEUTRAL") or "NEUTRAL")
+        short_tf_ok = self._short_tf_breakout_ready(trend, direction, current_price)
+
+        if direction == "LONG":
+            ready = (
+                change_24h > 0
+                and ma_alignment_1h == "BULLISH"
+                and ma_alignment_15m == "BULLISH"
+                and current_price >= ma5_15m > 0
+                and short_tf_ok
+            )
+        else:
+            ready = (
+                change_24h < 0
+                and ma_alignment_1h == "BEARISH"
+                and ma_alignment_15m == "BEARISH"
+                and 0 < current_price <= ma5_15m
+                and short_tf_ok
+            )
+
+        if not ready:
+            return False, ""
+        return True, f"热点延续确认：评分 {score_total:.1f}，24h {change_24h:+.1f}%"
+
     def _apply_entry_confirmation(self, signal: dict[str, Any]) -> dict[str, Any]:
         """Convert raw signal into watch/ready/invalid states."""
         signal["entry_status"] = "ready"
@@ -847,6 +895,17 @@ class CryptoSword:
             initial_note = "首次发现，等待回踩确认"
             if strategy_line == "趋势突破线":
                 initial_note = "首次发现，等待趋势延续确认"
+                trend = self._load_confirmation_trend(symbol)
+                continuation_ready, continuation_note = self._is_trend_continuation_ready(signal, trend, current_price)
+                momentum_ready, momentum_note = self._is_momentum_entry_ready(signal, trend, current_price)
+                if continuation_ready or momentum_ready:
+                    signal["entry_status"] = "ready"
+                    signal["entry_status_text"] = "突破确认入场"
+                    signal["strategy_line"] = "趋势突破线"
+                    signal["watch_stage"] = "首发现直通"
+                    signal["entry_note"] = momentum_note or continuation_note
+                    signal["confirmation_trend"] = trend
+                    return signal
             self._entry_watchlist[symbol] = {
                 "symbol": symbol,
                 "direction": direction,
@@ -871,7 +930,7 @@ class CryptoSword:
             signal["entry_status_text"] = "观察中"
             signal["strategy_line"] = self._entry_watchlist[symbol]["strategy_line"]
             signal["watch_stage"] = "首发现"
-            signal["entry_note"] = "首次发现，等待回踩确认"
+            signal["entry_note"] = initial_note
             return signal
 
         watch["last_seen_ts"] = now
@@ -904,12 +963,28 @@ class CryptoSword:
                 signal["confirmation_trend"] = trend
                 return signal
 
+            if watch.get("strategy_line") == "趋势突破线":
+                continuation_ready, continuation_note = self._is_trend_continuation_ready(signal, trend, current_price)
+                if continuation_ready:
+                    self._entry_watchlist.pop(symbol, None)
+                    signal["entry_status"] = "ready"
+                    signal["entry_status_text"] = "突破确认入场"
+                    signal["strategy_line"] = "趋势突破线"
+                    signal["watch_stage"] = "趋势延续"
+                    signal["entry_note"] = continuation_note
+                    signal["confirmation_trend"] = trend
+                    return signal
+
             stage_name = "趋势待命" if watch.get("strategy_line") == "趋势突破线" else "回踩等待"
             self._update_watch_state(
                 watch,
                 strategy_line=watch.get("strategy_line", "回踩确认线"),
                 stage_name=stage_name,
-                entry_note=f"等待至少 {required_pullback:.1f}% 回踩",
+                entry_note=(
+                    "等待趋势延续确认"
+                    if watch.get("strategy_line") == "趋势突破线"
+                    else f"等待至少 {required_pullback:.1f}% 回踩"
+                ),
                 required_pullback=required_pullback,
                 current_pullback=pullback_pct,
                 trend=trend,
@@ -918,7 +993,11 @@ class CryptoSword:
             signal["entry_status_text"] = "观察中"
             signal["strategy_line"] = watch.get("strategy_line", "回踩确认线")
             signal["watch_stage"] = stage_name
-            signal["entry_note"] = f"等待至少 {required_pullback:.1f}% 回踩"
+            signal["entry_note"] = (
+                "等待趋势延续确认"
+                if watch.get("strategy_line") == "趋势突破线"
+                else f"等待至少 {required_pullback:.1f}% 回踩"
+            )
             return signal
 
         trend = self._load_confirmation_trend(symbol)
