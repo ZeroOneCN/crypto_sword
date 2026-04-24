@@ -480,6 +480,9 @@ class CryptoSword:
         self._market_style_mode: str = "balanced"
         self._market_style_stats: dict[str, Any] = {}
         self._last_market_style_refresh: float = 0.0
+        self._last_summary_signature: str = ""
+        self._last_scan_monitor_signature: str = ""
+        self._last_watch_monitor_signature: str = ""
         self._account_info_cache: Optional[dict[str, Any]] = None
         self._account_info_cache_at: float = 0.0
         self._market_style_trade_marker: tuple[int, str] = (0, "")
@@ -489,6 +492,12 @@ class CryptoSword:
 
     def _record_latency_step(self, steps: list[tuple[str, float]], name: str, started_at: float):
         steps.append((name, (time.perf_counter() - started_at) * 1000.0))
+
+    def _message_signature(self, payload: Any) -> str:
+        try:
+            return json.dumps(payload, sort_keys=True, ensure_ascii=False, default=str)
+        except Exception:
+            return str(payload)
 
     def _get_account_info_cached(self, ttl_sec: float = 3.0, force: bool = False) -> dict[str, Any]:
         now = time.time()
@@ -2821,6 +2830,18 @@ class CryptoSword:
             total_balance = float(balance_info.get("totalWalletBalance", balance_info.get("totalMarginBalance", 0)) or 0)
         except Exception as e:
             logger.debug(f"summary balance fetch skipped: {e}")
+        signature = self._message_signature({
+            "positions": summary["positions"],
+            "total_pnl": summary["total_unrealized_pnl"],
+            "realized_pnl": summary["realized_pnl"],
+            "closed_today": summary["closed_today"],
+            "total_balance": round(total_balance, 2),
+            "available_balance": round(available_balance, 2),
+        })
+        if signature == self._last_summary_signature:
+            logger.debug("summary notify skipped: no material changes")
+            return
+        self._last_summary_signature = signature
         msg = format_summary_msg(
             positions=summary["positions"],
             total_pnl=summary["total_unrealized_pnl"],
@@ -2869,7 +2890,24 @@ class CryptoSword:
         interval = max(60, min(self._monitor_interval, self._current_scan_interval))
         if now - self._last_monitor_time < interval:
             return
+        signature = self._message_signature([
+            {
+                "symbol": item.get("symbol"),
+                "direction": item.get("direction"),
+                "score": float((item.get("score") or {}).get("total_score", 0) or 0),
+                "entry_status_text": item.get("entry_status_text", ""),
+                "entry_note": item.get("entry_note", ""),
+                "strategy_line": item.get("strategy_line", ""),
+                "watch_stage": item.get("watch_stage", ""),
+                "price": float(item.get("price", 0) or 0),
+            }
+            for item in signals[:5]
+        ])
+        if signature == self._last_scan_monitor_signature:
+            logger.debug("scan monitor skipped: no material changes")
+            return
         self._last_monitor_time = now
+        self._last_scan_monitor_signature = signature
         try:
             msg = format_scan_monitor_msg(
                 signals=signals,
@@ -2891,7 +2929,24 @@ class CryptoSword:
         interval = self._watch_monitor_interval(watch_items)
         if now - self._last_watch_monitor_time < interval:
             return
+        signature = self._message_signature([
+            {
+                "symbol": item.get("symbol"),
+                "direction": item.get("direction"),
+                "score": float((item.get("score") or {}).get("total_score", 0) or 0),
+                "entry_status_text": item.get("entry_status_text", ""),
+                "entry_note": item.get("entry_note", ""),
+                "strategy_line": item.get("strategy_line", ""),
+                "watch_stage": item.get("watch_stage", ""),
+                "price": float(item.get("price", 0) or 0),
+            }
+            for item in watch_items[:5]
+        ])
+        if signature == self._last_watch_monitor_signature:
+            logger.debug("watch monitor skipped: no material changes")
+            return
         self._last_watch_monitor_time = now
+        self._last_watch_monitor_signature = signature
         try:
             msg = format_scan_monitor_msg(
                 signals=watch_items,
