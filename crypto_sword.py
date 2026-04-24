@@ -179,6 +179,8 @@ class TradingConfig:
         daily_report_enabled: bool = True,
         daily_report_on_first_cycle: bool = True,
         major_symbols: Optional[List[str]] = None,
+        market_style_lookback_trades: int = 20,
+        market_style_refresh_sec: int = 900,
         # 目标 - 矮人锻造的利刃
         target_altcoins: bool = True,
         target_memes: bool = True,
@@ -230,6 +232,8 @@ class TradingConfig:
         self.daily_report_enabled = daily_report_enabled
         self.daily_report_on_first_cycle = daily_report_on_first_cycle
         self.major_symbols = [symbol.upper() for symbol in (major_symbols or ["BTCUSDT", "ETHUSDT"]) if symbol]
+        self.market_style_lookback_trades = max(6, int(market_style_lookback_trades))
+        self.market_style_refresh_sec = max(300, int(market_style_refresh_sec))
         self.target_altcoins = target_altcoins
         self.target_memes = target_memes
 
@@ -470,6 +474,9 @@ class CryptoSword:
         self._entry_watchlist: dict[str, dict[str, Any]] = {}
         self._last_daily_report_sent_for: str = ""
         self._last_watch_monitor_time: float = 0.0
+        self._market_style_mode: str = "balanced"
+        self._market_style_stats: dict[str, Any] = {}
+        self._last_market_style_refresh: float = 0.0
 
     def _new_session_id(self, symbol: str) -> str:
         return f"{symbol}-{datetime.now().strftime('%Y%m%d%H%M%S')}-{uuid4().hex[:8]}"
@@ -546,6 +553,54 @@ class CryptoSword:
         logger.info(
             f"🌊 动态参数：扫描间隔={self._current_scan_interval}s, TP倍率={self._tp_multiplier:.2f}, "
             f"情绪={sentiment}, 恐贪={fear_greed_value}, 清算={liquidation_risk}"
+        )
+
+    def _refresh_market_style(self, force: bool = False):
+        """Auto-detect whether recent profits favor majors or hot alts."""
+        now = time.time()
+        if not force and now - self._last_market_style_refresh < self.config.market_style_refresh_sec:
+            return
+        self._last_market_style_refresh = now
+
+        try:
+            recent_closed = self.db.get_closed_trades(days=30, mode=self.config.mode)[: self.config.market_style_lookback_trades]
+        except Exception as e:
+            logger.warning(f"市场风格刷新失败：{e}")
+            return
+
+        major_trades = [t for t in recent_closed if t.symbol.upper() in self.config.major_symbols]
+        alt_trades = [t for t in recent_closed if t.symbol.upper() not in self.config.major_symbols]
+
+        def _avg_pnl_pct(trades: list[Any]) -> float:
+            if not trades:
+                return 0.0
+            return sum(float(t.pnl_pct or 0.0) for t in trades) / len(trades)
+
+        major_avg = _avg_pnl_pct(major_trades)
+        alt_avg = _avg_pnl_pct(alt_trades)
+        major_win = sum(1 for t in major_trades if float(t.pnl or 0.0) > 0)
+        alt_win = sum(1 for t in alt_trades if float(t.pnl or 0.0) > 0)
+
+        style_mode = "balanced"
+        if len(major_trades) >= 3 and (not alt_trades or major_avg >= alt_avg + 0.30):
+            style_mode = "major"
+        elif len(alt_trades) >= 3 and (not major_trades or alt_avg >= major_avg + 0.30):
+            style_mode = "alt"
+
+        self._market_style_mode = style_mode
+        self._market_style_stats = {
+            "lookback": len(recent_closed),
+            "major_count": len(major_trades),
+            "alt_count": len(alt_trades),
+            "major_avg_pnl_pct": round(major_avg, 2),
+            "alt_avg_pnl_pct": round(alt_avg, 2),
+            "major_win": major_win,
+            "alt_win": alt_win,
+        }
+        logger.info(
+            f"📈 市场风格切换：mode={style_mode} | "
+            f"major={len(major_trades)} avg={major_avg:+.2f}% | "
+            f"alt={len(alt_trades)} avg={alt_avg:+.2f}%"
         )
 
     def _strategy_profile(self, strategy_line: str) -> dict[str, float]:
@@ -1173,9 +1228,11 @@ class CryptoSword:
     def _select_deep_scan_symbols(self) -> list[str]:
         """Pick symbols for expensive deep scan, preferring fresh fast-scan candidates."""
         major_symbols = list(self.config.major_symbols)
+        prefer_major = self._market_style_mode in {"major", "balanced"}
         candidates = self._fast_scan_candidates()
         if candidates:
-            return list(dict.fromkeys(major_symbols + candidates))[: self.config.scan_top_n]
+            merged = major_symbols + candidates if prefer_major else candidates + major_symbols
+            return list(dict.fromkeys(merged))[: self.config.scan_top_n]
 
         if self.config.scan_by_change:
             symbols = get_top_symbols_by_change(
@@ -1183,11 +1240,13 @@ class CryptoSword:
                 min_change=self.config.min_change_pct,
             )
             logger.info(f"🔥 妖币模式(REST) - 扫描 {len(symbols)} 个异动币种：{symbols[:5]}...")
-            return list(dict.fromkeys(major_symbols + symbols))[: self.config.scan_top_n]
+            merged = major_symbols + symbols if prefer_major else symbols + major_symbols
+            return list(dict.fromkeys(merged))[: self.config.scan_top_n]
 
         symbols = get_top_symbols_by_volume(self.config.scan_top_n)
         logger.info(f"📊 成交量模式 - 扫描 {len(symbols)} 个币种：{symbols[:5]}...")
-        return list(dict.fromkeys(major_symbols + symbols))[: self.config.scan_top_n]
+        merged = major_symbols + symbols if prefer_major else symbols + major_symbols
+        return list(dict.fromkeys(merged))[: self.config.scan_top_n]
 
     def _refresh_price_stream(self, symbols: list[str]):
         """Keep a lightweight WebSocket price stream for open positions."""
@@ -2120,7 +2179,13 @@ class CryptoSword:
 
         # 按评分排序
         def _signal_priority(item: dict[str, Any]) -> tuple[int, float]:
-            major_bonus = 1 if str(item.get("symbol", "")).upper() in self.config.major_symbols else 0
+            symbol = str(item.get("symbol", "")).upper()
+            if self._market_style_mode == "major":
+                major_bonus = 2 if symbol in self.config.major_symbols else 0
+            elif self._market_style_mode == "alt":
+                major_bonus = -1 if symbol in self.config.major_symbols else 1
+            else:
+                major_bonus = 1 if symbol in self.config.major_symbols else 0
             score_total = float((item.get("score") or {}).get("total_score", 0) or 0)
             return major_bonus, score_total
 
@@ -2538,6 +2603,7 @@ class CryptoSword:
         self._send_daily_report_if_due()
         if deep_due:
             self._refresh_market_profile()
+            self._refresh_market_style()
         if self._should_sync_positions(now, deep_due):
             with self._state_lock:
                 self._sync_positions_with_exchange()
