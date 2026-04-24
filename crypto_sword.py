@@ -535,7 +535,10 @@ class CryptoSword:
         if open_count > 0:
             base_interval = max(240, self._current_scan_interval) if ws_live else max(120, self._current_scan_interval)
             return deep_due or now - self._last_position_sync_time >= base_interval
-        idle_interval = max(600, self._current_scan_interval * 2) if ws_live else max(300, self._current_scan_interval * 2)
+        if ws_live:
+            idle_interval = max(1800, self._current_scan_interval * 6)
+        else:
+            idle_interval = max(900, self._current_scan_interval * 4)
         return self._last_position_sync_time <= 0 or now - self._last_position_sync_time >= idle_interval
 
     def _refresh_market_profile(self):
