@@ -503,6 +503,17 @@ class CryptoSword:
         except Exception:
             return str(payload)
 
+    def _enrich_summary_with_db(self, summary: dict[str, Any]) -> dict[str, Any]:
+        enriched = dict(summary)
+        report_date = datetime.now().date().isoformat()
+        try:
+            daily_report = self.db.get_daily_report(report_date, mode=self.config.mode)
+            enriched["closed_today"] = int(daily_report.get("closed_trades", 0) or 0)
+            enriched["realized_pnl"] = round(float(daily_report.get("total_pnl", 0) or 0), 2)
+        except Exception as e:
+            logger.debug(f"summary db enrichment skipped: {e}")
+        return enriched
+
     def _monitor_item_signature(self, item: dict[str, Any]) -> str:
         return self._message_signature({
             "direction": item.get("direction"),
@@ -2874,10 +2885,12 @@ class CryptoSword:
         self._record_latency_step(latency_steps, "execute_entries", step_started)
 
         step_started = time.perf_counter()
-        summary = self.tracker.get_summary()
+        summary = self._enrich_summary_with_db(self.tracker.get_summary())
         logger.info(
             f"Position summary: {summary['open_positions']} open | "
-            f"unrealized PnL=${summary['total_unrealized_pnl']:.2f}"
+            f"unrealized PnL=${summary['total_unrealized_pnl']:.2f} | "
+            f"realized today=${summary['realized_pnl']:.2f} | "
+            f"closed today={summary['closed_today']}"
         )
 
         current_time = time.time()
@@ -3094,7 +3107,7 @@ class CryptoSword:
                 time.sleep(10)
 
         # 停止通知
-        summary = self.tracker.get_summary()
+        summary = self._enrich_summary_with_db(self.tracker.get_summary())
         send_telegram_message(
             format_shutdown_msg(
                 mode_name=mode_text,
