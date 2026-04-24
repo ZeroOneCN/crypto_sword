@@ -151,6 +151,7 @@ class TradingConfig:
         min_change_pct: float = 3.0,
         max_chase_change_pct: float = 25.0,
         min_pullback_pct: float = 3.0,
+        shallow_pullback_pct: float = 1.8,
         max_range_position_pct: float = 88.0,
         max_abs_funding_rate: float = 0.003,
         max_oi_change_pct: float = 120.0,
@@ -192,6 +193,7 @@ class TradingConfig:
         self.min_change_pct = min_change_pct
         self.max_chase_change_pct = max_chase_change_pct
         self.min_pullback_pct = min_pullback_pct
+        self.shallow_pullback_pct = shallow_pullback_pct
         self.max_range_position_pct = max_range_position_pct
         self.max_abs_funding_rate = max_abs_funding_rate
         self.max_oi_change_pct = max_oi_change_pct
@@ -628,6 +630,19 @@ class CryptoSword:
             "15m": trend_15m,
         }
 
+    def _required_pullback_pct(self, metrics: dict[str, Any], score_total: float = 0.0) -> float:
+        """Use a shallower pullback for strong momentum leaders and a deeper one for ordinary setups."""
+        change_24h = abs(float(metrics.get("change_24h_pct", 0) or 0))
+        oi_change = abs(float(metrics.get("oi_24h_pct", 0) or 0))
+
+        if score_total >= 78 and change_24h >= 18 and oi_change >= 45:
+            return max(1.2, self.config.shallow_pullback_pct - 0.6)
+        if score_total >= self.config.momentum_entry_score and change_24h >= 12 and oi_change >= self.config.momentum_entry_min_oi_pct:
+            return max(1.5, self.config.shallow_pullback_pct)
+        if change_24h >= 15 and oi_change >= 35:
+            return max(2.0, self.config.shallow_pullback_pct + 0.4)
+        return self.config.min_pullback_pct
+
     def _is_momentum_entry_ready(
         self,
         signal: dict[str, Any],
@@ -688,6 +703,7 @@ class CryptoSword:
         direction = signal["direction"]
         current_price = float(signal.get("price", 0) or 0)
         score_total = float((signal.get("score") or {}).get("total_score", 0) or 0)
+        required_pullback = self._required_pullback_pct(signal.get("metrics", {}) or {}, score_total)
         now = time.time()
 
         watch = self._entry_watchlist.get(symbol)
@@ -741,7 +757,7 @@ class CryptoSword:
             anchor_price = min(float(watch.get("lowest_price", current_price) or current_price), current_price)
             pullback_pct = ((current_price - anchor_price) / anchor_price * 100.0) if anchor_price > 0 else 0.0
 
-        if pullback_pct >= self.config.min_pullback_pct:
+        if pullback_pct >= required_pullback:
             watch["pullback_seen"] = True
 
         if not watch.get("pullback_seen"):
@@ -757,7 +773,7 @@ class CryptoSword:
 
             signal["entry_status"] = "watch"
             signal["entry_status_text"] = "观察中"
-            signal["entry_note"] = f"等待至少 {self.config.min_pullback_pct:.1f}% 回踩"
+            signal["entry_note"] = f"等待至少 {required_pullback:.1f}% 回踩"
             return signal
 
         trend = self._load_confirmation_trend(symbol)
@@ -1542,6 +1558,7 @@ class CryptoSword:
         funding = float(metrics.get("funding_rate", 0.0) or 0.0)
         oi_change = float(metrics.get("oi_24h_pct", 0.0) or 0.0)
         volume_mult = float(metrics.get("volume_24h_mult", 1.0) or 1.0)
+        required_pullback = self._required_pullback_pct(metrics)
         now = time.time()
 
         if self._is_loss_pause_active():
@@ -1562,7 +1579,7 @@ class CryptoSword:
                 return f"大跌中不接多 {change_24h:.1f}%"
             if change_24h >= self.config.max_chase_change_pct:
                 return f"24h涨幅过大 {change_24h:.1f}%"
-            if change_24h >= 12 and drawdown < self.config.min_pullback_pct:
+            if change_24h >= 12 and drawdown < required_pullback and oi_change < self.config.momentum_entry_min_oi_pct:
                 return f"未回踩，距24h高点仅回落 {drawdown:.1f}%"
             if change_24h >= 8 and range_position >= self.config.max_range_position_pct:
                 return f"价格处于24h区间高位 {range_position:.1f}%"
@@ -2316,6 +2333,7 @@ def main():
     parser.add_argument("--interval", "-i", type=int, default=300, help="扫描间隔秒数 (默认：300)")
     parser.add_argument("--scan-workers", type=int, default=6, help="深度扫描并发数 (默认：6)")
     parser.add_argument("--min-change", type=float, default=3.0, help="最小涨幅 %% (默认：3%%)")
+    parser.add_argument("--min-pullback", type=float, default=3.0, help="普通信号最小回踩 %% (默认：3%%)")
     parser.add_argument("--by-volume", action="store_true", help="按成交量排序（默认按涨幅）")
     parser.add_argument("--no-entry-confirm", action="store_true", help="禁用回踩确认入场")
     parser.add_argument("--entry-confirm-timeout", type=int, default=1800, help="候选观察超时秒数")
@@ -2365,6 +2383,7 @@ def main():
         min_stage="pre_break",
         scan_by_change=not args.by_volume,
         min_change_pct=args.min_change,
+        min_pullback_pct=max(0.5, args.min_pullback),
         entry_confirmation_enabled=not args.no_entry_confirm,
         entry_confirmation_timeout_sec=max(300, args.entry_confirm_timeout),
         momentum_entry_enabled=not args.no_momentum_entry,
