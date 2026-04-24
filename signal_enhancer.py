@@ -237,7 +237,7 @@ def analyze_trend(klines: List[Dict]) -> Dict[str, Any]:
     }
 
 
-def multi_timeframe_analysis(symbol: str) -> Dict[str, Any]:
+def multi_timeframe_analysis(symbol: str, klines_1h: Optional[List[Dict]] = None) -> Dict[str, Any]:
     """
     多时间框架分析（优化：只使用 1h 减少 API 调用）
     
@@ -249,7 +249,7 @@ def multi_timeframe_analysis(symbol: str) -> Dict[str, Any]:
         }
     """
     # 只使用 1h 时间框架（减少 66% API 调用）
-    klines = get_klines(symbol, interval="1h", limit=50)
+    klines = klines_1h or get_klines(symbol, interval="1h", limit=50)
     if klines:
         trend = analyze_trend(klines)
         direction = trend.get("direction", "UNKNOWN")
@@ -565,6 +565,7 @@ def score_signal(
     stage: str,
     direction: str,
     metrics: Dict[str, Any],
+    klines_1h: Optional[List[Dict[str, Any]]] = None,
 ) -> SignalScore:
     """
     综合评分信号质量
@@ -583,10 +584,15 @@ def score_signal(
         stage=stage,
         direction=direction,
     )
+    klines = klines_1h
+    if not klines:
+        cached_klines = metrics.get("klines_1h")
+        if isinstance(cached_klines, list) and cached_klines:
+            klines = cached_klines
     
     # 1. 多时间框架分析
     try:
-        mtf = multi_timeframe_analysis(symbol)
+        mtf = multi_timeframe_analysis(symbol, klines_1h=klines)
         trend_alignment = mtf.get("alignment", "MIXED")
         
         # 趋势评分（不添加否决信号，只影响分数）
@@ -610,7 +616,8 @@ def score_signal(
     
     # 2. 成交量分析
     try:
-        klines = get_klines(symbol, interval="1h", limit=50)
+        if not klines:
+            klines = get_klines(symbol, interval="1h", limit=50)
         if klines:
             vol_analysis = analyze_volume(klines)
             score.volume_score = vol_analysis.get("score", 50)

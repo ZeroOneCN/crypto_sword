@@ -460,9 +460,23 @@ def build_symbol_metrics(symbol: str) -> dict[str, Any] | None:
 
     # 计算成交量倍数（修复：使用 K 线数据计算真实倍数）
     volume_24h_mult = 1.0
+    normalized_klines_1h: list[dict[str, Any]] = []
     try:
         # 获取 1h K 线数据（最近 24 根）
         klines_data = fetch_klines(symbol, interval="1h", limit=24)
+        if klines_data and isinstance(klines_data, list):
+            for k in klines_data:
+                if isinstance(k, list) and len(k) >= 8:
+                    normalized_klines_1h.append({
+                        "open_time": k[0],
+                        "open": float(k[1]),
+                        "high": float(k[2]),
+                        "low": float(k[3]),
+                        "close": float(k[4]),
+                        "volume": float(k[5]),
+                        "close_time": k[6],
+                        "quote_volume": float(k[7]),
+                    })
         
         if klines_data and isinstance(klines_data, list) and len(klines_data) >= 12:
             # 计算最近 12 小时的平均成交量
@@ -518,6 +532,7 @@ def build_symbol_metrics(symbol: str) -> dict[str, Any] | None:
         "oi_value": oi_value,
         "quote_volume_24h": quote_volume,
         "last_price": last_price,
+        "klines_1h": normalized_klines_1h,
     }
 
 

@@ -2237,6 +2237,7 @@ class CryptoSword:
                     stage=r.stage,
                     direction=r.direction,
                     metrics=r.metrics,
+                    klines_1h=r.metrics.get("klines_1h"),
                 )
                 
                 # 过滤低质量信号（降低阈值：允许中等以上）
