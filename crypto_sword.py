@@ -551,6 +551,15 @@ class CryptoSword:
             "stop_multiplier": self.config.pullback_stop_multiplier,
         }
 
+    def _strategy_take_profit_ratios(self, strategy_line: str, levels_count: int) -> list[float]:
+        if strategy_line == "趋势突破线":
+            base_ratios = [0.40, 0.35, 0.25]
+        else:
+            base_ratios = [0.55, 0.30, 0.15]
+        ratios = base_ratios[:levels_count]
+        ratio_total = sum(ratios) or 1.0
+        return [ratio / ratio_total for ratio in ratios]
+
     def _build_take_profit_plan(self, strategy_line: str = "") -> tuple[list[float], list[float]]:
         """Build default staged take-profit plan around the configured TP percentage."""
         profile = self._strategy_profile(strategy_line)
@@ -564,9 +573,7 @@ class CryptoSword:
             if target_pct > 0 and target_pct not in staged_levels:
                 staged_levels.append(target_pct)
 
-        ratios = [0.5, 0.3, 0.2][:len(staged_levels)]
-        ratio_total = sum(ratios) or 1.0
-        ratios = [ratio / ratio_total for ratio in ratios]
+        ratios = self._strategy_take_profit_ratios(strategy_line, len(staged_levels))
         return staged_levels, ratios
 
     def _strategy_stop_loss_pct(self, strategy_line: str = "") -> float:
@@ -2457,8 +2464,19 @@ class CryptoSword:
                 "strategy_line": watch.get("strategy_line", ""),
                 "watch_stage": watch.get("watch_stage", ""),
             })
-        items.sort(key=lambda item: float((item.get("score") or {}).get("total_score", 0) or 0), reverse=True)
+        def _monitor_priority(item: dict[str, Any]) -> tuple[int, float]:
+            strategy_bonus = 1 if item.get("strategy_line") == "趋势突破线" else 0
+            score_total = float((item.get("score") or {}).get("total_score", 0) or 0)
+            return strategy_bonus, score_total
+
+        items.sort(key=_monitor_priority, reverse=True)
         return items
+
+    def _watch_monitor_interval(self, watch_items: list[dict[str, Any]]) -> int:
+        has_breakout = any(item.get("strategy_line") == "趋势突破线" for item in watch_items)
+        if has_breakout:
+            return max(90, min(self._monitor_interval, max(120, self.config.fast_scan_interval_sec * 2)))
+        return max(180, min(self._monitor_interval * 2, max(self._current_scan_interval, 600)))
 
     def _send_scan_monitor(self, signals: list[dict]):
         """Send a compact Telegram scanner monitor report."""
@@ -2483,7 +2501,7 @@ class CryptoSword:
         if not watch_items:
             return
         now = time.time()
-        interval = max(180, min(self._monitor_interval * 2, max(self._current_scan_interval, 600)))
+        interval = self._watch_monitor_interval(watch_items)
         if now - self._last_watch_monitor_time < interval:
             return
         self._last_watch_monitor_time = now
