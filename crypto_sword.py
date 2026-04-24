@@ -163,6 +163,9 @@ class TradingConfig:
         loss_pause_sec: int = 60 * 60,
         breakeven_after_tp: bool = True,
         breakeven_offset_pct: float = 0.10,
+        stop_trigger_buffer_pct: float = 0.12,
+        breakout_stop_trigger_buffer_pct: float = 0.18,
+        pullback_stop_trigger_buffer_pct: float = 0.08,
         entry_confirmation_enabled: bool = True,
         entry_confirmation_timeout_sec: int = 30 * 60,
         momentum_entry_enabled: bool = True,
@@ -210,6 +213,9 @@ class TradingConfig:
         self.loss_pause_sec = loss_pause_sec
         self.breakeven_after_tp = breakeven_after_tp
         self.breakeven_offset_pct = breakeven_offset_pct
+        self.stop_trigger_buffer_pct = stop_trigger_buffer_pct
+        self.breakout_stop_trigger_buffer_pct = breakout_stop_trigger_buffer_pct
+        self.pullback_stop_trigger_buffer_pct = pullback_stop_trigger_buffer_pct
         self.entry_confirmation_enabled = entry_confirmation_enabled
         self.entry_confirmation_timeout_sec = entry_confirmation_timeout_sec
         self.momentum_entry_enabled = momentum_entry_enabled
@@ -579,6 +585,13 @@ class CryptoSword:
     def _strategy_stop_loss_pct(self, strategy_line: str = "") -> float:
         profile = self._strategy_profile(strategy_line)
         return max(0.5, float(self.config.stop_loss_pct) * profile["stop_multiplier"])
+
+    def _strategy_stop_trigger_buffer_pct(self, strategy_line: str = "") -> float:
+        if strategy_line == "趋势突破线":
+            return max(0.0, float(self.config.breakout_stop_trigger_buffer_pct))
+        if strategy_line == "回踩确认线":
+            return max(0.0, float(self.config.pullback_stop_trigger_buffer_pct))
+        return max(0.0, float(self.config.stop_trigger_buffer_pct))
 
     def _calculate_local_take_profit_price(self, entry_price: float, side: str, target_pct: float) -> float:
         if self.config.take_profit_mode == "roi":
@@ -2145,6 +2158,7 @@ class CryptoSword:
             strategy_line = str(signal.get("strategy_line", "回踩确认线") or "回踩确认线")
             strategy_profile = self._strategy_profile(strategy_line)
             stop_loss_pct = self._strategy_stop_loss_pct(strategy_line)
+            stop_trigger_buffer_pct = self._strategy_stop_trigger_buffer_pct(strategy_line)
 
             if not should_trade(trading_signal):
                 return None
@@ -2256,6 +2270,7 @@ class CryptoSword:
                 take_profit_price_pcts=take_profit_target_pcts if self.config.take_profit_mode != "roi" else None,
                 take_profit_ratios=take_profit_ratios,
                 take_profit_mode=self.config.take_profit_mode,
+                stop_trigger_buffer_pct=stop_trigger_buffer_pct,
             )
             self._record_latency_step(latency_steps, "execute_trade", step_started)
 
@@ -2335,6 +2350,7 @@ class CryptoSword:
                 f"tp_multiplier={self._tp_multiplier}",
                 f"strategy_tp_multiplier={strategy_profile['tp_multiplier']}",
                 f"strategy_stop_pct={stop_loss_pct}",
+                f"stop_trigger_buffer_pct={stop_trigger_buffer_pct}",
                 f"tp_plan={json.dumps(take_profit_targets, separators=(',', ':'))}",
                 f"tp_order_ids={','.join(str(int(item.get('order_id', 0))) for item in take_profit_targets if item.get('order_id'))}",
             ]

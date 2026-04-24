@@ -514,6 +514,7 @@ def place_stop_loss_order(
     stop_price: float,
     position_side: Optional[str] = None,
     reduce_only: bool = True,
+    trigger_buffer_pct: float = 0.0,
 ) -> OrderResult:
     """Place a stop-loss order.
 
@@ -533,6 +534,13 @@ def place_stop_loss_order(
         # 调整 quantity 和 price 精度
         quantity = adjust_quantity_precision(symbol, quantity)
         stop_price = adjust_price_precision(symbol, stop_price)
+        trigger_price = stop_price
+        if trigger_buffer_pct > 0:
+            if side == "SELL":
+                trigger_price = stop_price * (1 - trigger_buffer_pct / 100.0)
+            else:
+                trigger_price = stop_price * (1 + trigger_buffer_pct / 100.0)
+            trigger_price = adjust_price_precision(symbol, trigger_price)
         resolved_position_side = position_side or ("LONG" if side == "SELL" else "SHORT")
 
         result = get_native_binance_client().new_algo_order(  # type: ignore
@@ -542,7 +550,7 @@ def place_stop_loss_order(
             quantity=quantity,
             position_side=resolved_position_side,
             reduce_only=reduce_only,
-            trigger_price=stop_price,
+            trigger_price=trigger_price,
             working_type="MARK_PRICE",
             new_order_resp_type="RESULT",
         )
@@ -555,10 +563,10 @@ def place_stop_loss_order(
             symbol=symbol,
             side=side,
             quantity=executed_qty,
-            executed_price=stop_price,
+            executed_price=trigger_price,
             order_id=order_id,
             status=status,
-            message="Stop loss order placed",
+            message=f"Stop loss order placed | logical={stop_price:.8f} trigger={trigger_price:.8f}",
         )
     except Exception as e:
         return OrderResult(
@@ -686,6 +694,7 @@ def execute_trade(
     take_profit_price_pcts: Optional[list[float]] = None,
     take_profit_ratios: Optional[list[float]] = None,
     take_profit_mode: str = "roi",
+    stop_trigger_buffer_pct: float = 0.0,
 ) -> dict[str, Any]:
     """Execute a trade based on a signal.
 
@@ -801,6 +810,7 @@ def execute_trade(
         actual_quantity,
         stop_loss_price,
         position_side=signal.direction,
+        trigger_buffer_pct=stop_trigger_buffer_pct,
     )
 
     for index, trigger_price in enumerate(take_profit_prices):
@@ -839,6 +849,7 @@ def execute_trade(
         "entry_order": entry_result.to_dict(),
         "stop_loss_order": sl_result.to_dict(),
         "stop_loss_price": stop_loss_price,
+        "stop_trigger_buffer_pct": stop_trigger_buffer_pct,
         "take_profit_orders": take_profit_orders,
         "take_profit_prices": take_profit_prices,
         "take_profit_roi_pcts": effective_roi_pcts,
