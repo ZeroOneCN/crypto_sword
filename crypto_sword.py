@@ -1395,7 +1395,9 @@ class CryptoSword:
         base_offset = max(float(self.config.breakeven_offset_pct), 0.05)
         tp_count = max(int(position.partial_tp_count), 1)
         if position.strategy_line == "趋势突破线":
-            return base_offset + 0.18 + 0.12 * (tp_count - 1)
+            if tp_count <= 1:
+                return 0.0
+            return base_offset + 0.12 + 0.10 * (tp_count - 2)
         return base_offset + 0.05 + 0.08 * (tp_count - 1)
 
     def _move_stop_to_breakeven(self, position: Position, remaining_qty: float) -> bool:
@@ -1404,6 +1406,9 @@ class CryptoSword:
             return False
 
         offset_pct = self._breakeven_offset_for_position(position)
+        if position.strategy_line == "趋势突破线" and position.partial_tp_count < 2:
+            logger.info(f"{position.symbol} breakout TP1 hit; keep original stop until TP2 to let trend run")
+            return False
         if position.side == "BUY":
             breakeven_price = position.entry_price * (1 + offset_pct / 100.0)
             close_side = "SELL"
@@ -2580,10 +2585,21 @@ class CryptoSword:
 
     def _send_position_summary(self, summary: dict):
         """发送持仓汇总通知"""
+        total_balance = 0.0
+        available_balance = 0.0
+        try:
+            balance_info = get_account_balance()
+            if isinstance(balance_info, dict):
+                available_balance = float(balance_info.get("availableBalance", 0) or 0)
+                total_balance = float(balance_info.get("totalWalletBalance", balance_info.get("totalMarginBalance", 0)) or 0)
+        except Exception as e:
+            logger.debug(f"summary balance fetch skipped: {e}")
         msg = format_summary_msg(
             positions=summary["positions"],
             total_pnl=summary["total_unrealized_pnl"],
             realized_pnl=summary["realized_pnl"],
+            total_balance=total_balance,
+            available_balance=available_balance,
         )
         msg += f"\n\n<b>已平仓</b>  <code>{summary['closed_today']}</code> 笔"
         send_telegram_message(msg)

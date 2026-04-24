@@ -341,13 +341,23 @@ def format_latency_alert_msg(
     return "\n".join(lines)
 
 
-def format_summary_msg(positions: list, total_pnl: float, realized_pnl: float) -> str:
+def format_summary_msg(
+    positions: list,
+    total_pnl: float,
+    realized_pnl: float,
+    total_balance: float = 0.0,
+    available_balance: float = 0.0,
+) -> str:
     """格式化持仓汇总通知"""
     msg = f"""📊 <b>宙斯交易中枢 | 持仓汇总</b>
 
 <b>持仓数</b>  <code>{len(positions)}</code>
 <b>未实现</b>  <code>{total_pnl:+,.2f} USDT</code>
 <b>已实现</b>  <code>{realized_pnl:+,.2f} USDT</code>"""
+    if total_balance > 0:
+        msg += f"\n<b>总余额</b>  <code>{total_balance:,.2f} USDT</code>"
+    if available_balance > 0:
+        msg += f"\n<b>可用余额</b>  <code>{available_balance:,.2f} USDT</code>"
     
     if not positions:
         msg += "\n\n📭 当前无持仓"
