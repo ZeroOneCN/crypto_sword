@@ -78,6 +78,7 @@ try:
     )
     from signal_enhancer import (  # 🎯 信号增强
         analyze_trend,
+        analyze_volume,
         get_klines,
         score_signal,
         SignalScore,
@@ -152,6 +153,7 @@ class TradingConfig:
         max_chase_change_pct: float = 25.0,
         min_pullback_pct: float = 3.0,
         shallow_pullback_pct: float = 1.8,
+        reclaim_volume_ratio: float = 1.15,
         max_range_position_pct: float = 88.0,
         max_abs_funding_rate: float = 0.003,
         max_oi_change_pct: float = 120.0,
@@ -194,6 +196,7 @@ class TradingConfig:
         self.max_chase_change_pct = max_chase_change_pct
         self.min_pullback_pct = min_pullback_pct
         self.shallow_pullback_pct = shallow_pullback_pct
+        self.reclaim_volume_ratio = reclaim_volume_ratio
         self.max_range_position_pct = max_range_position_pct
         self.max_abs_funding_rate = max_abs_funding_rate
         self.max_oi_change_pct = max_oi_change_pct
@@ -627,12 +630,33 @@ class CryptoSword:
 
     def _load_confirmation_trend(self, symbol: str) -> dict[str, Any]:
         """Reuse cached klines to confirm 1h trend and 15m reclaim."""
-        trend_1h = analyze_trend(get_klines(symbol, interval="1h", limit=50) or [])
-        trend_15m = analyze_trend(get_klines(symbol, interval="15m", limit=50) or [])
+        klines_1h = get_klines(symbol, interval="1h", limit=50) or []
+        klines_15m = get_klines(symbol, interval="15m", limit=50) or []
+        klines_5m = get_klines(symbol, interval="5m", limit=50) or []
+        trend_1h = analyze_trend(klines_1h)
+        trend_15m = analyze_trend(klines_15m)
+        trend_5m = analyze_trend(klines_5m)
+        volume_5m = analyze_volume(klines_5m) if klines_5m else {"score": 0, "volume_ratio": 0, "volume_trend": "UNKNOWN"}
         return {
             "1h": trend_1h,
             "15m": trend_15m,
+            "5m": trend_5m,
+            "5m_volume": volume_5m,
         }
+
+    def _short_tf_breakout_ready(self, trend: dict[str, Any], direction: str, current_price: float) -> bool:
+        trend_5m = trend.get("5m", {}) or {}
+        ma5 = float(trend_5m.get("ma5", 0) or 0)
+        ma_alignment = str(trend_5m.get("ma_alignment", "NEUTRAL") or "NEUTRAL")
+        if direction == "LONG":
+            return ma_alignment == "BULLISH" and current_price >= ma5 > 0
+        return ma_alignment == "BEARISH" and 0 < current_price <= ma5
+
+    def _volume_reclaim_ready(self, trend: dict[str, Any]) -> bool:
+        volume_5m = trend.get("5m_volume", {}) or {}
+        volume_ratio = float(volume_5m.get("volume_ratio", 0) or 0)
+        volume_trend = str(volume_5m.get("volume_trend", "UNKNOWN") or "UNKNOWN")
+        return volume_ratio >= self.config.reclaim_volume_ratio and volume_trend in {"INCREASING", "FLAT"}
 
     def _required_pullback_pct(self, metrics: dict[str, Any], score_total: float = 0.0) -> float:
         """Use a shallower pullback for strong momentum leaders and a deeper one for ordinary setups."""
@@ -718,15 +742,16 @@ class CryptoSword:
         ma5 = float(trend_15m.get("ma5", 0) or 0)
         ma_alignment = str(trend_15m.get("ma_alignment", "NEUTRAL") or "NEUTRAL")
         higher_alignment = str(trend_1h.get("ma_alignment", "NEUTRAL") or "NEUTRAL")
+        short_tf_ok = self._short_tf_breakout_ready(trend, direction, current_price)
 
         if direction == "LONG":
             if change_24h <= 0:
                 return False, ""
-            ready = higher_alignment == "BULLISH" and ma_alignment == "BULLISH" and current_price >= ma5 > 0
+            ready = higher_alignment == "BULLISH" and ma_alignment == "BULLISH" and current_price >= ma5 > 0 and short_tf_ok
         else:
             if change_24h >= 0:
                 return False, ""
-            ready = higher_alignment == "BEARISH" and ma_alignment == "BEARISH" and 0 < current_price <= ma5
+            ready = higher_alignment == "BEARISH" and ma_alignment == "BEARISH" and 0 < current_price <= ma5 and short_tf_ok
 
         if not ready:
             return False, ""
@@ -849,11 +874,13 @@ class CryptoSword:
         ma5 = float(trend_15m.get("ma5", 0) or 0)
         ma_alignment = str(trend_15m.get("ma_alignment", "NEUTRAL") or "NEUTRAL")
         higher_alignment = str(trend_1h.get("ma_alignment", "NEUTRAL") or "NEUTRAL")
+        short_tf_ok = self._short_tf_breakout_ready(trend, direction, current_price)
+        volume_ok = self._volume_reclaim_ready(trend)
         trend_ok = False
         if direction == "LONG":
-            trend_ok = higher_alignment == "BULLISH" and ma_alignment == "BULLISH" and current_price >= ma5 > 0
+            trend_ok = higher_alignment == "BULLISH" and ma_alignment == "BULLISH" and current_price >= ma5 > 0 and short_tf_ok
         else:
-            trend_ok = higher_alignment == "BEARISH" and ma_alignment == "BEARISH" and 0 < current_price <= ma5
+            trend_ok = higher_alignment == "BEARISH" and ma_alignment == "BEARISH" and 0 < current_price <= ma5 and short_tf_ok
 
         if not trend_ok:
             self._update_watch_state(
@@ -870,6 +897,23 @@ class CryptoSword:
             signal["strategy_line"] = watch.get("strategy_line", "回踩确认线")
             signal["watch_stage"] = "均线确认"
             signal["entry_note"] = "已回踩，等待 15m 重站均线"
+            return signal
+
+        if watch.get("strategy_line") == "回踩确认线" and not volume_ok:
+            self._update_watch_state(
+                watch,
+                strategy_line=watch.get("strategy_line", "回踩确认线"),
+                stage_name="量能回归",
+                entry_note=f"已回踩，等待 5m 量能回归 ≥ {self.config.reclaim_volume_ratio:.2f}",
+                required_pullback=required_pullback,
+                current_pullback=pullback_pct,
+                trend=trend,
+            )
+            signal["entry_status"] = "watch"
+            signal["entry_status_text"] = "观察中"
+            signal["strategy_line"] = watch.get("strategy_line", "回踩确认线")
+            signal["watch_stage"] = "量能回归"
+            signal["entry_note"] = f"已回踩，等待 5m 量能回归 ≥ {self.config.reclaim_volume_ratio:.2f}"
             return signal
 
         self._entry_watchlist.pop(symbol, None)
@@ -2522,6 +2566,7 @@ def main():
     parser.add_argument("--scan-workers", type=int, default=6, help="深度扫描并发数 (默认：6)")
     parser.add_argument("--min-change", type=float, default=3.0, help="最小涨幅 %% (默认：3%%)")
     parser.add_argument("--min-pullback", type=float, default=3.0, help="普通信号最小回踩 %% (默认：3%%)")
+    parser.add_argument("--reclaim-volume", type=float, default=1.15, help="回踩线 5m 量能回归倍数 (默认：1.15)")
     parser.add_argument("--by-volume", action="store_true", help="按成交量排序（默认按涨幅）")
     parser.add_argument("--no-entry-confirm", action="store_true", help="禁用回踩确认入场")
     parser.add_argument("--entry-confirm-timeout", type=int, default=1800, help="候选观察超时秒数")
@@ -2572,6 +2617,7 @@ def main():
         scan_by_change=not args.by_volume,
         min_change_pct=args.min_change,
         min_pullback_pct=max(0.5, args.min_pullback),
+        reclaim_volume_ratio=max(0.8, args.reclaim_volume),
         entry_confirmation_enabled=not args.no_entry_confirm,
         entry_confirmation_timeout_sec=max(300, args.entry_confirm_timeout),
         momentum_entry_enabled=not args.no_momentum_entry,
