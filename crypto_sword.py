@@ -822,9 +822,9 @@ class CryptoSword:
         change_24h = float(metrics.get("change_24h_pct", 0) or 0)
         funding = abs(float(metrics.get("funding_rate", 0) or 0))
 
-        if score_total < 58:
+        if score_total < 54:
             return False, ""
-        if abs(change_24h) < max(self.config.momentum_entry_min_change_pct, 10.0):
+        if abs(change_24h) < 8.0:
             return False, ""
         if funding >= self.config.max_abs_funding_rate * 0.95:
             return False, ""
@@ -2699,20 +2699,20 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 示例:
-  crypto-sword --live                 # 实盘模式（⚠️ 真实资金）
-  crypto-sword --live --leverage 10   # 实盘 + 10x 杠杆
+  crypto-sword                        # 默认实盘基线参数
+  crypto-sword --leverage 10          # 实盘 + 10x 杠杆
         """,
     )
 
-    # 实盘模式（强制）
-    parser.add_argument("--live", action="store_true", required=True, help="实盘模式（⚠️ 真实资金）")
+    # 实盘模式（默认开启）
+    parser.add_argument("--live", action="store_true", default=True, help="实盘模式（默认开启，⚠️ 真实资金）")
 
     # 杠杆 - 奥丁的长矛
     parser.add_argument("--leverage", "-l", type=int, default=5, choices=range(1, 11),
                         metavar="1-10", help="杠杆倍数 (1-10x, 默认：5x)")
 
     # 风控 - 英灵殿的盾牌
-    parser.add_argument("--risk", "-r", type=float, default=0.5, help="每笔风险 %% (默认：0.5%%)")
+    parser.add_argument("--risk", "-r", type=float, default=1.0, help="每笔风险 %% (默认：1%%)")
     parser.add_argument("--stop-loss", "-s", type=float, default=8.0, help="止损 %% (默认：8%%)")
     parser.add_argument("--take-profit", "-t", type=float, default=20.0, help="止盈 %% (默认：20%%)")
     parser.add_argument(
@@ -2721,11 +2721,11 @@ def main():
         default="roi",
         help="止盈百分比口径：roi=杠杆后收益率，price=标的价格涨跌幅 (默认：roi)",
     )
-    parser.add_argument("--max-positions", "-m", type=int, default=5, help="最大持仓数 (默认：5)")
+    parser.add_argument("--max-positions", "-m", type=int, default=3, help="最大持仓数 (默认：3)")
     parser.add_argument("--max-daily-loss", type=float, default=5.0, help="每日最大亏损 %% (默认：5%%)")
 
     # 扫描 - 弗丽嘉的鹰眼
-    parser.add_argument("--top", type=int, default=50, help="扫描前 N 个币种 (默认：50)")
+    parser.add_argument("--top", type=int, default=30, help="扫描前 N 个币种 (默认：30)")
     parser.add_argument("--interval", "-i", type=int, default=300, help="扫描间隔秒数 (默认：300)")
     parser.add_argument("--scan-workers", type=int, default=6, help="深度扫描并发数 (默认：6)")
     parser.add_argument("--min-change", type=float, default=3.0, help="最小涨幅 %% (默认：3%%)")
