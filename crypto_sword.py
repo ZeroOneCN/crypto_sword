@@ -61,7 +61,6 @@ try:
         format_close_position_msg,
         format_daily_report_msg,
         format_error_msg,
-        format_latency_alert_msg,
         format_partial_take_profit_msg,
         format_protection_status_msg,
         format_scan_monitor_msg,
@@ -164,9 +163,9 @@ class TradingConfig:
         entry_confirmation_enabled: bool = True,
         entry_confirmation_timeout_sec: int = 30 * 60,
         momentum_entry_enabled: bool = True,
-        momentum_entry_score: float = 72.0,
+        momentum_entry_score: float = 68.0,
         momentum_entry_min_change_pct: float = 12.0,
-        momentum_entry_min_oi_pct: float = 50.0,
+        momentum_entry_min_oi_pct: float = 30.0,
         daily_report_enabled: bool = True,
         daily_report_on_first_cycle: bool = True,
         # 目标 - 矮人锻造的利刃
@@ -470,15 +469,17 @@ class CryptoSword:
             + (f" | {step_text}" if step_text else "")
         )
         if total_ms >= threshold:
-            send_telegram_message(
-                format_latency_alert_msg(
-                    flow=flow,
-                    symbol=symbol,
-                    total_ms=total_ms,
-                    steps=steps,
-                    threshold_ms=threshold,
-                )
+            logger.warning(
+                f"Latency threshold exceeded | flow={flow} | symbol={symbol or '-'} | "
+                f"total={total_ms:.0f}ms | threshold={threshold:.0f}ms"
             )
+
+    def _should_sync_positions(self, now: float, deep_due: bool) -> bool:
+        """Keep exchange sync frequent when we have risk to manage, lighter when flat."""
+        open_count = self.tracker.get_open_count()
+        if open_count > 0:
+            return deep_due or now - self._last_position_sync_time >= max(120, self._current_scan_interval)
+        return self._last_position_sync_time <= 0 or now - self._last_position_sync_time >= max(300, self._current_scan_interval * 2)
 
     def _refresh_market_profile(self):
         """Update market-aware scan interval and TP multiplier."""
@@ -2064,7 +2065,7 @@ class CryptoSword:
         self._send_daily_report_if_due()
         if deep_due:
             self._refresh_market_profile()
-        if deep_due or now - self._last_position_sync_time >= max(180, self._current_scan_interval):
+        if self._should_sync_positions(now, deep_due):
             with self._state_lock:
                 self._sync_positions_with_exchange()
             self._last_position_sync_time = now
@@ -2319,7 +2320,7 @@ def main():
     parser.add_argument("--no-entry-confirm", action="store_true", help="禁用回踩确认入场")
     parser.add_argument("--entry-confirm-timeout", type=int, default=1800, help="候选观察超时秒数")
     parser.add_argument("--no-momentum-entry", action="store_true", help="禁用强趋势动量确认入场")
-    parser.add_argument("--momentum-score", type=float, default=72.0, help="动量入场最低评分 (默认：72)")
+    parser.add_argument("--momentum-score", type=float, default=68.0, help="动量入场最低评分 (默认：68)")
     parser.add_argument("--no-daily-report", action="store_true", help="禁用每日复盘通知")
 
     # 追踪止损 - 海姆达尔的守望
