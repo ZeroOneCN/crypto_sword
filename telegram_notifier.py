@@ -207,10 +207,22 @@ def format_open_position_msg(symbol: str, direction: str, entry_price: float, qu
     return msg
 
 
+def _humanize_close_reason(reason: str) -> str:
+    reason_key = (reason or "").upper()
+    if reason_key == "TAKE_PROFIT_TP_FULL_EXCHANGE":
+        return "TP1/TP2/TP3 全部成交｜交易所分批止盈完成"
+    if reason_key == "TAKE_PROFIT_EXCHANGE":
+        return "交易所止盈完成"
+    if reason_key == "STOP_LOSS_EXCHANGE":
+        return "交易所止损触发"
+    return reason
+
+
 def format_close_position_msg(symbol: str, direction: str, entry_price: float, exit_price: float, 
                               quantity: float, pnl: float, pnl_pct: float, reason: str, 
                               duration_hours: float = 0, session_id: str = "",
-                              strategy_line: str = "", roi_pct: float = 0.0) -> str:
+                              strategy_line: str = "", roi_pct: float = 0.0,
+                              price_move_pct: float = 0.0) -> str:
     """格式化平仓通知"""
     direction_emoji = "🟢" if pnl >= 0 else "🔴"
     pnl_emoji = "🟢" if pnl >= 0 else "🔴"
@@ -225,10 +237,12 @@ def format_close_position_msg(symbol: str, direction: str, entry_price: float, e
 <b>出场</b>  <code>${exit_price:,.4f}</code>
 <b>数量</b>  <code>{quantity}</code>
 <b>盈亏</b>  {pnl_emoji} <b>{pnl_sign}${pnl:,.2f}</b>  ({pnl_sign}{pnl_pct:.2f}%)
-<b>原因</b>  <code>{_escape(reason)}</code>"""
+<b>原因</b>  <code>{_escape(_humanize_close_reason(reason))}</code>"""
     
     if strategy_line:
         msg += f"\n<b>策略</b>  <code>{_escape(strategy_line)}</code>"
+    if price_move_pct:
+        msg += f"\n<b>价格涨幅</b>  <code>{price_move_pct:+.2f}%</code>"
     if roi_pct:
         msg += f"\n<b>实际ROI</b>  <code>{roi_pct:+.2f}%</code>"
     if duration_hours > 0:

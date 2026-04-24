@@ -1892,7 +1892,7 @@ class CryptoSword:
                 close_summary = self._estimate_exchange_take_profit_close(position)
                 if close_summary:
                     exit_price, pnl, pnl_pct, remaining_pnl = close_summary
-                    inferred_reason = "TAKE_PROFIT"
+                    inferred_reason = "TAKE_PROFIT_TP_FULL"
                 else:
                     current_price = self.get_current_prices([symbol]).get(symbol, position.take_profit_price or position.current_stop or position.entry_price)
                     if position.side == "BUY":
@@ -1929,6 +1929,7 @@ class CryptoSword:
                         session_id=position.session_id,
                         strategy_line=position.strategy_line,
                         roi_pct=pnl_pct * self.config.leverage,
+                        price_move_pct=pnl_pct,
                     )
                 )
 
@@ -2636,6 +2637,7 @@ class CryptoSword:
                         session_id=position.session_id,
                         strategy_line=position.strategy_line,
                         roi_pct=pnl_pct * self.config.leverage,
+                        price_move_pct=pnl_pct,
                     )
                 )
                 self._record_latency_step(latency_steps, "telegram_notify", step_started)
