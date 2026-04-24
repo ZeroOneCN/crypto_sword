@@ -483,6 +483,8 @@ class CryptoSword:
         self._last_summary_signature: str = ""
         self._last_scan_monitor_signature: str = ""
         self._last_watch_monitor_signature: str = ""
+        self._last_scan_monitor_snapshot: dict[str, str] = {}
+        self._last_watch_monitor_snapshot: dict[str, str] = {}
         self._account_info_cache: Optional[dict[str, Any]] = None
         self._account_info_cache_at: float = 0.0
         self._market_style_trade_marker: tuple[int, str] = (0, "")
@@ -498,6 +500,56 @@ class CryptoSword:
             return json.dumps(payload, sort_keys=True, ensure_ascii=False, default=str)
         except Exception:
             return str(payload)
+
+    def _monitor_item_signature(self, item: dict[str, Any]) -> str:
+        return self._message_signature({
+            "direction": item.get("direction"),
+            "score": float((item.get("score") or {}).get("total_score", 0) or 0),
+            "entry_status_text": item.get("entry_status_text", ""),
+            "entry_note": item.get("entry_note", ""),
+            "strategy_line": item.get("strategy_line", ""),
+            "watch_stage": item.get("watch_stage", ""),
+            "price": round(float(item.get("price", 0) or 0), 8),
+        })
+
+    def _build_monitor_delta(
+        self,
+        items: list[dict[str, Any]],
+        previous_snapshot: dict[str, str],
+        count_label: str,
+    ) -> tuple[list[dict[str, Any]], dict[str, str]]:
+        current_items = items[:5]
+        current_snapshot = {
+            str(item.get("symbol", "")): self._monitor_item_signature(item)
+            for item in current_items
+            if item.get("symbol")
+        }
+        delta_items: list[dict[str, Any]] = []
+
+        for item in current_items:
+            symbol = str(item.get("symbol", ""))
+            if not symbol:
+                continue
+            if previous_snapshot.get(symbol) != current_snapshot.get(symbol):
+                delta_items.append(item)
+
+        previous_symbols = set(previous_snapshot.keys())
+        current_symbols = set(current_snapshot.keys())
+        removed_symbols = sorted(previous_symbols - current_symbols)
+        for symbol in removed_symbols[:3]:
+            delta_items.append({
+                "symbol": symbol,
+                "direction": "LONG",
+                "price": 0,
+                "metrics": {},
+                "score": {"total_score": 0, "confidence": "状态变更"},
+                "entry_status_text": "失效淘汰",
+                "entry_note": f"已移出当前{count_label}前排监控",
+                "strategy_line": "",
+                "watch_stage": "淘汰",
+            })
+
+        return delta_items[:5], current_snapshot
 
     def _get_account_info_cached(self, ttl_sec: float = 3.0, force: bool = False) -> dict[str, Any]:
         now = time.time()
@@ -2890,31 +2942,29 @@ class CryptoSword:
         interval = max(60, min(self._monitor_interval, self._current_scan_interval))
         if now - self._last_monitor_time < interval:
             return
-        signature = self._message_signature([
-            {
-                "symbol": item.get("symbol"),
-                "direction": item.get("direction"),
-                "score": float((item.get("score") or {}).get("total_score", 0) or 0),
-                "entry_status_text": item.get("entry_status_text", ""),
-                "entry_note": item.get("entry_note", ""),
-                "strategy_line": item.get("strategy_line", ""),
-                "watch_stage": item.get("watch_stage", ""),
-                "price": float(item.get("price", 0) or 0),
-            }
-            for item in signals[:5]
-        ])
+        delta_items, current_snapshot = self._build_monitor_delta(
+            signals,
+            self._last_scan_monitor_snapshot,
+            "扫描",
+        )
+        signature = self._message_signature(delta_items)
         if signature == self._last_scan_monitor_signature:
             logger.debug("scan monitor skipped: no material changes")
             return
+        if not delta_items:
+            logger.debug("scan monitor skipped: delta empty")
+            self._last_scan_monitor_snapshot = current_snapshot
+            return
         self._last_monitor_time = now
         self._last_scan_monitor_signature = signature
+        self._last_scan_monitor_snapshot = current_snapshot
         try:
             msg = format_scan_monitor_msg(
-                signals=signals,
+                signals=delta_items,
                 scanned_count=self.config.scan_top_n,
                 max_items=5,
-                report_title="宙斯交易中枢 | 妖币扫描报告",
-                count_label="扫描数量",
+                report_title="宙斯交易中枢 | 妖币扫描变化",
+                count_label="扫描范围",
             )
             send_telegram_message(msg)
         except Exception as e:
@@ -2924,36 +2974,35 @@ class CryptoSword:
         """Send periodic candidate follow-up even when no deep scan entry is ready."""
         watch_items = self._watchlist_monitor_items()
         if not watch_items:
+            self._last_watch_monitor_snapshot = {}
             return
         now = time.time()
         interval = self._watch_monitor_interval(watch_items)
         if now - self._last_watch_monitor_time < interval:
             return
-        signature = self._message_signature([
-            {
-                "symbol": item.get("symbol"),
-                "direction": item.get("direction"),
-                "score": float((item.get("score") or {}).get("total_score", 0) or 0),
-                "entry_status_text": item.get("entry_status_text", ""),
-                "entry_note": item.get("entry_note", ""),
-                "strategy_line": item.get("strategy_line", ""),
-                "watch_stage": item.get("watch_stage", ""),
-                "price": float(item.get("price", 0) or 0),
-            }
-            for item in watch_items[:5]
-        ])
+        delta_items, current_snapshot = self._build_monitor_delta(
+            watch_items,
+            self._last_watch_monitor_snapshot,
+            "候选",
+        )
+        signature = self._message_signature(delta_items)
         if signature == self._last_watch_monitor_signature:
             logger.debug("watch monitor skipped: no material changes")
             return
+        if not delta_items:
+            logger.debug("watch monitor skipped: delta empty")
+            self._last_watch_monitor_snapshot = current_snapshot
+            return
         self._last_watch_monitor_time = now
         self._last_watch_monitor_signature = signature
+        self._last_watch_monitor_snapshot = current_snapshot
         try:
             msg = format_scan_monitor_msg(
-                signals=watch_items,
+                signals=delta_items,
                 scanned_count=len(watch_items),
                 max_items=5,
-                report_title="宙斯交易中枢 | 候选跟踪",
-                count_label="候选数量",
+                report_title="宙斯交易中枢 | 候选变化",
+                count_label="候选范围",
             )
             send_telegram_message(msg)
         except Exception as e:
