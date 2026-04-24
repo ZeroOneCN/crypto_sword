@@ -512,13 +512,19 @@ def send_signal_alert(signal: dict[str, Any], trade_result: dict[str, Any]) -> b
     return send_telegram_message(message)
 
 
-def format_scan_monitor_msg(signals: list[dict[str, Any]], scanned_count: int = 0, max_items: int = 5) -> str:
+def format_scan_monitor_msg(
+    signals: list[dict[str, Any]],
+    scanned_count: int = 0,
+    max_items: int = 5,
+    report_title: str = "宙斯交易中枢 | 妖币扫描报告",
+    count_label: str = "扫描数量",
+) -> str:
     """Format a compact real-time scanner monitor report with entry-confirmation states."""
     now_text = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    msg = f"""📡 <b>宙斯交易中枢 | 妖币扫描报告</b>
+    msg = f"""📡 <b>{_escape(report_title)}</b>
 <code>{now_text}</code>
 
-<b>扫描数量</b>  <code>{scanned_count}</code>
+<b>{_escape(count_label)}</b>  <code>{scanned_count}</code>
 <b>有效信号</b>  <code>{len(signals)}</code>"""
 
     if not signals:

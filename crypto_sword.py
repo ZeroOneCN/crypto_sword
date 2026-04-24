@@ -2672,6 +2672,8 @@ class CryptoSword:
                 signals=signals,
                 scanned_count=self.config.scan_top_n,
                 max_items=5,
+                report_title="宙斯交易中枢 | 妖币扫描报告",
+                count_label="扫描数量",
             )
             send_telegram_message(msg)
         except Exception as e:
@@ -2692,6 +2694,8 @@ class CryptoSword:
                 signals=watch_items,
                 scanned_count=len(watch_items),
                 max_items=5,
+                report_title="宙斯交易中枢 | 候选跟踪",
+                count_label="候选数量",
             )
             send_telegram_message(msg)
         except Exception as e:
