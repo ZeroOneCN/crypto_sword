@@ -485,6 +485,8 @@ class CryptoSword:
         self._last_watch_monitor_signature: str = ""
         self._last_scan_monitor_snapshot: dict[str, str] = {}
         self._last_watch_monitor_snapshot: dict[str, str] = {}
+        self._last_scan_monitor_order: dict[str, int] = {}
+        self._last_watch_monitor_order: dict[str, int] = {}
         self._account_info_cache: Optional[dict[str, Any]] = None
         self._account_info_cache_at: float = 0.0
         self._market_style_trade_marker: tuple[int, str] = (0, "")
@@ -504,13 +506,28 @@ class CryptoSword:
     def _monitor_item_signature(self, item: dict[str, Any]) -> str:
         return self._message_signature({
             "direction": item.get("direction"),
-            "score": float((item.get("score") or {}).get("total_score", 0) or 0),
+            "score": round(float((item.get("score") or {}).get("total_score", 0) or 0), 1),
             "entry_status_text": item.get("entry_status_text", ""),
             "entry_note": item.get("entry_note", ""),
             "strategy_line": item.get("strategy_line", ""),
             "watch_stage": item.get("watch_stage", ""),
-            "price": round(float(item.get("price", 0) or 0), 8),
         })
+
+    def _stable_monitor_sort(self, items: list[dict[str, Any]], order_cache: dict[str, int]) -> list[dict[str, Any]]:
+        def _key(item: dict[str, Any]) -> tuple[int, float, int]:
+            symbol = str(item.get("symbol", ""))
+            strategy_bonus = 1 if item.get("strategy_line") == "趋势突破线" else 0
+            score_total = round(float((item.get("score") or {}).get("total_score", 0) or 0), 1)
+            previous_rank = order_cache.get(symbol, 999)
+            return strategy_bonus, score_total, -previous_rank
+
+        sorted_items = sorted(items, key=_key, reverse=True)
+        order_cache.clear()
+        for index, item in enumerate(sorted_items[:10]):
+            symbol = str(item.get("symbol", ""))
+            if symbol:
+                order_cache[symbol] = index
+        return sorted_items
 
     def _build_monitor_delta(
         self,
@@ -2927,8 +2944,7 @@ class CryptoSword:
             score_total = float((item.get("score") or {}).get("total_score", 0) or 0)
             return strategy_bonus, score_total
 
-        items.sort(key=_monitor_priority, reverse=True)
-        return items
+        return self._stable_monitor_sort(items, self._last_watch_monitor_order)
 
     def _watch_monitor_interval(self, watch_items: list[dict[str, Any]]) -> int:
         has_breakout = any(item.get("strategy_line") == "趋势突破线" for item in watch_items)
@@ -2942,6 +2958,7 @@ class CryptoSword:
         interval = max(60, min(self._monitor_interval, self._current_scan_interval))
         if now - self._last_monitor_time < interval:
             return
+        signals = self._stable_monitor_sort(list(signals), self._last_scan_monitor_order)
         delta_items, current_snapshot = self._build_monitor_delta(
             signals,
             self._last_scan_monitor_snapshot,
