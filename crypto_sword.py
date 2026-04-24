@@ -289,6 +289,9 @@ class Position:
         self.initial_quantity = quantity
         self.last_synced_quantity = quantity
         self.partial_tp_count = 0
+        self.realized_pnl = 0.0
+        self.realized_exit_value = 0.0
+        self.realized_quantity = 0.0
         self.protection_failures = 0
         self.last_protection_error = ""
 
@@ -1712,6 +1715,9 @@ class CryptoSword:
         notional = position.entry_price * reduced_qty
         pnl_pct = pnl / notional * 100 if notional > 0 else 0.0
         position.partial_tp_count += 1
+        position.realized_pnl += pnl
+        position.realized_exit_value += price * reduced_qty
+        position.realized_quantity += reduced_qty
         self.daily_pnl += pnl
         send_telegram_message(
             format_partial_take_profit_msg(
@@ -1728,6 +1734,76 @@ class CryptoSword:
                 strategy_line=position.strategy_line,
             )
         )
+
+    def _close_summary_from_realized_state(
+        self,
+        position: Position,
+        remaining_qty: float,
+        remaining_exit_price: float,
+    ) -> tuple[float, float, float, float]:
+        """Build a full close summary from prior partial fills plus the remaining fill."""
+        total_qty = max(float(position.initial_quantity or 0.0), float(position.realized_quantity + remaining_qty))
+        if total_qty <= 0:
+            total_qty = max(float(position.realized_quantity), float(remaining_qty), 0.0)
+
+        if position.side == "BUY":
+            remaining_pnl = (remaining_exit_price - position.entry_price) * remaining_qty
+        else:
+            remaining_pnl = (position.entry_price - remaining_exit_price) * remaining_qty
+
+        total_pnl = float(position.realized_pnl) + remaining_pnl
+        total_exit_value = float(position.realized_exit_value) + remaining_exit_price * remaining_qty
+        avg_exit_price = total_exit_value / total_qty if total_qty > 0 else remaining_exit_price
+        entry_notional = position.entry_price * total_qty
+        pnl_pct = total_pnl / entry_notional * 100 if entry_notional > 0 else 0.0
+        return avg_exit_price, total_pnl, pnl_pct, remaining_pnl
+
+    def _estimate_exchange_take_profit_close(self, position: Position) -> Optional[tuple[float, float, float, float]]:
+        """Estimate final close when staged TP orders complete on the exchange between syncs."""
+        remaining_qty = float(position.quantity or 0.0)
+        if remaining_qty <= 0:
+            return None
+
+        targets = sorted(
+            [target for target in (position.take_profit_targets or []) if float(target.get("price", 0) or 0) > 0],
+            key=lambda item: int(item.get("level", 0) or 0),
+        )
+        if not targets:
+            return None
+
+        remaining_targets = [
+            target for target in targets
+            if int(target.get("level", 0) or 0) > int(position.partial_tp_count)
+        ]
+        if not remaining_targets:
+            remaining_targets = [targets[-1]]
+
+        weighted_exit_value = 0.0
+        allocated_qty = 0.0
+        qty_left = remaining_qty
+        for target in remaining_targets:
+            target_qty = float(target.get("quantity", 0) or 0)
+            if target_qty <= 0:
+                continue
+            fill_qty = min(target_qty, qty_left)
+            if fill_qty <= 0:
+                continue
+            weighted_exit_value += float(target.get("price", 0) or 0) * fill_qty
+            allocated_qty += fill_qty
+            qty_left -= fill_qty
+            if qty_left <= 1e-9:
+                break
+
+        if qty_left > 1e-9:
+            fallback_price = float(remaining_targets[-1].get("price", position.take_profit_price) or position.take_profit_price)
+            weighted_exit_value += fallback_price * qty_left
+            allocated_qty += qty_left
+
+        if allocated_qty <= 0:
+            return None
+
+        remaining_exit_price = weighted_exit_value / allocated_qty
+        return self._close_summary_from_realized_state(position, remaining_qty, remaining_exit_price)
 
     def _sync_protective_order_snapshot(self, position: Position):
         """Best-effort order snapshot check without blocking trading."""
@@ -1813,20 +1889,28 @@ class CryptoSword:
 
             if not live_pos:
                 logger.warning(f"♻️ {symbol} 本地有仓位但交易所已无持仓，按交易所状态移除")
-                current_price = self.get_current_prices([symbol]).get(symbol, position.take_profit_price or position.current_stop or position.entry_price)
-                if position.side == "BUY":
-                    inferred_reason = "STOP_LOSS" if current_price <= position.current_stop else "TAKE_PROFIT"
-                    pnl = (current_price - position.entry_price) * position.quantity
+                close_summary = self._estimate_exchange_take_profit_close(position)
+                if close_summary:
+                    exit_price, pnl, pnl_pct, remaining_pnl = close_summary
+                    inferred_reason = "TAKE_PROFIT"
                 else:
-                    inferred_reason = "STOP_LOSS" if current_price >= position.current_stop else "TAKE_PROFIT"
-                    pnl = (position.entry_price - current_price) * position.quantity
+                    current_price = self.get_current_prices([symbol]).get(symbol, position.take_profit_price or position.current_stop or position.entry_price)
+                    if position.side == "BUY":
+                        inferred_reason = "STOP_LOSS" if current_price <= position.current_stop else "TAKE_PROFIT"
+                    else:
+                        inferred_reason = "STOP_LOSS" if current_price >= position.current_stop else "TAKE_PROFIT"
+                    exit_price, pnl, pnl_pct, remaining_pnl = self._close_summary_from_realized_state(
+                        position,
+                        position.quantity,
+                        current_price,
+                    )
 
-                position.exit_price = current_price
+                position.exit_price = exit_price
                 position.exit_time = datetime.now()
                 position.exit_reason = f"{inferred_reason}_EXCHANGE"
                 position.pnl = pnl
-                position.pnl_pct = pnl / (position.entry_price * position.quantity) * 100 if position.entry_price and position.quantity else 0.0
-                self.daily_pnl += pnl
+                position.pnl_pct = pnl_pct
+                self.daily_pnl += remaining_pnl
                 self._record_closed_trade_result(position, pnl)
 
                 self._cancel_position_protection(position)
@@ -1836,14 +1920,15 @@ class CryptoSword:
                         symbol=symbol,
                         direction="LONG" if position.side == "BUY" else "SHORT",
                         entry_price=position.entry_price,
-                        exit_price=current_price,
-                        quantity=position.quantity,
+                        exit_price=exit_price,
+                        quantity=position.initial_quantity,
                         pnl=pnl,
-                        pnl_pct=position.pnl_pct,
+                        pnl_pct=pnl_pct,
                         reason=position.exit_reason,
                         duration_hours=(position.exit_time - position.entry_time).total_seconds() / 3600,
                         session_id=position.session_id,
                         strategy_line=position.strategy_line,
+                        roi_pct=pnl_pct * self.config.leverage,
                     )
                 )
 
@@ -1852,10 +1937,10 @@ class CryptoSword:
                     if trade.symbol == symbol:
                         self.db.update_exit(
                             trade_id=trade.id,
-                            exit_price=current_price,
+                            exit_price=exit_price,
                             exit_reason=position.exit_reason,
                             pnl=pnl,
-                            pnl_pct=position.pnl_pct,
+                            pnl_pct=pnl_pct,
                             realized_pnl=pnl,
                         )
                         break
@@ -2517,19 +2602,19 @@ class CryptoSword:
             self._record_latency_step(latency_steps, "market_close", step_started)
 
             if result.status == "FILLED":
-                if position.side == "BUY":
-                    pnl = (result.executed_price - position.entry_price) * position.quantity
-                else:
-                    pnl = (position.entry_price - result.executed_price) * position.quantity
-
-                position.exit_price = result.executed_price
+                exit_price, pnl, pnl_pct, remaining_pnl = self._close_summary_from_realized_state(
+                    position,
+                    position.quantity,
+                    result.executed_price,
+                )
+                position.exit_price = exit_price
                 position.exit_time = datetime.now()
                 position.exit_reason = reason
                 position.pnl = pnl
-                position.pnl_pct = pnl / (position.entry_price * position.quantity) * 100
+                position.pnl_pct = pnl_pct
 
                 self.tracker.remove_position(symbol)
-                self.daily_pnl += pnl
+                self.daily_pnl += remaining_pnl
                 self._record_closed_trade_result(position, pnl)
                 step_started = time.perf_counter()
                 self._cancel_position_protection(position)
@@ -2542,14 +2627,15 @@ class CryptoSword:
                         symbol=symbol,
                         direction="LONG" if position.side == "BUY" else "SHORT",
                         entry_price=position.entry_price,
-                        exit_price=result.executed_price,
-                        quantity=position.quantity,
+                        exit_price=exit_price,
+                        quantity=position.initial_quantity,
                         pnl=pnl,
-                        pnl_pct=position.pnl_pct,
+                        pnl_pct=pnl_pct,
                         reason=reason,
                         duration_hours=duration_hours,
                         session_id=position.session_id,
                         strategy_line=position.strategy_line,
+                        roi_pct=pnl_pct * self.config.leverage,
                     )
                 )
                 self._record_latency_step(latency_steps, "telegram_notify", step_started)
@@ -2561,10 +2647,10 @@ class CryptoSword:
                     if t.symbol == symbol:
                         self.db.update_exit(
                             trade_id=t.id,
-                            exit_price=result.executed_price,
+                            exit_price=exit_price,
                             exit_reason=reason,
                             pnl=pnl,
-                            pnl_pct=position.pnl_pct,
+                            pnl_pct=pnl_pct,
                             realized_pnl=pnl,
                         )
                         logger.info(f"📜 交易已更新 (ID: {t.id})")

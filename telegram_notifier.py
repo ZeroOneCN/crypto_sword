@@ -210,7 +210,7 @@ def format_open_position_msg(symbol: str, direction: str, entry_price: float, qu
 def format_close_position_msg(symbol: str, direction: str, entry_price: float, exit_price: float, 
                               quantity: float, pnl: float, pnl_pct: float, reason: str, 
                               duration_hours: float = 0, session_id: str = "",
-                              strategy_line: str = "") -> str:
+                              strategy_line: str = "", roi_pct: float = 0.0) -> str:
     """格式化平仓通知"""
     direction_emoji = "🟢" if pnl >= 0 else "🔴"
     pnl_emoji = "🟢" if pnl >= 0 else "🔴"
@@ -229,6 +229,8 @@ def format_close_position_msg(symbol: str, direction: str, entry_price: float, e
     
     if strategy_line:
         msg += f"\n<b>策略</b>  <code>{_escape(strategy_line)}</code>"
+    if roi_pct:
+        msg += f"\n<b>实际ROI</b>  <code>{roi_pct:+.2f}%</code>"
     if duration_hours > 0:
         msg += f"\n<b>持仓</b>  {duration_hours:.1f} 小时"
     if session_id:
