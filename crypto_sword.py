@@ -767,6 +767,32 @@ class CryptoSword:
         if trend is not None:
             watch["confirmation_trend"] = trend
 
+    def _mark_watch_in_position(self, symbol: str, strategy_line: str, note: str = ""):
+        now = time.time()
+        watch = self._entry_watchlist.get(symbol)
+        if not watch:
+            watch = {
+                "symbol": symbol,
+                "direction": "",
+                "stage": "in_position",
+                "first_seen_ts": now,
+                "last_seen_ts": now,
+                "first_price": 0.0,
+                "highest_price": 0.0,
+                "lowest_price": 0.0,
+                "score_total": 0.0,
+                "pullback_seen": True,
+                "required_pullback_pct": 0.0,
+                "current_pullback_pct": 0.0,
+                "metrics": {},
+                "score": {},
+            }
+            self._entry_watchlist[symbol] = watch
+        watch["strategy_line"] = strategy_line
+        watch["watch_stage"] = "持仓中"
+        watch["entry_note"] = note or "已开仓，继续跟踪后续再入场机会"
+        watch["last_seen_ts"] = now
+
     def _is_momentum_entry_ready(
         self,
         signal: dict[str, Any],
@@ -1006,7 +1032,6 @@ class CryptoSword:
             trend = self._load_confirmation_trend(symbol)
             momentum_ready, momentum_note = self._is_momentum_entry_ready(signal, trend, current_price)
             if momentum_ready:
-                self._entry_watchlist.pop(symbol, None)
                 signal["entry_status"] = "ready"
                 signal["entry_status_text"] = "动量确认入场"
                 signal["strategy_line"] = "趋势突破线"
@@ -1018,7 +1043,6 @@ class CryptoSword:
             if watch.get("strategy_line") == "趋势突破线":
                 continuation_ready, continuation_note = self._is_trend_continuation_ready(signal, trend, current_price)
                 if continuation_ready:
-                    self._entry_watchlist.pop(symbol, None)
                     signal["entry_status"] = "ready"
                     signal["entry_status_text"] = "突破确认入场"
                     signal["strategy_line"] = "趋势突破线"
@@ -1068,7 +1092,6 @@ class CryptoSword:
 
         flow_ready, flow_note = self._is_flow_reclaim_ready(signal, trend, current_price, pullback_pct)
         if flow_ready:
-            self._entry_watchlist.pop(symbol, None)
             signal["entry_status"] = "ready"
             signal["entry_status_text"] = "快线确认入场"
             signal["strategy_line"] = watch.get("strategy_line", "回踩确认线")
@@ -1111,7 +1134,6 @@ class CryptoSword:
             signal["entry_note"] = f"已回踩，等待 5m 量能回归 ≥ {self.config.reclaim_volume_ratio:.2f}"
             return signal
 
-        self._entry_watchlist.pop(symbol, None)
         signal["entry_status"] = "ready"
         signal["entry_status_text"] = "确认入场"
         signal["strategy_line"] = watch.get("strategy_line", "回踩确认线")
@@ -2041,8 +2063,6 @@ class CryptoSword:
                 continue
             if r.symbol in self.tracker.positions:
                 continue
-            if r.symbol in self.traded_symbols_today:
-                continue
             rejection_reason = self._entry_rejection_reason(r.symbol, r.direction, r.metrics)
             if rejection_reason:
                 logger.info(f"🧊 {r.symbol} 入场过滤：{rejection_reason}")
@@ -2564,7 +2584,11 @@ class CryptoSword:
                     with self._state_lock:
                         self.tracker.add_position(position)
                         self.traded_symbols_today.add(signal["symbol"])
-                        self._entry_watchlist.pop(signal["symbol"], None)
+                        self._mark_watch_in_position(
+                            signal["symbol"],
+                            getattr(position, "strategy_line", signal.get("strategy_line", "")),
+                            note="已开仓，继续跟踪回撤与再入场机会",
+                        )
         self._record_latency_step(latency_steps, "execute_entries", step_started)
 
         step_started = time.perf_counter()
