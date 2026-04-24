@@ -698,6 +698,18 @@ class CryptoSword:
             return max(2.0, self.config.shallow_pullback_pct + 0.4)
         return self.config.min_pullback_pct
 
+    def _soft_breakout_candidate(self, metrics: dict[str, Any], score_total: float) -> bool:
+        """Allow elite movers with moderate OI expansion to join the breakout line."""
+        change_24h = abs(float(metrics.get("change_24h_pct", 0) or 0))
+        oi_change = abs(float(metrics.get("oi_24h_pct", 0) or 0))
+        funding = abs(float(metrics.get("funding_rate", 0) or 0))
+        return (
+            score_total >= max(self.config.momentum_entry_score + 6, 74.0)
+            and change_24h >= max(self.config.momentum_entry_min_change_pct, 14.0)
+            and oi_change >= max(self.config.momentum_entry_min_oi_pct * 0.35, 10.0)
+            and funding < self.config.max_abs_funding_rate * 0.85
+        )
+
     def _strategy_line_for_signal(self, signal: dict[str, Any]) -> str:
         metrics = signal.get("metrics", {}) or {}
         score_total = float((signal.get("score") or {}).get("total_score", 0) or 0)
@@ -709,6 +721,8 @@ class CryptoSword:
             and change_24h >= self.config.momentum_entry_min_change_pct
             and oi_change >= self.config.momentum_entry_min_oi_pct
         ):
+            return "趋势突破线"
+        if self.config.momentum_entry_enabled and self._soft_breakout_candidate(metrics, score_total):
             return "趋势突破线"
         return "回踩确认线"
 
@@ -756,10 +770,11 @@ class CryptoSword:
         funding = abs(float(metrics.get("funding_rate", 0) or 0))
 
         if score_total < self.config.momentum_entry_score:
-            return False, ""
+            if not self._soft_breakout_candidate(metrics, score_total):
+                return False, ""
         if abs(change_24h) < self.config.momentum_entry_min_change_pct:
             return False, ""
-        if oi_change < self.config.momentum_entry_min_oi_pct:
+        if oi_change < self.config.momentum_entry_min_oi_pct and not self._soft_breakout_candidate(metrics, score_total):
             return False, ""
         if funding >= self.config.max_abs_funding_rate:
             return False, ""
@@ -821,6 +836,10 @@ class CryptoSword:
                 return signal
 
         if not watch:
+            strategy_line = self._strategy_line_for_signal(signal)
+            initial_note = "首次发现，等待回踩确认"
+            if strategy_line == "趋势突破线":
+                initial_note = "首次发现，等待趋势延续确认"
             self._entry_watchlist[symbol] = {
                 "symbol": symbol,
                 "direction": direction,
@@ -832,11 +851,11 @@ class CryptoSword:
                 "lowest_price": current_price,
                 "score_total": score_total,
                 "pullback_seen": False,
-                "strategy_line": self._strategy_line_for_signal(signal),
+                "strategy_line": strategy_line,
                 "watch_stage": "首发现",
                 "required_pullback_pct": required_pullback,
                 "current_pullback_pct": 0.0,
-                "entry_note": "首次发现，等待回踩确认",
+                "entry_note": initial_note,
                 "price": current_price,
                 "metrics": signal.get("metrics", {}),
                 "score": signal.get("score"),
@@ -1222,19 +1241,28 @@ class CryptoSword:
         else:
             self._consecutive_losses = 0
 
+    def _breakeven_offset_for_position(self, position: Position) -> float:
+        """Lock profits faster after TP, with tighter rules for breakout entries."""
+        base_offset = max(float(self.config.breakeven_offset_pct), 0.05)
+        tp_count = max(int(position.partial_tp_count), 1)
+        if position.strategy_line == "趋势突破线":
+            return base_offset + 0.18 + 0.12 * (tp_count - 1)
+        return base_offset + 0.05 + 0.08 * (tp_count - 1)
+
     def _move_stop_to_breakeven(self, position: Position, remaining_qty: float) -> bool:
         """After first TP, move stop loss near breakeven so winners do not turn red."""
         if not self.config.breakeven_after_tp or remaining_qty <= 0:
             return False
 
+        offset_pct = self._breakeven_offset_for_position(position)
         if position.side == "BUY":
-            breakeven_price = position.entry_price * (1 + self.config.breakeven_offset_pct / 100.0)
+            breakeven_price = position.entry_price * (1 + offset_pct / 100.0)
             close_side = "SELL"
             position_side = "LONG"
             if position.current_stop >= breakeven_price:
                 return True
         else:
-            breakeven_price = position.entry_price * (1 - self.config.breakeven_offset_pct / 100.0)
+            breakeven_price = position.entry_price * (1 - offset_pct / 100.0)
             close_side = "BUY"
             position_side = "SHORT"
             if position.current_stop <= breakeven_price:
