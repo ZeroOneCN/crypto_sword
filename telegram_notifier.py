@@ -363,6 +363,7 @@ def format_summary_msg(
     realized_pnl: float,
     total_balance: float = 0.0,
     available_balance: float = 0.0,
+    daily_stats: dict | None = None,
 ) -> str:
     """格式化持仓汇总通知"""
     msg = f"""📊 <b>宙斯交易中枢 | 持仓汇总</b>

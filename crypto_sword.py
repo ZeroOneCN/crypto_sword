@@ -23,6 +23,7 @@ import sys
 import threading
 import time
 from datetime import datetime, timedelta
+from logging.handlers import RotatingFileHandler
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 from uuid import uuid4
@@ -113,7 +114,12 @@ logging.basicConfig(
     format="%(asctime)s | %(levelname)s | %(message)s",
     handlers=[
         logging.StreamHandler(sys.stdout),
-        logging.FileHandler("/root/.hermes/logs/crypto_sword.log"),
+        RotatingFileHandler(
+            "/root/.hermes/logs/crypto_sword.log",
+            maxBytes=20 * 1024 * 1024,
+            backupCount=5,
+            encoding="utf-8",
+        ),
     ],
 )
 logger = logging.getLogger(__name__)
@@ -513,6 +519,23 @@ class CryptoSword:
         except Exception as e:
             logger.debug(f"summary db enrichment skipped: {e}")
         return enriched
+
+    def _get_daily_report_snapshot(self) -> dict[str, Any]:
+        report_date = datetime.now().date().isoformat()
+        try:
+            return self.db.get_daily_report(report_date, mode=self.config.mode)
+        except Exception as e:
+            logger.debug(f"daily report snapshot skipped: {e}")
+            return {
+                "closed_trades": 0,
+                "winning_trades": 0,
+                "losing_trades": 0,
+                "win_rate": 0.0,
+                "total_pnl": 0.0,
+                "avg_pnl": 0.0,
+                "best_trade": None,
+                "worst_trade": None,
+            }
 
     def _monitor_item_signature(self, item: dict[str, Any]) -> str:
         return self._message_signature({
@@ -2906,6 +2929,7 @@ class CryptoSword:
         """发送持仓汇总通知"""
         total_balance = 0.0
         available_balance = 0.0
+        daily_report = self._get_daily_report_snapshot()
         try:
             balance_info = self._get_account_info_cached(ttl_sec=10.0)
             available_balance = float(balance_info.get("availableBalance", 0) or 0)
@@ -2919,6 +2943,9 @@ class CryptoSword:
             "closed_today": summary["closed_today"],
             "total_balance": round(total_balance, 2),
             "available_balance": round(available_balance, 2),
+            "win_rate": round(float(daily_report.get("win_rate", 0) or 0), 2),
+            "best_trade": daily_report.get("best_trade"),
+            "worst_trade": daily_report.get("worst_trade"),
         })
         if signature == self._last_summary_signature:
             logger.debug("summary notify skipped: no material changes")
@@ -2930,7 +2957,24 @@ class CryptoSword:
             realized_pnl=summary["realized_pnl"],
             total_balance=total_balance,
             available_balance=available_balance,
+            daily_stats=daily_report,
         )
+        win_rate = float(daily_report.get("win_rate", 0) or 0)
+        avg_pnl = float(daily_report.get("avg_pnl", 0) or 0)
+        msg += f"\n<b>胜率</b>  <code>{win_rate:.1f}%</code>"
+        msg += f"\n<b>笔均</b>  <code>{avg_pnl:+,.2f} USDT</code>"
+        best_trade = daily_report.get("best_trade") or {}
+        if best_trade.get("symbol"):
+            msg += (
+                f"\n<b>最佳</b>  <code>{best_trade.get('symbol')}</code>"
+                f"  <code>{float(best_trade.get('pnl', 0) or 0):+,.2f} USDT</code>"
+            )
+        worst_trade = daily_report.get("worst_trade") or {}
+        if worst_trade.get("symbol"):
+            msg += (
+                f"\n<b>最差</b>  <code>{worst_trade.get('symbol')}</code>"
+                f"  <code>{float(worst_trade.get('pnl', 0) or 0):+,.2f} USDT</code>"
+            )
         msg += f"\n\n<b>已平仓</b>  <code>{summary['closed_today']}</code> 笔"
         send_telegram_message(msg)
 
