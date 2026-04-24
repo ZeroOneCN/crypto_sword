@@ -517,6 +517,8 @@ def format_scan_monitor_msg(signals: list[dict[str, Any]], scanned_count: int = 
         oi_24h = float(metrics.get("oi_24h_pct", 0) or 0)
         entry_status_text = item.get("entry_status_text", "")
         entry_note = item.get("entry_note", "")
+        strategy_line = item.get("strategy_line", "")
+        watch_stage = item.get("watch_stage", "")
         tag = "跟多信号" if direction in {"LONG", "CONSIDER_LONG"} else "跟空信号"
         funding_tag = "极负费率" if funding <= -0.5 else "负费率" if funding < 0 else "正费率"
 
@@ -524,8 +526,12 @@ def format_scan_monitor_msg(signals: list[dict[str, Any]], scanned_count: int = 
 
 📨 <b>{_escape(tag)} ({_escape(funding_tag)})</b>
 • <code>{_escape(symbol)}</code> 评分 <code>{float(score):.1f}</code> {_escape(str(confidence))}
-• 费率 <code>{funding:+.4f}%</code>  价格 <code>{change_24h:+.2f}%</code>
-• OI <code>{oi_24h:+.2f}%</code>  现价 <code>${price:,.6f}</code>"""
+        • 费率 <code>{funding:+.4f}%</code>  价格 <code>{change_24h:+.2f}%</code>
+        • OI <code>{oi_24h:+.2f}%</code>  现价 <code>${price:,.6f}</code>"""
+        if strategy_line:
+            msg += f"\n• 策略 <code>{_escape(strategy_line)}</code>"
+        if watch_stage:
+            msg += f"\n• 阶段 <code>{_escape(watch_stage)}</code>"
         if entry_status_text:
             msg += f"\n• 状态 <code>{_escape(entry_status_text)}</code>"
         if entry_note:

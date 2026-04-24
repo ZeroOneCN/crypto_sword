@@ -447,6 +447,7 @@ class CryptoSword:
         self._loss_pause_until: float = 0.0
         self._entry_watchlist: dict[str, dict[str, Any]] = {}
         self._last_daily_report_sent_for: str = ""
+        self._last_watch_monitor_time: float = 0.0
 
     def _new_session_id(self, symbol: str) -> str:
         return f"{symbol}-{datetime.now().strftime('%Y%m%d%H%M%S')}-{uuid4().hex[:8]}"
@@ -479,9 +480,12 @@ class CryptoSword:
     def _should_sync_positions(self, now: float, deep_due: bool) -> bool:
         """Keep exchange sync frequent when we have risk to manage, lighter when flat."""
         open_count = self.tracker.get_open_count()
+        ws_live = self._user_ws_client is not None
         if open_count > 0:
-            return deep_due or now - self._last_position_sync_time >= max(120, self._current_scan_interval)
-        return self._last_position_sync_time <= 0 or now - self._last_position_sync_time >= max(300, self._current_scan_interval * 2)
+            base_interval = max(240, self._current_scan_interval) if ws_live else max(120, self._current_scan_interval)
+            return deep_due or now - self._last_position_sync_time >= base_interval
+        idle_interval = max(600, self._current_scan_interval * 2) if ws_live else max(300, self._current_scan_interval * 2)
+        return self._last_position_sync_time <= 0 or now - self._last_position_sync_time >= idle_interval
 
     def _refresh_market_profile(self):
         """Update market-aware scan interval and TP multiplier."""
@@ -643,6 +647,46 @@ class CryptoSword:
             return max(2.0, self.config.shallow_pullback_pct + 0.4)
         return self.config.min_pullback_pct
 
+    def _strategy_line_for_signal(self, signal: dict[str, Any]) -> str:
+        metrics = signal.get("metrics", {}) or {}
+        score_total = float((signal.get("score") or {}).get("total_score", 0) or 0)
+        change_24h = abs(float(metrics.get("change_24h_pct", 0) or 0))
+        oi_change = abs(float(metrics.get("oi_24h_pct", 0) or 0))
+        if (
+            self.config.momentum_entry_enabled
+            and score_total >= self.config.momentum_entry_score
+            and change_24h >= self.config.momentum_entry_min_change_pct
+            and oi_change >= self.config.momentum_entry_min_oi_pct
+        ):
+            return "趋势突破线"
+        return "回踩确认线"
+
+    def _current_pullback_pct(self, watch: dict[str, Any], direction: str, current_price: float) -> float:
+        if direction == "LONG":
+            anchor_price = max(float(watch.get("highest_price", current_price) or current_price), current_price)
+            return ((anchor_price - current_price) / anchor_price * 100.0) if anchor_price > 0 else 0.0
+        anchor_price = min(float(watch.get("lowest_price", current_price) or current_price), current_price)
+        return ((current_price - anchor_price) / anchor_price * 100.0) if anchor_price > 0 else 0.0
+
+    def _update_watch_state(
+        self,
+        watch: dict[str, Any],
+        *,
+        strategy_line: str,
+        stage_name: str,
+        entry_note: str,
+        required_pullback: float,
+        current_pullback: float,
+        trend: dict[str, Any] | None = None,
+    ):
+        watch["strategy_line"] = strategy_line
+        watch["watch_stage"] = stage_name
+        watch["entry_note"] = entry_note
+        watch["required_pullback_pct"] = required_pullback
+        watch["current_pullback_pct"] = current_pullback
+        if trend is not None:
+            watch["confirmation_trend"] = trend
+
     def _is_momentum_entry_ready(
         self,
         signal: dict[str, Any],
@@ -736,26 +780,35 @@ class CryptoSword:
                 "lowest_price": current_price,
                 "score_total": score_total,
                 "pullback_seen": False,
+                "strategy_line": self._strategy_line_for_signal(signal),
+                "watch_stage": "首发现",
+                "required_pullback_pct": required_pullback,
+                "current_pullback_pct": 0.0,
+                "entry_note": "首次发现，等待回踩确认",
+                "price": current_price,
+                "metrics": signal.get("metrics", {}),
+                "score": signal.get("score"),
             }
             signal["entry_status"] = "watch"
             signal["entry_status_text"] = "观察中"
+            signal["strategy_line"] = self._entry_watchlist[symbol]["strategy_line"]
+            signal["watch_stage"] = "首发现"
             signal["entry_note"] = "首次发现，等待回踩确认"
             return signal
 
         watch["last_seen_ts"] = now
         watch["stage"] = signal.get("stage", watch.get("stage", ""))
         watch["score_total"] = score_total or float(watch.get("score_total", 0) or 0)
+        watch["price"] = current_price
+        watch["metrics"] = signal.get("metrics", {})
+        watch["score"] = signal.get("score")
+        watch["strategy_line"] = self._strategy_line_for_signal(signal)
         if current_price > 0:
             watch["highest_price"] = max(float(watch.get("highest_price", current_price) or current_price), current_price)
             low_seed = float(watch.get("lowest_price", current_price) or current_price)
             watch["lowest_price"] = current_price if low_seed <= 0 else min(low_seed, current_price)
 
-        if direction == "LONG":
-            anchor_price = max(float(watch.get("highest_price", current_price) or current_price), current_price)
-            pullback_pct = ((anchor_price - current_price) / anchor_price * 100.0) if anchor_price > 0 else 0.0
-        else:
-            anchor_price = min(float(watch.get("lowest_price", current_price) or current_price), current_price)
-            pullback_pct = ((current_price - anchor_price) / anchor_price * 100.0) if anchor_price > 0 else 0.0
+        pullback_pct = self._current_pullback_pct(watch, direction, current_price)
 
         if pullback_pct >= required_pullback:
             watch["pullback_seen"] = True
@@ -767,12 +820,26 @@ class CryptoSword:
                 self._entry_watchlist.pop(symbol, None)
                 signal["entry_status"] = "ready"
                 signal["entry_status_text"] = "动量确认入场"
+                signal["strategy_line"] = "趋势突破线"
+                signal["watch_stage"] = "动量突破"
                 signal["entry_note"] = momentum_note
                 signal["confirmation_trend"] = trend
                 return signal
 
+            stage_name = "趋势待命" if watch.get("strategy_line") == "趋势突破线" else "回踩等待"
+            self._update_watch_state(
+                watch,
+                strategy_line=watch.get("strategy_line", "回踩确认线"),
+                stage_name=stage_name,
+                entry_note=f"等待至少 {required_pullback:.1f}% 回踩",
+                required_pullback=required_pullback,
+                current_pullback=pullback_pct,
+                trend=trend,
+            )
             signal["entry_status"] = "watch"
             signal["entry_status_text"] = "观察中"
+            signal["strategy_line"] = watch.get("strategy_line", "回踩确认线")
+            signal["watch_stage"] = stage_name
             signal["entry_note"] = f"等待至少 {required_pullback:.1f}% 回踩"
             return signal
 
@@ -789,14 +856,27 @@ class CryptoSword:
             trend_ok = higher_alignment == "BEARISH" and ma_alignment == "BEARISH" and 0 < current_price <= ma5
 
         if not trend_ok:
+            self._update_watch_state(
+                watch,
+                strategy_line=watch.get("strategy_line", "回踩确认线"),
+                stage_name="均线确认",
+                entry_note="已回踩，等待 15m 重站均线",
+                required_pullback=required_pullback,
+                current_pullback=pullback_pct,
+                trend=trend,
+            )
             signal["entry_status"] = "watch"
             signal["entry_status_text"] = "观察中"
+            signal["strategy_line"] = watch.get("strategy_line", "回踩确认线")
+            signal["watch_stage"] = "均线确认"
             signal["entry_note"] = "已回踩，等待 15m 重站均线"
             return signal
 
         self._entry_watchlist.pop(symbol, None)
         signal["entry_status"] = "ready"
         signal["entry_status_text"] = "确认入场"
+        signal["strategy_line"] = watch.get("strategy_line", "回踩确认线")
+        signal["watch_stage"] = "触发入场"
         signal["entry_note"] = f"回踩 {pullback_pct:.2f}% 后重站 15m 均线"
         signal["confirmation_trend"] = trend
         return signal
@@ -909,6 +989,52 @@ class CryptoSword:
         except Exception as e:
             logger.warning(f"WS state sync failed: {e}")
 
+    def _handle_ws_tp_fill(self, position: Position, order_id: int, filled_qty: float, fill_price: float):
+        if filled_qty <= 0:
+            return
+        reduced_qty = min(filled_qty, position.quantity)
+        remaining_qty = max(position.quantity - reduced_qty, 0.0)
+        if order_id in position.take_profit_order_ids:
+            position.take_profit_order_ids = [oid for oid in position.take_profit_order_ids if oid != order_id]
+        position.quantity = remaining_qty
+        position.last_synced_quantity = remaining_qty
+        self._notify_partial_take_profit(position, reduced_qty, remaining_qty, fill_price)
+        if remaining_qty > 0:
+            self._move_stop_to_breakeven(position, remaining_qty)
+            self._ensure_position_protection(position)
+
+    def _handle_ws_position_snapshot(self, pos_event: dict[str, Any]):
+        symbol = str(pos_event.get("s", "") or "")
+        if not symbol:
+            return
+        side_key = str(pos_event.get("ps", "") or "")
+        position = self.tracker.get_position(symbol)
+        if not position:
+            return
+
+        expected_side = "LONG" if position.side == "BUY" else "SHORT"
+        if side_key and side_key not in {expected_side, "BOTH"}:
+            return
+
+        live_qty = abs(float(pos_event.get("pa", 0) or 0))
+        if live_qty <= 0:
+            self._request_state_sync_from_ws("ACCOUNT_ZERO", symbol)
+            return
+
+        entry_price = float(pos_event.get("ep", position.entry_price) or position.entry_price)
+        if entry_price > 0:
+            position.entry_price = entry_price
+
+        if live_qty + 1e-9 < position.quantity:
+            reduced_qty = position.quantity - live_qty
+            current_price = self.get_current_prices([symbol]).get(symbol, position.take_profit_price or position.entry_price)
+            self._notify_partial_take_profit(position, reduced_qty, live_qty, current_price)
+            self._move_stop_to_breakeven(position, live_qty)
+
+        position.quantity = live_qty
+        position.last_synced_quantity = live_qty
+        self._ensure_position_protection(position)
+
     def _handle_ws_order_update(self, event: dict[str, Any]):
         """React to user stream order updates."""
         order = event.get("o", {}) if isinstance(event, dict) else {}
@@ -917,12 +1043,26 @@ class CryptoSword:
         execution_type = str(order.get("x", "") or "")
         order_type = str(order.get("o", "") or "")
         realized_pnl = float(order.get("rp", 0) or 0)
+        order_id = int(order.get("i", 0) or 0)
+        last_fill_qty = abs(float(order.get("l", 0) or 0))
+        avg_price = float(order.get("ap", 0) or order.get("L", 0) or 0)
+        position_side = str(order.get("ps", "") or "")
 
         if status in {"FILLED", "PARTIALLY_FILLED", "CANCELED", "EXPIRED"} or execution_type == "TRADE":
             logger.info(
                 f"WS order update: {symbol} {order_type} {execution_type}/{status} "
                 f"filled={order.get('z', '0')} price={order.get('L', '0')} rp={realized_pnl:.4f}"
             )
+            position = self.tracker.get_position(symbol)
+            if position:
+                expected_side = "LONG" if position.side == "BUY" else "SHORT"
+                if position_side in {"", "BOTH", expected_side}:
+                    if order_id == position.stop_loss_order_id and execution_type == "TRADE":
+                        self._request_state_sync_from_ws(f"{execution_type}/{status}", symbol)
+                        return
+                    if order_id in position.take_profit_order_ids and execution_type == "TRADE":
+                        self._handle_ws_tp_fill(position, order_id, last_fill_qty, avg_price or position.take_profit_price)
+                        return
             self._request_state_sync_from_ws(f"{execution_type}/{status}", symbol)
 
     def _handle_ws_account_update(self, event: dict[str, Any]):
@@ -932,7 +1072,13 @@ class CryptoSword:
         changed_symbols = [str(pos.get("s", "")) for pos in positions if pos.get("s")]
         if changed_symbols:
             logger.info(f"WS position update: {', '.join(changed_symbols[:8])}")
-        self._request_state_sync_from_ws("ACCOUNT_UPDATE", changed_symbols[0] if changed_symbols else "")
+        handled = False
+        for pos in positions:
+            if pos.get("s"):
+                self._handle_ws_position_snapshot(pos)
+                handled = True
+        if not handled:
+            self._request_state_sync_from_ws("ACCOUNT_UPDATE", changed_symbols[0] if changed_symbols else "")
 
     def _handle_ws_algo_update(self, event: dict[str, Any]):
         """React to conditional/algo order updates from user stream."""
@@ -2125,6 +2271,7 @@ class CryptoSword:
         else:
             next_deep_sec = max(0, int(self._current_scan_interval - (now - self._last_deep_scan_time)))
             logger.info(f"Fast scan only | candidates={len(candidates)} | next_deep={next_deep_sec}s")
+            self._send_watchlist_monitor()
 
         if self._is_daily_loss_limit_hit():
             if not self._daily_loss_alert_sent:
@@ -2181,6 +2328,27 @@ class CryptoSword:
         msg += f"\n\n<b>已平仓</b>  <code>{summary['closed_today']}</code> 笔"
         send_telegram_message(msg)
 
+    def _watchlist_monitor_items(self) -> list[dict[str, Any]]:
+        items: list[dict[str, Any]] = []
+        now = time.time()
+        for symbol, watch in self._entry_watchlist.items():
+            if now - float(watch.get("last_seen_ts", now)) > max(1800, self._current_scan_interval * 4):
+                continue
+            items.append({
+                "symbol": symbol,
+                "direction": watch.get("direction", ""),
+                "price": watch.get("price", 0),
+                "metrics": watch.get("metrics", {}) or {},
+                "score": watch.get("score"),
+                "entry_status": "watch",
+                "entry_status_text": "观察中",
+                "entry_note": watch.get("entry_note", ""),
+                "strategy_line": watch.get("strategy_line", ""),
+                "watch_stage": watch.get("watch_stage", ""),
+            })
+        items.sort(key=lambda item: float((item.get("score") or {}).get("total_score", 0) or 0), reverse=True)
+        return items
+
     def _send_scan_monitor(self, signals: list[dict]):
         """Send a compact Telegram scanner monitor report."""
         now = time.time()
@@ -2197,6 +2365,26 @@ class CryptoSword:
             send_telegram_message(msg)
         except Exception as e:
             logger.debug(f"扫描监控通知发送失败：{e}")
+
+    def _send_watchlist_monitor(self):
+        """Send periodic candidate follow-up even when no deep scan entry is ready."""
+        watch_items = self._watchlist_monitor_items()
+        if not watch_items:
+            return
+        now = time.time()
+        interval = max(180, min(self._monitor_interval * 2, max(self._current_scan_interval, 600)))
+        if now - self._last_watch_monitor_time < interval:
+            return
+        self._last_watch_monitor_time = now
+        try:
+            msg = format_scan_monitor_msg(
+                signals=watch_items,
+                scanned_count=len(watch_items),
+                max_items=5,
+            )
+            send_telegram_message(msg)
+        except Exception as e:
+            logger.debug(f"候选跟踪通知发送失败：{e}")
 
     def run(self):
         """主循环 - 诸神黄昏的永恒之战"""
