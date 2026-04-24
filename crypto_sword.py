@@ -178,6 +178,7 @@ class TradingConfig:
         pullback_stop_multiplier: float = 1.0,
         daily_report_enabled: bool = True,
         daily_report_on_first_cycle: bool = True,
+        major_symbols: Optional[List[str]] = None,
         # 目标 - 矮人锻造的利刃
         target_altcoins: bool = True,
         target_memes: bool = True,
@@ -228,6 +229,7 @@ class TradingConfig:
         self.pullback_stop_multiplier = pullback_stop_multiplier
         self.daily_report_enabled = daily_report_enabled
         self.daily_report_on_first_cycle = daily_report_on_first_cycle
+        self.major_symbols = [symbol.upper() for symbol in (major_symbols or ["BTCUSDT", "ETHUSDT"]) if symbol]
         self.target_altcoins = target_altcoins
         self.target_memes = target_memes
 
@@ -1170,9 +1172,10 @@ class CryptoSword:
 
     def _select_deep_scan_symbols(self) -> list[str]:
         """Pick symbols for expensive deep scan, preferring fresh fast-scan candidates."""
+        major_symbols = list(self.config.major_symbols)
         candidates = self._fast_scan_candidates()
         if candidates:
-            return candidates[: self.config.scan_top_n]
+            return list(dict.fromkeys(major_symbols + candidates))[: self.config.scan_top_n]
 
         if self.config.scan_by_change:
             symbols = get_top_symbols_by_change(
@@ -1180,11 +1183,11 @@ class CryptoSword:
                 min_change=self.config.min_change_pct,
             )
             logger.info(f"🔥 妖币模式(REST) - 扫描 {len(symbols)} 个异动币种：{symbols[:5]}...")
-            return symbols
+            return list(dict.fromkeys(major_symbols + symbols))[: self.config.scan_top_n]
 
         symbols = get_top_symbols_by_volume(self.config.scan_top_n)
         logger.info(f"📊 成交量模式 - 扫描 {len(symbols)} 个币种：{symbols[:5]}...")
-        return symbols
+        return list(dict.fromkeys(major_symbols + symbols))[: self.config.scan_top_n]
 
     def _refresh_price_stream(self, symbols: list[str]):
         """Keep a lightweight WebSocket price stream for open positions."""
@@ -1989,6 +1992,7 @@ class CryptoSword:
 
     def _entry_rejection_reason(self, symbol: str, direction: str, metrics: dict) -> str:
         """Reject obvious chase entries before expensive scoring and live orders."""
+        is_major_symbol = symbol.upper() in self.config.major_symbols
         change_24h = float(metrics.get("change_24h_pct", 0.0) or 0.0)
         drawdown = float(metrics.get("drawdown_from_24h_high_pct", 0.0) or 0.0)
         range_position = float(metrics.get("range_position_24h_pct", 50.0) or 50.0)
@@ -2012,23 +2016,23 @@ class CryptoSword:
             return f"OI过热 {oi_change:.1f}%"
 
         if direction == "LONG":
-            if change_24h <= -12:
+            if change_24h <= (-15 if is_major_symbol else -12):
                 return f"大跌中不接多 {change_24h:.1f}%"
-            if change_24h >= self.config.max_chase_change_pct:
+            if change_24h >= (self.config.max_chase_change_pct + 10 if is_major_symbol else self.config.max_chase_change_pct):
                 return f"24h涨幅过大 {change_24h:.1f}%"
-            if change_24h >= 12 and drawdown < required_pullback and oi_change < self.config.momentum_entry_min_oi_pct:
+            if (not is_major_symbol) and change_24h >= 12 and drawdown < required_pullback and oi_change < self.config.momentum_entry_min_oi_pct:
                 return f"未回踩，距24h高点仅回落 {drawdown:.1f}%"
-            if change_24h >= 8 and range_position >= self.config.max_range_position_pct:
+            if change_24h >= 8 and range_position >= (96.0 if is_major_symbol else self.config.max_range_position_pct):
                 return f"价格处于24h区间高位 {range_position:.1f}%"
         elif direction == "SHORT":
-            if change_24h >= 12:
+            if change_24h >= (15 if is_major_symbol else 12):
                 return f"大涨中不追空 {change_24h:.1f}%"
-            if change_24h <= -self.config.max_chase_change_pct:
+            if change_24h <= (-(self.config.max_chase_change_pct + 10) if is_major_symbol else -self.config.max_chase_change_pct):
                 return f"24h跌幅过大 {change_24h:.1f}%"
-            if change_24h <= -12 and range_position <= 100 - self.config.max_range_position_pct:
+            if change_24h <= -12 and range_position <= (4.0 if is_major_symbol else 100 - self.config.max_range_position_pct):
                 return f"价格处于24h区间低位 {range_position:.1f}%"
 
-        if volume_mult < 0.8 and abs(change_24h) >= 10:
+        if volume_mult < (0.6 if is_major_symbol else 0.8) and abs(change_24h) >= 10:
             return f"量能不足 volume_mult={volume_mult:.2f}"
         return ""
 
@@ -2115,7 +2119,12 @@ class CryptoSword:
             signals.append(self._apply_entry_confirmation(signal_data))
 
         # 按评分排序
-        signals.sort(key=lambda s: s.get("score", {}).get("total_score", 0), reverse=True)
+        def _signal_priority(item: dict[str, Any]) -> tuple[int, float]:
+            major_bonus = 1 if str(item.get("symbol", "")).upper() in self.config.major_symbols else 0
+            score_total = float((item.get("score") or {}).get("total_score", 0) or 0)
+            return major_bonus, score_total
+
+        signals.sort(key=_signal_priority, reverse=True)
         self._record_latency_step(latency_steps, "score_filter", step_started)
         
         logger.info(f"📡 发现 {len(signals)} 个有效信号（已按质量排序）")
