@@ -169,6 +169,10 @@ class TradingConfig:
         momentum_entry_score: float = 68.0,
         momentum_entry_min_change_pct: float = 12.0,
         momentum_entry_min_oi_pct: float = 30.0,
+        breakout_tp_multiplier: float = 1.2,
+        breakout_stop_multiplier: float = 0.9,
+        pullback_tp_multiplier: float = 0.95,
+        pullback_stop_multiplier: float = 1.0,
         daily_report_enabled: bool = True,
         daily_report_on_first_cycle: bool = True,
         # 目标 - 矮人锻造的利刃
@@ -212,6 +216,10 @@ class TradingConfig:
         self.momentum_entry_score = momentum_entry_score
         self.momentum_entry_min_change_pct = momentum_entry_min_change_pct
         self.momentum_entry_min_oi_pct = momentum_entry_min_oi_pct
+        self.breakout_tp_multiplier = breakout_tp_multiplier
+        self.breakout_stop_multiplier = breakout_stop_multiplier
+        self.pullback_tp_multiplier = pullback_tp_multiplier
+        self.pullback_stop_multiplier = pullback_stop_multiplier
         self.daily_report_enabled = daily_report_enabled
         self.daily_report_on_first_cycle = daily_report_on_first_cycle
         self.target_altcoins = target_altcoins
@@ -244,6 +252,7 @@ class Position:
         take_profit_price: float,
         entry_time: datetime,
         stage_at_entry: str,
+        strategy_line: str = "",
         stop_loss_order_id: int = 0,
         session_id: str = "",
         target_roi_pct: float = 0.0,
@@ -259,6 +268,7 @@ class Position:
         self.take_profit_price = take_profit_price
         self.entry_time = entry_time
         self.stage_at_entry = stage_at_entry
+        self.strategy_line = strategy_line
         self.stop_loss_order_id = stop_loss_order_id
         self.session_id = session_id
         self.target_roi_pct = target_roi_pct
@@ -344,6 +354,7 @@ class Position:
             "unrealized_pnl": round(self.pnl, 2),
             "unrealized_pnl_pct": round(self.pnl_pct, 2),
             "session_id": self.session_id,
+            "strategy_line": self.strategy_line,
         }
 
 
@@ -529,9 +540,21 @@ class CryptoSword:
             f"情绪={sentiment}, 恐贪={fear_greed_value}, 清算={liquidation_risk}"
         )
 
-    def _build_take_profit_plan(self) -> tuple[list[float], list[float]]:
+    def _strategy_profile(self, strategy_line: str) -> dict[str, float]:
+        if strategy_line == "趋势突破线":
+            return {
+                "tp_multiplier": self.config.breakout_tp_multiplier,
+                "stop_multiplier": self.config.breakout_stop_multiplier,
+            }
+        return {
+            "tp_multiplier": self.config.pullback_tp_multiplier,
+            "stop_multiplier": self.config.pullback_stop_multiplier,
+        }
+
+    def _build_take_profit_plan(self, strategy_line: str = "") -> tuple[list[float], list[float]]:
         """Build default staged take-profit plan around the configured TP percentage."""
-        base_pct = max(float(self.config.take_profit_pct) * self._tp_multiplier, 0.0)
+        profile = self._strategy_profile(strategy_line)
+        base_pct = max(float(self.config.take_profit_pct) * self._tp_multiplier * profile["tp_multiplier"], 0.0)
         if base_pct <= 0:
             return [0.0], [1.0]
 
@@ -545,6 +568,10 @@ class CryptoSword:
         ratio_total = sum(ratios) or 1.0
         ratios = [ratio / ratio_total for ratio in ratios]
         return staged_levels, ratios
+
+    def _strategy_stop_loss_pct(self, strategy_line: str = "") -> float:
+        profile = self._strategy_profile(strategy_line)
+        return max(0.5, float(self.config.stop_loss_pct) * profile["stop_multiplier"])
 
     def _calculate_local_take_profit_price(self, entry_price: float, side: str, target_pct: float) -> float:
         if self.config.take_profit_mode == "roi":
@@ -1419,6 +1446,7 @@ class CryptoSword:
                 pnl_pct=pnl_pct,
                 level=position.partial_tp_count,
                 session_id=position.session_id,
+                strategy_line=position.strategy_line,
             )
         )
 
@@ -1536,6 +1564,7 @@ class CryptoSword:
                         reason=position.exit_reason,
                         duration_hours=(position.exit_time - position.entry_time).total_seconds() / 3600,
                         session_id=position.session_id,
+                        strategy_line=position.strategy_line,
                     )
                 )
 
@@ -1689,6 +1718,7 @@ class CryptoSword:
                 take_profit_price=take_profit_price,
                 entry_time=entry_time,
                 stage_at_entry=trade.stage if trade else "restored",
+                strategy_line=notes_map.get("strategy_line", ""),
                 stop_loss_order_id=0,
                 session_id=session_id,
                 target_roi_pct=target_roi_pct,
@@ -1910,6 +1940,9 @@ class CryptoSword:
             )
             session_id = self._new_session_id(symbol)
             risk_level = "UNKNOWN"
+            strategy_line = str(signal.get("strategy_line", "回踩确认线") or "回踩确认线")
+            strategy_profile = self._strategy_profile(strategy_line)
+            stop_loss_pct = self._strategy_stop_loss_pct(strategy_line)
 
             if not should_trade(trading_signal):
                 return None
@@ -1960,8 +1993,8 @@ class CryptoSword:
 
                 risk_config = RiskConfig(
                     risk_per_trade_pct=self.config.risk_per_trade_pct,
-                    base_stop_loss_pct=self.config.stop_loss_pct,
-                    base_take_profit_pct=self.config.take_profit_pct,
+                    base_stop_loss_pct=stop_loss_pct,
+                    base_take_profit_pct=self.config.take_profit_pct * strategy_profile["tp_multiplier"],
                     max_position_pct=self.config.max_position_pct,
                     max_total_exposure=50.0,
                     max_correlated_positions=3,
@@ -2006,13 +2039,13 @@ class CryptoSword:
             self._record_latency_step(latency_steps, "risk_assessment", step_started)
 
             # 执行交易（优先使用风控计算的仓位和止损）
-            take_profit_target_pcts, take_profit_ratios = self._build_take_profit_plan()
+            take_profit_target_pcts, take_profit_ratios = self._build_take_profit_plan(strategy_line)
             step_started = time.perf_counter()
             result = execute_trade(
                 signal=trading_signal,
                 account_balance=balance,
                 risk_per_trade_pct=self.config.risk_per_trade_pct,
-                stop_loss_pct=self.config.stop_loss_pct,
+                stop_loss_pct=stop_loss_pct,
                 max_position_pct=self.config.max_position_pct,
                 leverage=self.config.leverage,
                 quantity=quantity,
@@ -2054,6 +2087,7 @@ class CryptoSword:
                 take_profit_price=tp_price,
                 entry_time=datetime.now(),
                 stage_at_entry=signal["stage"],
+                strategy_line=strategy_line,
                 stop_loss_order_id=stop_loss_order.get("order_id", 0),
                 session_id=session_id,
                 target_roi_pct=primary_target_roi_pct,
@@ -2082,6 +2116,7 @@ class CryptoSword:
                 score=score,
                 risk_level=risk_level,
                 session_id=session_id,
+                strategy_line=strategy_line,
                 target_roi_pct=primary_target_roi_pct,
                 price_move_pct=primary_price_move_pct,
                 take_profit_targets=take_profit_targets,
@@ -2090,11 +2125,14 @@ class CryptoSword:
 
             notes_parts = [
                 f"session_id={session_id}",
+                f"strategy_line={strategy_line}",
                 f"risk_level={risk_level}",
                 f"target_roi_pct={primary_target_roi_pct}",
                 f"price_move_pct={primary_price_move_pct}",
                 f"take_profit_mode={self.config.take_profit_mode}",
                 f"tp_multiplier={self._tp_multiplier}",
+                f"strategy_tp_multiplier={strategy_profile['tp_multiplier']}",
+                f"strategy_stop_pct={stop_loss_pct}",
                 f"tp_plan={json.dumps(take_profit_targets, separators=(',', ':'))}",
                 f"tp_order_ids={','.join(str(int(item.get('order_id', 0))) for item in take_profit_targets if item.get('order_id'))}",
             ]
@@ -2219,6 +2257,7 @@ class CryptoSword:
                         reason=reason,
                         duration_hours=duration_hours,
                         session_id=position.session_id,
+                        strategy_line=position.strategy_line,
                     )
                 )
                 self._record_latency_step(latency_steps, "telegram_notify", step_started)

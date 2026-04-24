@@ -162,6 +162,7 @@ def format_open_position_msg(symbol: str, direction: str, entry_price: float, qu
                              leverage: int, stop_loss: float, take_profit: float, 
                              risk_amount: float, risk_pct: float, score: float = 0,
                              risk_level: str = "", session_id: str = "",
+                             strategy_line: str = "",
                              target_roi_pct: float = 0, price_move_pct: float = 0,
                              take_profit_targets: list[dict[str, Any]] = None) -> str:
     """格式化开仓通知"""
@@ -186,6 +187,8 @@ def format_open_position_msg(symbol: str, direction: str, entry_price: float, qu
 <b>止盈</b>  <code>${take_profit:,.4f}</code>  ({tp_pct:.2f}%)
 <b>风险</b>  <code>${risk_amount:.2f}</code>  |  {risk_pct:.2f}%"""
 
+    if strategy_line:
+        msg += f"\n<b>策略</b>  <code>{_escape(strategy_line)}</code>"
     if target_roi_pct > 0:
         msg += f"\n<b>目标收益率</b>  <code>{target_roi_pct:.2f}% ROI</code>"
     if price_move_pct > 0:
@@ -206,7 +209,8 @@ def format_open_position_msg(symbol: str, direction: str, entry_price: float, qu
 
 def format_close_position_msg(symbol: str, direction: str, entry_price: float, exit_price: float, 
                               quantity: float, pnl: float, pnl_pct: float, reason: str, 
-                              duration_hours: float = 0, session_id: str = "") -> str:
+                              duration_hours: float = 0, session_id: str = "",
+                              strategy_line: str = "") -> str:
     """格式化平仓通知"""
     direction_emoji = "🟢" if pnl >= 0 else "🔴"
     pnl_emoji = "🟢" if pnl >= 0 else "🔴"
@@ -223,6 +227,8 @@ def format_close_position_msg(symbol: str, direction: str, entry_price: float, e
 <b>盈亏</b>  {pnl_emoji} <b>{pnl_sign}${pnl:,.2f}</b>  ({pnl_sign}{pnl_pct:.2f}%)
 <b>原因</b>  <code>{_escape(reason)}</code>"""
     
+    if strategy_line:
+        msg += f"\n<b>策略</b>  <code>{_escape(strategy_line)}</code>"
     if duration_hours > 0:
         msg += f"\n<b>持仓</b>  {duration_hours:.1f} 小时"
     if session_id:
@@ -242,6 +248,7 @@ def format_partial_take_profit_msg(
     pnl_pct: float,
     level: int = 0,
     session_id: str = "",
+    strategy_line: str = "",
 ) -> str:
     """格式化分批止盈成交通知"""
     direction_text = "做多 LONG" if direction == "LONG" else "做空 SHORT"
@@ -259,6 +266,8 @@ def format_partial_take_profit_msg(
 <b>剩余数量</b>  <code>{_fmt_num(remaining_quantity)}</code>
 <b>本次盈亏</b>  🟢 <b>{pnl_sign}${pnl:,.2f}</b>  ({pnl_sign}{pnl_pct:.2f}%)"""
 
+    if strategy_line:
+        msg += f"\n<b>策略</b>  <code>{_escape(strategy_line)}</code>"
     if session_id:
         msg += f"\n<b>流水号</b>  <code>{_escape(session_id)}</code>"
 
