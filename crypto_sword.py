@@ -711,9 +711,9 @@ class CryptoSword:
         oi_change = abs(float(metrics.get("oi_24h_pct", 0) or 0))
         funding = abs(float(metrics.get("funding_rate", 0) or 0))
         return (
-            score_total >= max(self.config.momentum_entry_score + 6, 74.0)
+            score_total >= max(self.config.momentum_entry_score, 68.0)
             and change_24h >= max(self.config.momentum_entry_min_change_pct, 14.0)
-            and oi_change >= max(self.config.momentum_entry_min_oi_pct * 0.35, 10.0)
+            and oi_change >= max(self.config.momentum_entry_min_oi_pct * 0.35, 12.0)
             and funding < self.config.max_abs_funding_rate * 0.85
         )
 
@@ -856,6 +856,50 @@ class CryptoSword:
         if not ready:
             return False, ""
         return True, f"热点延续确认：评分 {score_total:.1f}，24h {change_24h:+.1f}%"
+
+    def _is_flow_reclaim_ready(
+        self,
+        signal: dict[str, Any],
+        trend: dict[str, Any],
+        current_price: float,
+        pullback_pct: float,
+    ) -> tuple[bool, str]:
+        """After pullback, allow fast re-entry from flow/funding/OI instead of waiting full 15m reclaim."""
+        direction = signal.get("direction", "")
+        metrics = signal.get("metrics", {}) or {}
+        score_total = float((signal.get("score") or {}).get("total_score", 0) or 0)
+        oi_change = float(metrics.get("oi_24h_pct", 0) or 0)
+        funding = float(metrics.get("funding_rate", 0) or 0)
+        trend_1h = trend.get("1h", {}) or {}
+        trend_5m = trend.get("5m", {}) or {}
+        ma_alignment_1h = str(trend_1h.get("ma_alignment", "NEUTRAL") or "NEUTRAL")
+        ma5_5m = float(trend_5m.get("ma5", 0) or 0)
+        short_tf_ok = self._short_tf_breakout_ready(trend, direction, current_price)
+
+        if score_total < 60 or oi_change < 18:
+            return False, ""
+
+        if direction == "LONG":
+            ready = (
+                funding <= self.config.max_abs_funding_rate
+                and ma_alignment_1h == "BULLISH"
+                and current_price >= ma5_5m > 0
+                and short_tf_ok
+                and pullback_pct >= max(1.2, self.config.min_pullback_pct * 0.5)
+            )
+        else:
+            ready = (
+                funding >= -self.config.max_abs_funding_rate
+                and ma_alignment_1h == "BEARISH"
+                and 0 < current_price <= ma5_5m
+                and short_tf_ok
+                and pullback_pct >= max(1.2, self.config.min_pullback_pct * 0.5)
+            )
+
+        if not ready:
+            return False, ""
+        funding_text = f"{funding:+.4%}" if abs(funding) < 1 else f"{funding:+.2f}"
+        return True, f"资金/OI快线入场：评分 {score_total:.1f}，OI {oi_change:+.1f}%，费率 {funding_text}"
 
     def _apply_entry_confirmation(self, signal: dict[str, Any]) -> dict[str, Any]:
         """Convert raw signal into watch/ready/invalid states."""
@@ -1013,6 +1057,17 @@ class CryptoSword:
             trend_ok = higher_alignment == "BULLISH" and ma_alignment == "BULLISH" and current_price >= ma5 > 0 and short_tf_ok
         else:
             trend_ok = higher_alignment == "BEARISH" and ma_alignment == "BEARISH" and 0 < current_price <= ma5 and short_tf_ok
+
+        flow_ready, flow_note = self._is_flow_reclaim_ready(signal, trend, current_price, pullback_pct)
+        if flow_ready:
+            self._entry_watchlist.pop(symbol, None)
+            signal["entry_status"] = "ready"
+            signal["entry_status_text"] = "快线确认入场"
+            signal["strategy_line"] = watch.get("strategy_line", "回踩确认线")
+            signal["watch_stage"] = "资金OI快线"
+            signal["entry_note"] = flow_note
+            signal["confirmation_trend"] = trend
+            return signal
 
         if not trend_ok:
             self._update_watch_state(
