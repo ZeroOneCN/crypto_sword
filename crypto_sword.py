@@ -709,12 +709,12 @@ class CryptoSword:
         """Allow elite movers with moderate OI expansion to join the breakout line."""
         change_24h = abs(float(metrics.get("change_24h_pct", 0) or 0))
         oi_change = abs(float(metrics.get("oi_24h_pct", 0) or 0))
-        funding = abs(float(metrics.get("funding_rate", 0) or 0))
+        funding = float(metrics.get("funding_rate", 0) or 0)
         return (
-            score_total >= max(self.config.momentum_entry_score, 68.0)
-            and change_24h >= max(self.config.momentum_entry_min_change_pct, 14.0)
-            and oi_change >= max(self.config.momentum_entry_min_oi_pct * 0.35, 12.0)
-            and funding < self.config.max_abs_funding_rate * 0.85
+            score_total >= 55.0
+            and change_24h >= 10.0
+            and oi_change >= 10.0
+            and abs(funding) < self.config.max_abs_funding_rate
         )
 
     def _strategy_line_for_signal(self, signal: dict[str, Any]) -> str:
@@ -722,11 +722,19 @@ class CryptoSword:
         score_total = float((signal.get("score") or {}).get("total_score", 0) or 0)
         change_24h = abs(float(metrics.get("change_24h_pct", 0) or 0))
         oi_change = abs(float(metrics.get("oi_24h_pct", 0) or 0))
+        funding = float(metrics.get("funding_rate", 0) or 0)
         if (
             self.config.momentum_entry_enabled
             and score_total >= self.config.momentum_entry_score
             and change_24h >= self.config.momentum_entry_min_change_pct
             and oi_change >= self.config.momentum_entry_min_oi_pct
+        ):
+            return "趋势突破线"
+        if (
+            score_total >= 55.0
+            and change_24h >= 12.0
+            and oi_change >= 20.0
+            and funding <= 0
         ):
             return "趋势突破线"
         if self.config.momentum_entry_enabled and self._soft_breakout_candidate(metrics, score_total):
@@ -937,19 +945,19 @@ class CryptoSword:
         if not watch:
             strategy_line = self._strategy_line_for_signal(signal)
             initial_note = "首次发现，等待回踩确认"
+            trend = self._load_confirmation_trend(symbol)
+            continuation_ready, continuation_note = self._is_trend_continuation_ready(signal, trend, current_price)
+            momentum_ready, momentum_note = self._is_momentum_entry_ready(signal, trend, current_price)
             if strategy_line == "趋势突破线":
                 initial_note = "首次发现，等待趋势延续确认"
-                trend = self._load_confirmation_trend(symbol)
-                continuation_ready, continuation_note = self._is_trend_continuation_ready(signal, trend, current_price)
-                momentum_ready, momentum_note = self._is_momentum_entry_ready(signal, trend, current_price)
-                if continuation_ready or momentum_ready:
-                    signal["entry_status"] = "ready"
-                    signal["entry_status_text"] = "突破确认入场"
-                    signal["strategy_line"] = "趋势突破线"
-                    signal["watch_stage"] = "首发现直通"
-                    signal["entry_note"] = momentum_note or continuation_note
-                    signal["confirmation_trend"] = trend
-                    return signal
+            if continuation_ready or momentum_ready:
+                signal["entry_status"] = "ready"
+                signal["entry_status_text"] = "突破确认入场"
+                signal["strategy_line"] = "趋势突破线"
+                signal["watch_stage"] = "首发现直通"
+                signal["entry_note"] = momentum_note or continuation_note
+                signal["confirmation_trend"] = trend
+                return signal
             self._entry_watchlist[symbol] = {
                 "symbol": symbol,
                 "direction": direction,
