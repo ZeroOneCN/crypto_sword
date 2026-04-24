@@ -480,12 +480,31 @@ class CryptoSword:
         self._market_style_mode: str = "balanced"
         self._market_style_stats: dict[str, Any] = {}
         self._last_market_style_refresh: float = 0.0
+        self._account_info_cache: Optional[dict[str, Any]] = None
+        self._account_info_cache_at: float = 0.0
+        self._market_style_trade_marker: tuple[int, str] = (0, "")
 
     def _new_session_id(self, symbol: str) -> str:
         return f"{symbol}-{datetime.now().strftime('%Y%m%d%H%M%S')}-{uuid4().hex[:8]}"
 
     def _record_latency_step(self, steps: list[tuple[str, float]], name: str, started_at: float):
         steps.append((name, (time.perf_counter() - started_at) * 1000.0))
+
+    def _get_account_info_cached(self, ttl_sec: float = 3.0, force: bool = False) -> dict[str, Any]:
+        now = time.time()
+        if (
+            not force
+            and self._account_info_cache is not None
+            and now - self._account_info_cache_at < max(0.0, ttl_sec)
+        ):
+            return self._account_info_cache
+
+        account_info = get_account_balance()
+        if isinstance(account_info, dict):
+            self._account_info_cache = account_info
+            self._account_info_cache_at = now
+            return account_info
+        raise RuntimeError("账户信息返回格式异常")
 
     def _emit_latency_trace(
         self,
@@ -570,6 +589,14 @@ class CryptoSword:
         except Exception as e:
             logger.warning(f"市场风格刷新失败：{e}")
             return
+
+        marker = (
+            len(recent_closed),
+            str(recent_closed[0].exit_time) if recent_closed else "",
+        )
+        if not force and marker == self._market_style_trade_marker:
+            return
+        self._market_style_trade_marker = marker
 
         major_trades = [t for t in recent_closed if t.symbol.upper() in self.config.major_symbols]
         alt_trades = [t for t in recent_closed if t.symbol.upper() not in self.config.major_symbols]
@@ -1873,7 +1900,7 @@ class CryptoSword:
             return
 
         try:
-            account_info = get_account_balance()
+            account_info = self._get_account_info_cached(ttl_sec=2.5)
         except Exception as e:
             logger.warning(f"同步交易所持仓失败：{e}")
             return
@@ -1975,9 +2002,8 @@ class CryptoSword:
             self._loss_pause_until = 0.0
             self._entry_watchlist.clear()
             try:
-                balance_info = get_account_balance()
-                if isinstance(balance_info, dict):
-                    self.day_start_balance = float(balance_info.get("availableBalance", self.day_start_balance or 0))
+                balance_info = self._get_account_info_cached(ttl_sec=5.0, force=True)
+                self.day_start_balance = float(balance_info.get("availableBalance", self.day_start_balance or 0))
             except Exception:
                 pass
 
@@ -2103,9 +2129,7 @@ class CryptoSword:
             raise RuntimeError("原生 Binance API 未配置：请设置 BINANCE_API_KEY / BINANCE_API_SECRET")
         logger.info("🧬 原生 Binance API 交易通道已启用")
 
-        account_info = get_account_balance()
-        if not isinstance(account_info, dict):
-            raise RuntimeError("账户信息返回格式异常")
+        account_info = self._get_account_info_cached(ttl_sec=0.0, force=True)
 
         balance = float(account_info.get("availableBalance", 0) or 0)
         if balance <= 0:
@@ -2327,11 +2351,8 @@ class CryptoSword:
             # 获取账户余额
             step_started = time.perf_counter()
             try:
-                balance_info = get_account_balance()
-                if isinstance(balance_info, dict):
-                    balance = float(balance_info.get("availableBalance", 10000))
-                else:
-                    balance = 10000
+                balance_info = self._get_account_info_cached(ttl_sec=3.0)
+                balance = float(balance_info.get("availableBalance", 10000))
             except Exception:
                 balance = 10000
             self._record_latency_step(latency_steps, "account_query", step_started)
@@ -2792,10 +2813,9 @@ class CryptoSword:
         total_balance = 0.0
         available_balance = 0.0
         try:
-            balance_info = get_account_balance()
-            if isinstance(balance_info, dict):
-                available_balance = float(balance_info.get("availableBalance", 0) or 0)
-                total_balance = float(balance_info.get("totalWalletBalance", balance_info.get("totalMarginBalance", 0)) or 0)
+            balance_info = self._get_account_info_cached(ttl_sec=10.0)
+            available_balance = float(balance_info.get("availableBalance", 0) or 0)
+            total_balance = float(balance_info.get("totalWalletBalance", balance_info.get("totalMarginBalance", 0)) or 0)
         except Exception as e:
             logger.debug(f"summary balance fetch skipped: {e}")
         msg = format_summary_msg(
