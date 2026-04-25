@@ -665,6 +665,60 @@ class CryptoSword:
             idle_interval = max(900, self._current_scan_interval * 4)
         return self._last_position_sync_time <= 0 or now - self._last_position_sync_time >= idle_interval
 
+    def _run_radar_background_scan(self, now: float):
+        """庄家雷达后台扫描（每小时 OI 异动 + 每天收筹池更新）"""
+        try:
+            from accumulation_radar import scan_oi_changes, scan_accumulation_pool
+            from telegram_notifier import format_dark_flow_alert, format_radar_summary
+
+            # 每小时 OI 异动扫描
+            if now - self._last_radar_scan_time >= self._radar_scan_interval:
+                logger.info("🏦 开始 OI 异动扫描...")
+                oi_signals = scan_oi_changes()
+                self._last_radar_scan_time = now
+
+                # 检测暗流信号并发送通知
+                dark_flows = [s for s in oi_signals if s.is_dark_flow]
+                if dark_flows:
+                    for df in dark_flows[:3]:  # 最多通知 3 个
+                        msg = format_dark_flow_alert(
+                            symbol=df.symbol,
+                            oi_change_pct=df.oi_change_pct,
+                            price_change_pct=df.price_change_pct,
+                            funding_rate=df.funding_rate,
+                            market_cap=0,
+                        )
+                        send_telegram_message(msg)
+                        logger.info(f"🎯 暗流信号已推送：{df.symbol}")
+
+                # 发送雷达摘要
+                if oi_signals:
+                    summary = format_radar_summary(
+                        pool_count=0,
+                        oi_signals=len(oi_signals),
+                        dark_flows=len(dark_flows),
+                        short_fuel=0,
+                        top_dark_flow=dark_flows[0].symbol if dark_flows else None,
+                    )
+                    send_telegram_message(summary)
+
+            # 每天收筹池更新
+            if now - self._last_pool_scan_time >= self._pool_scan_interval:
+                logger.info("🏦 开始收筹池扫描...")
+                pool = scan_accumulation_pool()
+                self._last_pool_scan_time = now
+
+                if pool:
+                    from telegram_notifier import format_accumulation_pool_report
+                    msg = format_accumulation_pool_report(pool)
+                    send_telegram_message(msg)
+                    logger.info(f"🏦 收筹池已更新：{len(pool)} 个标的")
+
+        except ImportError:
+            logger.debug("accumulation_radar 模块不可用，跳过雷达扫描")
+        except Exception as e:
+            logger.warning(f"雷达后台扫描失败：{e}")
+
     def _refresh_market_profile(self):
         """Update market-aware scan interval and TP multiplier."""
         try:
@@ -2455,7 +2509,16 @@ class CryptoSword:
                     metrics=r.metrics,
                     klines_1h=r.metrics.get("klines_1h"),
                 )
-                
+
+                # 🏦 庄家雷达评分增强
+                try:
+                    from signal_enhancer import enhance_with_radar_score
+                    signal_score = enhance_with_radar_score(signal_score, r.metrics)
+                except ImportError:
+                    pass  # 雷达模块不可用时跳过
+                except Exception as e:
+                    logger.debug(f"雷达评分跳过 {r.symbol}: {e}")
+
                 # 过滤低质量信号（降低阈值：允许中等以上）
                 if signal_score.confidence in {"低"}:
                     logger.info(f"🎯 {r.symbol} 信号质量过低 ({signal_score.total_score:.1f})，跳过")
@@ -2931,6 +2994,11 @@ class CryptoSword:
                 self.execute_exit(symbol, reason)
             self._record_latency_step(latency_steps, "manage_open_positions", step_started)
 
+        # 🏦 庄家雷达后台监控（每小时 OI 异动 + 每天收筹池更新）
+        step_started = time.perf_counter()
+        self._run_radar_background_scan(now)
+        self._record_latency_step(latency_steps, "radar_background_scan", step_started)
+
         step_started = time.perf_counter()
         candidates = self._fast_scan_candidates()
         self._record_latency_step(latency_steps, "fast_scan_candidates", step_started)
@@ -3206,6 +3274,12 @@ class CryptoSword:
 
         # 🌊 获取市场概览（Surf 数据增强）
         self._refresh_market_profile()
+
+        # 🏦 启动庄家雷达后台监控
+        self._last_radar_scan_time = 0
+        self._radar_scan_interval = 3600  # 每小时扫描一次 OI 异动
+        self._last_pool_scan_time = 0
+        self._pool_scan_interval = 86400  # 每天更新一次收筹池
 
         # 主循环
         while self.running:

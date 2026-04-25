@@ -7,6 +7,7 @@
 ║    OI异动检测 + 横盘收筹分析 + 空头燃料扫描 + 三策略评分       ║
 ║                                                               ║
 ║    整合自：https://github.com/connectfarm1/accumulation-radar ║
+║    已集成到 crypto_sword.py 主程序，独立运行仅用于调试         ║
 ║                                                               ║
 ╚═══════════════════════════════════════════════════════════════╝
 
@@ -19,7 +20,7 @@
 使用方式：
 1. 独立运行：python accumulation_radar.py pool  # 每日更新收筹池
 2. 独立运行：python accumulation_radar.py oi    # 每小时OI监控
-3. 被 crypto_sword.py 调用：提供额外评分维度
+3. 被 crypto_sword.py 调用：提供额外评分维度（自动集成）
 """
 
 from __future__ import annotations
