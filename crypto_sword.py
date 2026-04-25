@@ -165,8 +165,8 @@ class TradingConfig:
         max_oi_change_pct: float = 120.0,
         max_entry_slippage_pct: float = 0.8,
         symbol_cooldown_sec: int = 24 * 3600,
-        max_consecutive_losses: int = 2,
-        loss_pause_sec: int = 60 * 60,
+        max_consecutive_losses: int = 3,
+        loss_pause_sec: int = 30 * 60,
         breakeven_after_tp: bool = True,
         breakeven_offset_pct: float = 0.10,
         stop_trigger_buffer_pct: float = 0.12,
@@ -178,6 +178,12 @@ class TradingConfig:
         momentum_entry_score: float = 68.0,
         momentum_entry_min_change_pct: float = 12.0,
         momentum_entry_min_oi_pct: float = 30.0,
+        accumulation_entry_enabled: bool = True,
+        accumulation_entry_score: float = 58.0,
+        accumulation_entry_min_oi_pct: float = 18.0,
+        accumulation_entry_max_change_pct: float = 10.0,
+        accumulation_entry_max_range_pct: float = 72.0,
+        accumulation_entry_min_volume_mult: float = 1.15,
         breakout_tp_multiplier: float = 1.2,
         breakout_stop_multiplier: float = 0.9,
         pullback_tp_multiplier: float = 0.95,
@@ -231,6 +237,12 @@ class TradingConfig:
         self.momentum_entry_score = momentum_entry_score
         self.momentum_entry_min_change_pct = momentum_entry_min_change_pct
         self.momentum_entry_min_oi_pct = momentum_entry_min_oi_pct
+        self.accumulation_entry_enabled = accumulation_entry_enabled
+        self.accumulation_entry_score = accumulation_entry_score
+        self.accumulation_entry_min_oi_pct = accumulation_entry_min_oi_pct
+        self.accumulation_entry_max_change_pct = accumulation_entry_max_change_pct
+        self.accumulation_entry_max_range_pct = accumulation_entry_max_range_pct
+        self.accumulation_entry_min_volume_mult = accumulation_entry_min_volume_mult
         self.breakout_tp_multiplier = breakout_tp_multiplier
         self.breakout_stop_multiplier = breakout_stop_multiplier
         self.pullback_tp_multiplier = pullback_tp_multiplier
@@ -932,6 +944,24 @@ class CryptoSword:
             and abs(funding) < self.config.max_abs_funding_rate
         )
 
+    def _is_accumulation_candidate(self, metrics: dict[str, Any], score_total: float) -> bool:
+        """Detect early accumulation before a full breakout extension prints."""
+        if not self.config.accumulation_entry_enabled:
+            return False
+        change_24h = abs(float(metrics.get("change_24h_pct", 0) or 0))
+        oi_change = abs(float(metrics.get("oi_24h_pct", 0) or 0))
+        funding = float(metrics.get("funding_rate", 0) or 0)
+        volume_mult = float(metrics.get("volume_24h_mult", 0) or 0)
+        range_position = float(metrics.get("range_position_24h_pct", 50) or 50)
+        return (
+            score_total >= self.config.accumulation_entry_score
+            and 0 < change_24h <= self.config.accumulation_entry_max_change_pct
+            and oi_change >= self.config.accumulation_entry_min_oi_pct
+            and volume_mult >= self.config.accumulation_entry_min_volume_mult
+            and range_position <= self.config.accumulation_entry_max_range_pct
+            and abs(funding) < self.config.max_abs_funding_rate
+        )
+
     def _strategy_line_for_signal(self, signal: dict[str, Any]) -> str:
         metrics = signal.get("metrics", {}) or {}
         score_total = float((signal.get("score") or {}).get("total_score", 0) or 0)
@@ -1150,6 +1180,38 @@ class CryptoSword:
         funding_text = f"{funding:+.4%}" if abs(funding) < 1 else f"{funding:+.2f}"
         return True, f"资金/OI快线入场：评分 {score_total:.1f}，OI {oi_change:+.1f}%，费率 {funding_text}"
 
+    def _is_accumulation_entry_ready(
+        self,
+        signal: dict[str, Any],
+        trend: dict[str, Any],
+        current_price: float,
+    ) -> tuple[bool, str]:
+        """Early breakout trigger for accumulation-style setups inspired by OI-led radar scans."""
+        metrics = signal.get("metrics", {}) or {}
+        score_total = float((signal.get("score") or {}).get("total_score", 0) or 0)
+        if not self._is_accumulation_candidate(metrics, score_total):
+            return False, ""
+
+        direction = signal.get("direction", "")
+        trend_1h = trend.get("1h", {}) or {}
+        trend_15m = trend.get("15m", {}) or {}
+        ma5_15m = float(trend_15m.get("ma5", 0) or 0)
+        ma_alignment_1h = str(trend_1h.get("ma_alignment", "NEUTRAL") or "NEUTRAL")
+        ma_alignment_15m = str(trend_15m.get("ma_alignment", "NEUTRAL") or "NEUTRAL")
+        short_tf_ok = self._short_tf_breakout_ready(trend, direction, current_price)
+
+        if direction == "LONG":
+            ready = ma_alignment_1h == "BULLISH" and ma_alignment_15m == "BULLISH" and current_price >= ma5_15m > 0 and short_tf_ok
+        else:
+            ready = ma_alignment_1h == "BEARISH" and ma_alignment_15m == "BEARISH" and 0 < current_price <= ma5_15m and short_tf_ok
+
+        if not ready:
+            return False, ""
+
+        oi_change = float(metrics.get("oi_24h_pct", 0) or 0)
+        change_24h = float(metrics.get("change_24h_pct", 0) or 0)
+        return True, f"吸筹暗流确认：评分 {score_total:.1f}，24h {change_24h:+.1f}%，OI {oi_change:+.1f}%"
+
     def _apply_entry_confirmation(self, signal: dict[str, Any]) -> dict[str, Any]:
         """Convert raw signal into watch/ready/invalid states."""
         signal["entry_status"] = "ready"
@@ -1189,16 +1251,18 @@ class CryptoSword:
             trend = self._load_confirmation_trend(symbol)
             continuation_ready, continuation_note = self._is_trend_continuation_ready(signal, trend, current_price)
             momentum_ready, momentum_note = self._is_momentum_entry_ready(signal, trend, current_price)
+            accumulation_ready, accumulation_note = self._is_accumulation_entry_ready(signal, trend, current_price)
             if strategy_line == "趋势突破线":
                 initial_note = "首次发现，等待趋势延续确认"
-            if continuation_ready or momentum_ready:
+            if continuation_ready or momentum_ready or accumulation_ready:
                 signal["entry_status"] = "ready"
                 signal["entry_status_text"] = "突破确认入场"
                 signal["strategy_line"] = "趋势突破线"
                 signal["watch_stage"] = "首发现直通"
-                signal["entry_note"] = momentum_note or continuation_note
+                signal["entry_note"] = accumulation_note or momentum_note or continuation_note
                 signal["confirmation_trend"] = trend
                 return signal
+
             self._entry_watchlist[symbol] = {
                 "symbol": symbol,
                 "direction": direction,
@@ -1246,12 +1310,22 @@ class CryptoSword:
         if not watch.get("pullback_seen"):
             trend = self._load_confirmation_trend(symbol)
             momentum_ready, momentum_note = self._is_momentum_entry_ready(signal, trend, current_price)
+            accumulation_ready, accumulation_note = self._is_accumulation_entry_ready(signal, trend, current_price)
             if momentum_ready:
                 signal["entry_status"] = "ready"
                 signal["entry_status_text"] = "动量确认入场"
                 signal["strategy_line"] = "趋势突破线"
                 signal["watch_stage"] = "动量突破"
                 signal["entry_note"] = momentum_note
+                signal["confirmation_trend"] = trend
+                return signal
+
+            if accumulation_ready:
+                signal["entry_status"] = "ready"
+                signal["entry_status_text"] = "吸筹暗流入场"
+                signal["strategy_line"] = "趋势突破线"
+                signal["watch_stage"] = "吸筹启动"
+                signal["entry_note"] = accumulation_note
                 signal["confirmation_trend"] = trend
                 return signal
 
@@ -1605,13 +1679,14 @@ class CryptoSword:
         """Update cooldown and consecutive-loss guards from a closed trade."""
         now = time.time()
         if pnl < 0:
+            severe_loss = abs(float(position.pnl_pct or 0)) >= 2.0 or str(position.exit_reason or "").upper().startswith("STOP_LOSS")
             self._consecutive_losses += 1
             self._symbol_cooldowns[position.symbol] = now + self.config.symbol_cooldown_sec
             logger.warning(
                 f"🧊 {position.symbol} 亏损冷却 {int(self.config.symbol_cooldown_sec / 60)} 分钟 | "
                 f"连续亏损={self._consecutive_losses}"
             )
-            if self._consecutive_losses >= self.config.max_consecutive_losses:
+            if severe_loss and self._consecutive_losses >= self.config.max_consecutive_losses:
                 self._loss_pause_until = now + self.config.loss_pause_sec
                 logger.warning(
                     f"🛑 连续亏损达到 {self._consecutive_losses} 笔，暂停新开仓 "
@@ -1629,6 +1704,8 @@ class CryptoSword:
                         component="loss_guard",
                     )
                 )
+            elif not severe_loss:
+                logger.info(f"{position.symbol} small loss ignored by pause guard | pnl_pct={position.pnl_pct:+.2f}%")
         else:
             self._consecutive_losses = 0
 
