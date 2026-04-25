@@ -912,7 +912,7 @@ def fetch_open_algo_orders(symbol: Optional[str] = None) -> list[dict[str, Any]]
 def execute_trade(
     signal: TradingSignal,
     account_balance: float,
-    risk_per_trade_pct: float = 1.0,
+    risk_per_trade_pct: float = 2.0,
     stop_loss_pct: float = 5.0,
     max_position_pct: float = 20.0,
     leverage: int = 5,
@@ -929,7 +929,7 @@ def execute_trade(
     Args:
         signal: Trading signal from scanner
         account_balance: Account balance in USDT
-        risk_per_trade_pct: Risk per trade (default 1%)
+        risk_per_trade_pct: Risk per trade (default 2%)
         stop_loss_pct: Stop loss percentage (default 5%)
         max_position_pct: Maximum position size (default 20%)
         leverage: Leverage (default 5x)
@@ -1098,7 +1098,7 @@ def main():
     parser.add_argument("--stage", default="confirmed_breakout")
     parser.add_argument("--entry-price", "-p", type=float, required=True)
     parser.add_argument("--balance", "-b", type=float, default=10000.0, help="Account balance (USDT)")
-    parser.add_argument("--risk", "-r", type=float, default=1.0, help="Risk per trade (%)")
+    parser.add_argument("--risk", "-r", type=float, default=2.0, help="Risk per trade (%)")
     parser.add_argument("--stop-loss", "-l", type=float, default=5.0, help="Stop loss (%)")
     parser.add_argument("--max-position", "-m", type=float, default=20.0, help="Max position (%)")
     args = parser.parse_args()

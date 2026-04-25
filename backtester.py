@@ -21,7 +21,7 @@ logger = logging.getLogger(__name__)
 class BacktestConfig:
     """Backtest configuration."""
     initial_balance: float = 10000.0
-    risk_per_trade_pct: float = 1.0
+    risk_per_trade_pct: float = 2.0
     stop_loss_pct: float = 5.0
     take_profit_pct: float = 10.0
     max_position_pct: float = 20.0
@@ -412,7 +412,7 @@ def main():
     parser.add_argument("--start", default="2024-01-01")
     parser.add_argument("--end", default="2024-12-31")
     parser.add_argument("--balance", "-b", type=float, default=10000.0)
-    parser.add_argument("--risk", "-r", type=float, default=1.0)
+    parser.add_argument("--risk", "-r", type=float, default=2.0)
     parser.add_argument("--stop-loss", "-l", type=float, default=5.0)
     parser.add_argument("--take-profit", "-t", type=float, default=10.0)
     parser.add_argument("--json", action="store_true")
