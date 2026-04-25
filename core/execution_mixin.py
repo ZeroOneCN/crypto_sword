@@ -422,6 +422,61 @@ class ExecutionMixin:
         pnl_pct = total_pnl / entry_notional * 100 if entry_notional > 0 else 0.0
         return avg_exit_price, total_pnl, pnl_pct, remaining_pnl
 
+    def _find_open_trade_for_session(self, symbol: str, session_id: str) -> tuple[Optional[TradeRecord], str]:
+        """Find the best open trade row for a closing position."""
+        open_trades = self.db.get_open_trades(mode=self.config.mode)
+        fallback_trade: Optional[TradeRecord] = None
+        for trade in open_trades:
+            if trade.symbol != symbol:
+                continue
+            if fallback_trade is None:
+                fallback_trade = trade
+            if not session_id:
+                continue
+            notes_map = {}
+            try:
+                notes_map = self._parse_trade_notes(getattr(trade, "notes", "") or "")
+            except Exception:
+                notes_map = {}
+            if notes_map.get("session_id", "") == session_id:
+                return trade, "session_id"
+        return fallback_trade, ("symbol" if fallback_trade else "none")
+
+    def _persist_trade_exit(
+        self,
+        *,
+        symbol: str,
+        session_id: str,
+        exit_price: float,
+        exit_reason: str,
+        pnl: float,
+        pnl_pct: float,
+        realized_pnl: float,
+    ) -> bool:
+        """Persist close result to DB while preventing cross-session contamination."""
+        trade, matched_by = self._find_open_trade_for_session(symbol, session_id)
+        if not trade:
+            logger.warning(f"⚠️ 未找到可更新的开仓记录：{symbol} session={session_id}")
+            return False
+
+        if session_id and matched_by != "session_id":
+            logger.warning(
+                f"⚠️ 跳过DB平仓更新（会话不匹配）：{symbol} "
+                f"expected_session={session_id} fallback_trade_id={trade.id}"
+            )
+            return False
+
+        self.db.update_exit(
+            trade_id=trade.id,
+            exit_price=exit_price,
+            exit_reason=exit_reason,
+            pnl=pnl,
+            pnl_pct=pnl_pct,
+            realized_pnl=realized_pnl,
+        )
+        logger.info(f"📜 交易已更新 (ID: {trade.id}, matched_by={matched_by})")
+        return True
+
     def _estimate_exchange_take_profit_close(self, position: Position) -> Optional[tuple[float, float, float, float]]:
         """Estimate final close when staged TP orders complete on the exchange between syncs."""
         remaining_qty = float(position.quantity or 0.0)
@@ -958,19 +1013,15 @@ class ExecutionMixin:
                 self._record_latency_step(latency_steps, "telegram_notify", step_started)
 
                 step_started = time.perf_counter()
-                open_trades = self.db.get_open_trades(mode=self.config.mode)
-                for t in open_trades:
-                    if t.symbol == symbol:
-                        self.db.update_exit(
-                            trade_id=t.id,
-                            exit_price=exit_price,
-                            exit_reason=reason,
-                            pnl=pnl,
-                            pnl_pct=pnl_pct,
-                            realized_pnl=pnl,
-                        )
-                        logger.info(f"📜 交易已更新 (ID: {t.id})")
-                        break
+                self._persist_trade_exit(
+                    symbol=symbol,
+                    session_id=position.session_id,
+                    exit_price=exit_price,
+                    exit_reason=reason,
+                    pnl=pnl,
+                    pnl_pct=pnl_pct,
+                    realized_pnl=pnl,
+                )
                 self._record_latency_step(latency_steps, "db_update", step_started)
                 close_direction = "LONG" if position.side == "BUY" else "SHORT"
                 close_event = build_execution_event(

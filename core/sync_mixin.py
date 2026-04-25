@@ -134,8 +134,14 @@ class SyncMixin:
             return
 
         entry_price = float(pos_event.get("ep", position.entry_price) or position.entry_price)
-        if entry_price > 0:
-            position.entry_price = entry_price
+        if self._rebase_position_from_exchange_snapshot(
+            position,
+            live_qty=live_qty,
+            live_entry_price=entry_price,
+            source="ws_account_update",
+        ):
+            self._ensure_position_protection(position)
+            return
 
         if live_qty + 1e-9 < position.quantity:
             reduced_qty = position.quantity - live_qty
@@ -207,6 +213,95 @@ class SyncMixin:
             key, value = note.split("=", 1)
             parsed[key] = value
         return parsed
+
+    def _rebase_position_from_exchange_snapshot(
+        self,
+        position: Position,
+        *,
+        live_qty: float,
+        live_entry_price: float,
+        source: str,
+    ) -> bool:
+        """
+        Rebase local position when exchange side was externally changed (manual add/reopen).
+        Returns True when a full rebase happened.
+        """
+        qty_increase = live_qty > float(position.quantity or 0.0) + 1e-9
+        previous_entry = float(position.entry_price or 0.0)
+        entry_shift_pct = 0.0
+        if previous_entry > 0 and live_entry_price > 0:
+            entry_shift_pct = abs(live_entry_price - previous_entry) / previous_entry * 100.0
+
+        should_rebase = qty_increase or entry_shift_pct >= 1.0
+        if not should_rebase:
+            if live_entry_price > 0:
+                position.entry_price = live_entry_price
+            return False
+
+        old_session_id = position.session_id
+        if live_entry_price > 0:
+            position.entry_price = live_entry_price
+        position.quantity = live_qty
+        position.initial_quantity = live_qty
+        position.last_synced_quantity = live_qty
+        position.realized_pnl = 0.0
+        position.realized_exit_value = 0.0
+        position.realized_quantity = 0.0
+        position.partial_tp_count = 0
+        position.stop_loss_order_id = 0
+        position.take_profit_order_ids = []
+
+        stop_loss_pct = self._strategy_stop_loss_pct(position.strategy_line)
+        if position.side == "BUY":
+            position.stop_loss_price = position.entry_price * (1 - stop_loss_pct / 100.0)
+        else:
+            position.stop_loss_price = position.entry_price * (1 + stop_loss_pct / 100.0)
+        position.current_stop = position.stop_loss_price
+
+        position.target_roi_pct = float(position.target_roi_pct or self.config.take_profit_pct)
+        target_ratios = []
+        target_roi_pcts = []
+        for target in position.take_profit_targets or []:
+            target_ratios.append(max(float(target.get("ratio", 0) or 0), 0.0))
+            target_roi_pcts.append(float(target.get("target_roi_pct", position.target_roi_pct) or position.target_roi_pct))
+        ratio_total = sum(target_ratios)
+        if ratio_total <= 0 or len(target_roi_pcts) != len(target_ratios):
+            target_roi_pcts, target_ratios = self._build_take_profit_plan(position.strategy_line)
+        else:
+            target_ratios = [ratio / ratio_total for ratio in target_ratios]
+
+        rebuilt_targets: list[dict[str, Any]] = []
+        remaining_qty = live_qty
+        for index, target_pct in enumerate(target_roi_pcts):
+            ratio = target_ratios[index] if index < len(target_ratios) else 0.0
+            if index == len(target_roi_pcts) - 1:
+                target_qty = remaining_qty
+            else:
+                target_qty = live_qty * ratio
+                remaining_qty = max(remaining_qty - target_qty, 0.0)
+            target_price = self._calculate_local_take_profit_price(position.entry_price, position.side, float(target_pct))
+            rebuilt_targets.append(
+                {
+                    "level": index + 1,
+                    "price": target_price,
+                    "quantity": target_qty,
+                    "ratio": ratio,
+                    "target_roi_pct": float(target_pct),
+                    "price_move_pct": abs(target_price - position.entry_price) / max(position.entry_price, 1e-9) * 100,
+                }
+            )
+        if rebuilt_targets:
+            position.take_profit_targets = rebuilt_targets
+            position.take_profit_price = float(rebuilt_targets[0]["price"])
+            position.target_roi_pct = float(rebuilt_targets[0].get("target_roi_pct", position.target_roi_pct))
+
+        position.session_id = self._new_session_id(position.symbol)
+        logger.warning(
+            f"♻️ {position.symbol} 检测到交易所持仓重基准 source={source} "
+            f"qty={live_qty:.6f} entry={position.entry_price:.8f} "
+            f"old_session={old_session_id} new_session={position.session_id}"
+        )
+        return True
 
     def _audit_all_position_protection(self, source: str = "startup_audit"):
         """Audit all tracked positions and confirm exchange-side protection."""
@@ -304,30 +399,40 @@ class SyncMixin:
                     )
                 )
 
-                open_trades = self.db.get_open_trades(mode=self.config.mode)
-                for trade in open_trades:
-                    if trade.symbol == symbol:
-                        self.db.update_exit(
-                            trade_id=trade.id,
-                            exit_price=exit_price,
-                            exit_reason=position.exit_reason,
-                            pnl=pnl,
-                            pnl_pct=pnl_pct,
-                            realized_pnl=pnl,
-                        )
-                        break
+                self._persist_trade_exit(
+                    symbol=symbol,
+                    session_id=position.session_id,
+                    exit_price=exit_price,
+                    exit_reason=position.exit_reason,
+                    pnl=pnl,
+                    pnl_pct=pnl_pct,
+                    realized_pnl=pnl,
+                )
                 continue
 
             live_qty = float(live_pos.get("quantity", 0) or 0)
+            live_entry_price = float(live_pos.get("entry_price", position.entry_price) or position.entry_price)
             if live_qty <= 0:
+                continue
+
+            if self._rebase_position_from_exchange_snapshot(
+                position,
+                live_qty=live_qty,
+                live_entry_price=live_entry_price,
+                source="rest_sync",
+            ):
+                self._ensure_position_protection(position)
+                self._sync_protective_order_snapshot(position)
                 continue
 
             if live_qty + 1e-9 < position.quantity:
                 reduced_qty = position.quantity - live_qty
-                logger.info(f"🎯 {symbol} 交易所已部分止盈：减少 {reduced_qty:.6f}，剩余 {live_qty:.6f}")
+                logger.info(f"🔆 {symbol} 交易所已部分止盈：减少 {reduced_qty:.6f}，剩余 {live_qty:.6f}")
                 current_price = self.get_current_prices([symbol]).get(symbol, position.take_profit_price)
                 self._notify_partial_take_profit(position, reduced_qty, live_qty, current_price)
                 self._move_stop_to_breakeven(position, live_qty)
+            if live_entry_price > 0:
+                position.entry_price = live_entry_price
             position.quantity = live_qty
             position.last_synced_quantity = live_qty
             self._ensure_position_protection(position)
@@ -394,7 +499,10 @@ class SyncMixin:
             return
 
         open_trades = self.db.get_open_trades(mode=self.config.mode)
-        trades_by_symbol = {t.symbol: t for t in open_trades}
+        trades_by_symbol: dict[str, Any] = {}
+        for trade in open_trades:
+            if trade.symbol not in trades_by_symbol:
+                trades_by_symbol[trade.symbol] = trade
 
         for live_pos in live_positions:
             if live_pos["symbol"] in self.tracker.positions:
