@@ -10,13 +10,6 @@ from typing import Any, Optional
 
 from binance_trading_executor import (
     OrderResult,
-    cancel_protective_order,
-    cancel_stop_loss_order,
-    fetch_open_algo_orders,
-    fetch_open_orders,
-    place_market_order,
-    place_stop_loss_order,
-    place_take_profit_order,
 )
 from speed_executor import quick_close_position
 from telegram_notifier import (
@@ -28,6 +21,7 @@ from telegram_notifier import (
 )
 from trade_logger import TradeRecord
 from services.execution_service import execution_service
+from services.order_service import order_service
 from services.risk_service import risk_service
 
 from .models import Position
@@ -96,7 +90,7 @@ class ExecutionMixin:
 
     def _cancel_position_protection(self, position: Position):
         if position.stop_loss_order_id:
-            if cancel_stop_loss_order(position.symbol, position.stop_loss_order_id):
+            if order_service.cancel_stop_loss(position.symbol, position.stop_loss_order_id):
                 logger.info(f"🔕 已撤销 {position.symbol} 保护止损单：{position.stop_loss_order_id}")
             else:
                 logger.warning(f"⚠️ {position.symbol} 保护止损单撤销失败：{position.stop_loss_order_id}")
@@ -113,7 +107,7 @@ class ExecutionMixin:
         for order_id in position.take_profit_order_ids:
             if not order_id:
                 continue
-            if cancel_protective_order(position.symbol, order_id):
+            if order_service.cancel_protective(position.symbol, order_id):
                 logger.info(f"🔕 已撤销 {position.symbol} 止盈委托：{order_id}")
             else:
                 logger.warning(f"⚠️ {position.symbol} 止盈委托撤销失败：{order_id}")
@@ -187,11 +181,11 @@ class ExecutionMixin:
                 return True
 
         old_order_id = position.stop_loss_order_id
-        if old_order_id and not cancel_stop_loss_order(position.symbol, old_order_id):
+        if old_order_id and not order_service.cancel_stop_loss(position.symbol, old_order_id):
             logger.warning(f"⚠️ {position.symbol} 保本止损移动失败：旧止损撤销失败 {old_order_id}")
             return False
 
-        sl_result = place_stop_loss_order(
+        sl_result = order_service.place_stop_loss(
             position.symbol,
             close_side,
             remaining_qty,
@@ -280,7 +274,7 @@ class ExecutionMixin:
         position_side = "LONG" if position.side == "BUY" else "SHORT"
 
         if not position.stop_loss_order_id:
-            sl_result = place_stop_loss_order(
+            sl_result = order_service.place_stop_loss(
                 position.symbol,
                 close_side,
                 position.quantity,
@@ -336,7 +330,7 @@ class ExecutionMixin:
             if tp_quantity <= 0 or tp_price <= 0:
                 continue
             target["quantity"] = tp_quantity
-            tp_result = place_take_profit_order(
+            tp_result = order_service.place_take_profit(
                 position.symbol,
                 close_side,
                 tp_quantity,
@@ -475,8 +469,8 @@ class ExecutionMixin:
     def _sync_protective_order_snapshot(self, position: Position):
         """Best-effort order snapshot check without blocking trading."""
         try:
-            normal_orders = fetch_open_orders(position.symbol)
-            algo_orders = fetch_open_algo_orders(position.symbol)
+            normal_orders = order_service.fetch_open(position.symbol)
+            algo_orders = order_service.fetch_open_algo(position.symbol)
         except Exception as e:
             logger.debug(f"{position.symbol} 委托快照同步跳过：{e}")
             return
@@ -864,7 +858,7 @@ class ExecutionMixin:
 
         try:
             step_started = time.perf_counter()
-            result = place_market_order(
+            result = order_service.place_market(
                 symbol,
                 close_side,
                 position.quantity,
