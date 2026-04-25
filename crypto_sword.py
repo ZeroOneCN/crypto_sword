@@ -28,8 +28,10 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 from uuid import uuid4
 
-# Add scripts to path
-sys.path.insert(0, str(Path("/root/.hermes/scripts")))
+# 支持环境变量配置路径，兼容现有部署
+_DEFAULT_SCRIPTS_DIR = Path("/root/.hermes/scripts")
+_SCRIPTS_DIR = Path(os.environ.get("HERMES_SCRIPTS_DIR", str(_DEFAULT_SCRIPTS_DIR)))
+sys.path.insert(0, str(_SCRIPTS_DIR))
 
 # ═══════════════════════════════════════════════════════════════
 # 导入模块
@@ -123,6 +125,26 @@ logging.basicConfig(
     ],
 )
 logger = logging.getLogger(__name__)
+
+# 支持环境变量配置日志路径
+_DEFAULT_LOG_DIR = Path("/root/.hermes/logs")
+_LOG_DIR = Path(os.environ.get("HERMES_LOG_DIR", str(_DEFAULT_LOG_DIR)))
+_LOG_DIR.mkdir(parents=True, exist_ok=True)
+
+# 重新配置日志处理器（使用环境变量路径）
+for handler in logging.root.handlers[:]:
+    if isinstance(handler, RotatingFileHandler):
+        logging.root.removeHandler(handler)
+        break
+
+logging.root.addHandler(
+    RotatingFileHandler(
+        str(_LOG_DIR / "crypto_sword.log"),
+        maxBytes=20 * 1024 * 1024,
+        backupCount=5,
+        encoding="utf-8",
+    )
+)
 
 # ═══════════════════════════════════════════════════════════════
 # 配置类 - 雷神之锤的参数

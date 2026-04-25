@@ -63,15 +63,51 @@ def _run_native_binance_compat(args: list[str], max_retries: int = 5) -> dict[st
     """Compatibility wrapper backed by native Binance REST."""
     if not get_native_binance_client:
         raise RuntimeError("原生 Binance API 客户端不可用")
+    
+    # 动态节流：根据最近 API 响应时间自动调整延迟
+    _throttle_wait()
+    
     for attempt in range(max_retries + 1):
         try:
-            time.sleep(0.2)
             return get_native_binance_client().command_compat(args)  # type: ignore
         except Exception as e:
             if attempt < max_retries:
                 time.sleep(2 ** attempt)
                 continue
             raise RuntimeError(f"原生 Binance API 调用失败：{e}")
+
+
+# 动态节流器
+_last_api_call_time = 0.0
+_recent_latencies = []
+_MAX_LATENCY_HISTORY = 10
+
+def _throttle_wait():
+    """动态 API 节流：响应快时延迟短，响应慢时延迟长"""
+    global _last_api_call_time, _recent_latencies
+    
+    avg_latency = sum(_recent_latencies) / len(_recent_latencies) if _recent_latencies else 0.3
+    
+    if avg_latency < 0.2:
+        delay = 0.1
+    elif avg_latency < 0.5:
+        delay = 0.3
+    else:
+        delay = 0.5
+    
+    now = time.time()
+    elapsed = now - _last_api_call_time
+    if elapsed < delay:
+        time.sleep(delay - elapsed)
+    
+    _last_api_call_time = time.time()
+
+def _record_latency(latency: float):
+    """记录 API 响应时间"""
+    global _recent_latencies
+    _recent_latencies.append(latency)
+    if len(_recent_latencies) > _MAX_LATENCY_HISTORY:
+        _recent_latencies.pop(0)
 
 
 def _run_binance_root_cli(args: list[str], max_retries: int = 3) -> dict[str, Any] | list[Any]:

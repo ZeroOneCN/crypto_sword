@@ -11,12 +11,18 @@
 
 import sqlite3
 import json
+import os
 from datetime import datetime
 from pathlib import Path
 from typing import Optional, List, Dict, Any
 from dataclasses import dataclass, asdict
 
-DB_PATH = Path("/root/.hermes/logs/trade_log.db")
+# 支持环境变量配置路径，兼容现有部署
+_DEFAULT_DB_PATH = Path("/root/.hermes/logs/trade_log.db")
+DB_PATH = Path(os.environ.get("HERMES_DB_PATH", str(_DEFAULT_DB_PATH)))
+
+# 确保目录存在
+DB_PATH.parent.mkdir(parents=True, exist_ok=True)
 
 
 # ═══════════════════════════════════════════════════════════════
