@@ -1,4 +1,4 @@
-"""Startup/shutdown orchestration service for the runtime."""
+﻿"""Startup/shutdown orchestration service for the runtime."""
 
 from __future__ import annotations
 
@@ -21,21 +21,24 @@ class BootstrapService:
         self.logger = logger
 
     def mode_text(self) -> str:
-        return f"{self.trader.config.mode_emoji} {self.trader.config.mode_name} 模式"
+        return f"{self.trader.config.mode_emoji} {self.trader.config.mode_name} mode"
 
     def log_startup_banner(self):
         mode_text = self.mode_text()
+        alt_only = bool(getattr(self.trader.config, "target_altcoins", False))
+        major_list = ", ".join(getattr(self.trader.config, "major_symbols", [])[:8]) or "-"
         self.logger.info("=" * 60)
-        self.logger.info(f"🗡️ {mode_text} 启动")
-        self.logger.info(f"🔡 杠杆: {self.trader.config.leverage}x | 风险: {self.trader.config.risk_per_trade_pct}%")
+        self.logger.info(f"Runtime start | {mode_text}")
+        self.logger.info(f"Leverage={self.trader.config.leverage}x | Risk={self.trader.config.risk_per_trade_pct}%")
         self.logger.info(
-            f"🛡️ 止损: {self.trader.config.stop_loss_pct}% | 止盈: {self.trader.config.take_profit_pct}% "
+            f"StopLoss={self.trader.config.stop_loss_pct}% | TakeProfit={self.trader.config.take_profit_pct}% "
             f"({self.trader.config.take_profit_mode})"
         )
         self.logger.info(
-            f"👀 扫描: 前 {self.trader.config.scan_top_n} 币种 | 间隔: {self.trader.config.scan_interval_sec}s"
+            f"ScanTopN={self.trader.config.scan_top_n} | Interval={self.trader.config.scan_interval_sec}s"
         )
-        self.logger.info(f"📊 最大持仓: {self.trader.config.max_open_positions}")
+        self.logger.info(f"MaxOpenPositions={self.trader.config.max_open_positions}")
+        self.logger.info(f"AltcoinOnly={alt_only} | MajorSymbols={major_list}")
         self.logger.info("=" * 60)
 
     def startup(self):
@@ -44,12 +47,12 @@ class BootstrapService:
             self.trader._start_market_ticker_stream()
             self.trader._start_user_data_stream()
             self.trader._start_background_protection_audit(source="startup_audit")
-            self.logger.info(f"🚀 启动健康检查通过 | 可用余额: ${self.trader.day_start_balance:.2f}")
+            self.logger.info(f"Startup health checks passed | available balance=${self.trader.day_start_balance:.2f}")
         except Exception as e:
-            self.logger.error(f"❌ 启动健康检查失败: {e}")
+            self.logger.error(f"Startup health checks failed: {e}")
             send_telegram_message(
                 format_error_msg(
-                    error_type="启动健康检查失败",
+                    error_type="startup health checks failed",
                     message=str(e),
                     component="startup_checks",
                 )

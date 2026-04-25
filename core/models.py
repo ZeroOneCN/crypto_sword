@@ -40,6 +40,10 @@ class TradingConfig:
         max_abs_funding_rate: float = 0.003,
         max_oi_change_pct: float = 120.0,
         max_entry_slippage_pct: float = 0.8,
+        min_quote_volume_usdt: float = 250000.0,
+        alt_min_quote_volume_usdt: float = 1000000.0,
+        max_position_to_volume_ratio: float = 0.002,
+        alt_max_position_to_volume_ratio: float = 0.0012,
         symbol_cooldown_sec: int = 24 * 3600,
         max_consecutive_losses: int = 3,
         loss_pause_sec: int = 30 * 60,
@@ -98,6 +102,10 @@ class TradingConfig:
         self.max_abs_funding_rate = max_abs_funding_rate
         self.max_oi_change_pct = max_oi_change_pct
         self.max_entry_slippage_pct = max_entry_slippage_pct
+        self.min_quote_volume_usdt = min_quote_volume_usdt
+        self.alt_min_quote_volume_usdt = alt_min_quote_volume_usdt
+        self.max_position_to_volume_ratio = max_position_to_volume_ratio
+        self.alt_max_position_to_volume_ratio = alt_max_position_to_volume_ratio
         self.symbol_cooldown_sec = symbol_cooldown_sec
         self.max_consecutive_losses = max_consecutive_losses
         self.loss_pause_sec = loss_pause_sec

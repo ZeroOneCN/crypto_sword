@@ -337,17 +337,33 @@ class SyncMixin:
         try:
             ticker = fetch_symbol_ticker_24h(symbol)
             quote_volume = float(ticker.get("quoteVolume", 0) or 0)
-            if quote_volume < 250000:
-                logger.warning(f"⚠️ {symbol} 24h 成交额过低，跳过：{quote_volume:.2f} USDT")
+            is_major = symbol.upper() in self.config.major_symbols
+            min_quote_volume = (
+                self.config.min_quote_volume_usdt
+                if is_major or not self.config.target_altcoins
+                else self.config.alt_min_quote_volume_usdt
+            )
+            max_position_to_volume_ratio = (
+                self.config.max_position_to_volume_ratio
+                if is_major or not self.config.target_altcoins
+                else self.config.alt_max_position_to_volume_ratio
+            )
+
+            if quote_volume < float(min_quote_volume):
+                logger.warning(
+                    f"Liquidity filter reject {symbol}: quote_volume={quote_volume:.2f} < {float(min_quote_volume):.0f}"
+                )
                 return False
 
             position_to_volume_ratio = desired_position_value / quote_volume if quote_volume > 0 else 1.0
-            if position_to_volume_ratio > 0.002:
-                logger.warning(f"⚠️ {symbol} 流动性不足，仓位/成交额占比过高：{position_to_volume_ratio:.4%}")
+            if position_to_volume_ratio > float(max_position_to_volume_ratio):
+                logger.warning(
+                    f"Liquidity filter reject {symbol}: pos/vol={position_to_volume_ratio:.4%} > {float(max_position_to_volume_ratio):.4%}"
+                )
                 return False
             return True
         except Exception as e:
-            logger.warning(f"⚠️ {symbol} 流动性检查失败：{e}")
+            logger.warning(f"Liquidity filter failed {symbol}: {e}")
             return False
 
     def _extract_live_positions(self, account_info: dict[str, Any]) -> list[dict[str, Any]]:
