@@ -1,21 +1,8 @@
-﻿#!/usr/bin/env python3
-"""
-鈺斺晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺?
-鈺?                                                              鈺?
-鈺?             馃棥锔? CRYPTO SWORD - 璇哥榛勬槒涔嬪墤 馃棥锔?              鈺?
-鈺?                                                              鈺?
-鈺?   缁熶竴 Binance 鑷姩浜ゆ槗绯荤粺 鈥?瀹炵洏涓撶敤锛?-10x 鏉犳潌锛?         鈺?
-鈺?   灞卞/meme 甯佷笓椤规壂鎻忎笌鎵ц                                  鈺?
-鈺?                                                              鈺?
-鈺氣晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺?
-
-鐢ㄦ硶:
-    crypto-sword --live        # 瀹炵洏妯″紡锛堚殸锔?鐪熷疄璧勯噾锛?
-"""
+#!/usr/bin/env python3
+"""Crypto Sword runtime orchestrator."""
 
 from __future__ import annotations
 
-import argparse
 import logging
 import os
 import sys
@@ -28,16 +15,10 @@ from typing import Any, Optional
 from uuid import uuid4
 
 from hermes_paths import hermes_logs_dir, hermes_scripts_dir
-
-# 支持环境变量覆盖脚本路径
 _DEFAULT_SCRIPTS_DIR = hermes_scripts_dir()
 _SCRIPTS_DIR = Path(os.environ.get("HERMES_SCRIPTS_DIR", str(_DEFAULT_SCRIPTS_DIR)))
 if str(_SCRIPTS_DIR) and str(_SCRIPTS_DIR) not in sys.path:
     sys.path.insert(0, str(_SCRIPTS_DIR))
-
-# 鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺?
-# 瀵煎叆妯″潡
-# 鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺?
 
 try:
     from adapters.rest_gateway import load_account_balance
@@ -47,17 +28,12 @@ try:
         format_startup_msg,
         send_telegram_message,
     )
-    from trade_logger import TradeDatabase  # 馃摐 绁炲湥浜ゆ槗鏃ュ織
+    from trade_logger import TradeDatabase
 except ImportError as e:
     print(f"导入失败: {e}")
     print(f"请确认脚本目录可访问: {_SCRIPTS_DIR}（或设置 HERMES_SCRIPTS_DIR）")
     sys.exit(1)
 
-# 鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺?
-# 鏃ュ織閰嶇疆
-# 鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺?
-
-# 鏀寔鐜鍙橀噺閰嶇疆鏃ュ織璺緞
 _DEFAULT_LOG_DIR = hermes_logs_dir()
 _LOG_DIR = Path(os.environ.get("HERMES_LOG_DIR", str(_DEFAULT_LOG_DIR)))
 _LOG_DIR.mkdir(parents=True, exist_ok=True)
@@ -77,7 +53,6 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# 鏍稿績妯″瀷鎷嗗垎鍒板瓙妯″潡锛屼富绋嬪簭涓撴敞缂栨帓閫昏緫
 from core.models import PositionTracker, TradingConfig
 from core.execution_mixin import ExecutionMixin
 from core.scanner_mixin import ScannerMixin
@@ -87,39 +62,27 @@ from core.confirmation_mixin import ConfirmationMixin
 from core.market_mixin import MarketMixin
 
 
-# 鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺?
-# 涓讳氦鏄撳紩鎿?- 璇哥榛勬槒涔嬪墤
-# 鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺?
-
 class CryptoSword(ExecutionMixin, ScannerMixin, CycleMixin, SyncMixin, ConfirmationMixin, MarketMixin):
-    """
-    馃棥锔?CRYPTO SWORD - 璇哥榛勬槒涔嬪墤
-
-    鐩戞帶涓庝氦鏄撶殑鍖栬韩锛屼簬娴嬭瘯涔嬭崚鍘熶笌瀹炴垬鐨勮叆椋庤闆ㄩ棿鍒囨崲
-    鎹曟崏灞卞涓?meme 鐨勮鑵ユ皵鎭紝鎵ц闆烽渾鑸殑鏉€浼?
-    """
+    """Trading runtime orchestrator."""
 
     def __init__(self, config: TradingConfig):
         self.config = config
         self._log_dir = _LOG_DIR
         self.tracker = PositionTracker()
-        self.db = TradeDatabase()  # 馃摐 绁炲湥浜ゆ槗鏃ュ織
+        self.db = TradeDatabase()
         self.daily_pnl = 0.0
         self.day_start_balance: float = 0.0
         self._daily_marker = datetime.now().date().isoformat()
         self._daily_loss_alert_sent = False
         self.traded_symbols_today: set = set()
         self.running = True
-        
-        # 閫氱煡鎺у埗
         self._last_summary_time: float = 0
-        self._summary_interval: int = 6 * 3600  # 姣?6 灏忔椂鍙戦€佷竴娆℃寔浠撴眹鎬?
+        self._summary_interval: int = 6 * 3600
         
-        # 馃彟 搴勫闆疯揪鍚庡彴鐩戞帶锛堝垵濮嬪寲鍒?__init__ 闃叉 AttributeError锛?
         self._last_radar_scan_time: float = 0
-        self._radar_scan_interval: int = 3600  # 姣忓皬鏃舵壂鎻忎竴娆?OI 寮傚姩
+        self._radar_scan_interval: int = 3600
         self._last_pool_scan_time: float = 0
-        self._pool_scan_interval: int = 86400  # 姣忓ぉ鏇存柊涓€娆℃敹绛规睜
+        self._pool_scan_interval: int = 86400
         
         self._base_scan_interval = config.scan_interval_sec
         self._current_scan_interval = config.scan_interval_sec
@@ -336,112 +299,4 @@ class CryptoSword(ExecutionMixin, ScannerMixin, CycleMixin, SyncMixin, Confirmat
                 self._user_ws_client.stop()
             except Exception:
                 pass
-
-
-# 鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺?
-# CLI 鍏ュ彛 - 鑻辩伒娈跨殑澶ч棬
-# 鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺?
-
-def main():
-    parser = argparse.ArgumentParser(
-        description="CRYPTO SWORD 实盘交易程序",
-        formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog="示例:\n  crypto-sword\n  crypto-sword --leverage 10",
-    )
-
-    parser.add_argument("--live", action="store_true", default=True, help="实盘模式（默认开启）")
-    parser.add_argument("--leverage", "-l", type=int, default=5, choices=range(1, 11),
-                        metavar="1-10", help="杠杆倍数 (1-10x)")
-
-    parser.add_argument("--risk", "-r", type=float, default=1.0, help="每笔风险百分比")
-    parser.add_argument("--stop-loss", "-s", type=float, default=8.0, help="止损百分比")
-    parser.add_argument("--take-profit", "-t", type=float, default=20.0, help="止盈百分比")
-    parser.add_argument(
-        "--take-profit-mode",
-        choices=["price", "roi"],
-        default="roi",
-        help="止盈口径：roi=杠杆后收益率，price=标的价格涨跌幅",
-    )
-    parser.add_argument("--max-positions", "-m", type=int, default=3, help="最大持仓数")
-    parser.add_argument("--max-daily-loss", type=float, default=5.0, help="每日最大亏损百分比")
-
-    parser.add_argument("--top", type=int, default=30, help="扫描前 N 个币种")
-    parser.add_argument("--interval", "-i", type=int, default=300, help="扫描间隔秒数")
-    parser.add_argument("--scan-workers", type=int, default=6, help="深度扫描并发数")
-    parser.add_argument("--min-change", type=float, default=3.0, help="最小涨跌幅百分比")
-    parser.add_argument("--min-pullback", type=float, default=3.0, help="最小回踩百分比")
-    parser.add_argument("--reclaim-volume", type=float, default=1.15, help="回踩后 5m 量能回归倍数")
-    parser.add_argument("--by-volume", action="store_true", help="按成交量排序（默认按涨幅）")
-    parser.add_argument("--no-entry-confirm", action="store_true", help="绂佺敤鍥炶俯纭鍏ュ満")
-    parser.add_argument("--entry-confirm-timeout", type=int, default=1800, help="候选观察超时秒数")
-    parser.add_argument("--no-momentum-entry", action="store_true", help="禁用强趋势动量入场")
-    parser.add_argument("--momentum-score", type=float, default=68.0, help="鍔ㄩ噺鍏ュ満鏈€浣庤瘎鍒?(榛樿锛?8)")
-    parser.add_argument("--accumulation-score", type=float, default=58.0, help="鍚哥鏆楁祦鏈€浣庤瘎鍒?(榛樿锛?8)")
-    parser.add_argument("--accumulation-min-oi", type=float, default=18.0, help="鍚哥鏆楁祦鏈€灏?OI 鍙樺寲%% (榛樿锛?8)")
-    parser.add_argument("--accumulation-max-change", type=float, default=10.0, help="鍚哥鏆楁祦鏈€澶ф定璺屽箙%% (榛樿锛?0)")
-    parser.add_argument("--max-consecutive-losses", type=int, default=3, help="连续亏损熔断笔数")
-    parser.add_argument("--loss-pause-mins", type=int, default=30, help="连续亏损后暂停分钟")
-    parser.add_argument("--no-daily-report", action="store_true", help="禁用每日复盘通知")
-
-    parser.add_argument("--trailing", type=float, default=5.0, help="追踪止损百分比")
-    parser.add_argument("--no-trailing", action="store_true", help="禁用追踪止损")
-
-    args = parser.parse_args()
-
-    mode = "live"
-    print("\n" + "=" * 50)
-    print("⚠️  ⚠️  ⚠️  实盘交易警告  ⚠️  ⚠️  ⚠️")
-    print("=" * 50)
-    print("\n即将使用真实资金进行交易")
-    print(f"杠杆: {args.leverage}x | 风险: {args.risk}% | 止损: {args.stop_loss}%")
-    print("\n确认继续？输入 'y' 继续，其他键取消")
-    if not sys.stdin.isatty():
-        print("ℹ️ 后台模式，跳过确认")
-        confirm = "y"
-    else:
-        confirm = input("> ").strip().lower()
-    if confirm != "y":
-        print("❌ 已取消")
-        sys.exit(0)
-
-    # 鍒涘缓閰嶇疆
-    config = TradingConfig(
-        mode=mode,
-        leverage=args.leverage,
-        risk_per_trade_pct=args.risk,
-        stop_loss_pct=args.stop_loss,
-        take_profit_pct=args.take_profit,
-        take_profit_mode=args.take_profit_mode,
-        max_position_pct=20.0,
-        max_daily_loss_pct=args.max_daily_loss,
-        max_open_positions=args.max_positions,
-        trailing_stop_pct=args.trailing,
-        trailing_stop_enabled=not args.no_trailing,
-        scan_top_n=args.top,
-        scan_interval_sec=args.interval,
-        scan_workers=max(1, args.scan_workers),
-        min_stage="pre_break",
-        scan_by_change=not args.by_volume,
-        min_change_pct=args.min_change,
-        min_pullback_pct=max(0.5, args.min_pullback),
-        reclaim_volume_ratio=max(0.8, args.reclaim_volume),
-        entry_confirmation_enabled=not args.no_entry_confirm,
-        entry_confirmation_timeout_sec=max(300, args.entry_confirm_timeout),
-        momentum_entry_enabled=not args.no_momentum_entry,
-        momentum_entry_score=max(0.0, args.momentum_score),
-        max_consecutive_losses=max(1, int(args.max_consecutive_losses)),
-        loss_pause_sec=max(300, int(args.loss_pause_mins) * 60),
-        accumulation_entry_score=max(0.0, args.accumulation_score),
-        accumulation_entry_min_oi_pct=max(0.0, args.accumulation_min_oi),
-        accumulation_entry_max_change_pct=max(0.0, args.accumulation_max_change),
-        daily_report_enabled=not args.no_daily_report,
-    )
-
-    # 鍚姩浜ゆ槗寮曟搸
-    trader = CryptoSword(config)
-    trader.run()
-
-
-if __name__ == "__main__":
-    main()
 
