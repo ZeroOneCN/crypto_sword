@@ -30,8 +30,8 @@ try:
     )
     from trade_logger import TradeDatabase
 except ImportError as e:
-    print(f"导入失败: {e}")
-    print(f"请确认脚本目录可访问: {_SCRIPTS_DIR}（或设置 HERMES_SCRIPTS_DIR）")
+    print(f"Import failed: {e}")
+    print(f"Please ensure scripts dir is accessible: {_SCRIPTS_DIR} (or set HERMES_SCRIPTS_DIR)")
     sys.exit(1)
 
 _DEFAULT_LOG_DIR = hermes_logs_dir()
@@ -60,6 +60,7 @@ from core.cycle_mixin import CycleMixin
 from core.sync_mixin import SyncMixin
 from core.confirmation_mixin import ConfirmationMixin
 from core.market_mixin import MarketMixin
+from core.bootstrap_service import BootstrapService
 
 
 class CryptoSword(ExecutionMixin, ScannerMixin, CycleMixin, SyncMixin, ConfirmationMixin, MarketMixin):
@@ -173,7 +174,7 @@ class CryptoSword(ExecutionMixin, ScannerMixin, CycleMixin, SyncMixin, Confirmat
             self._account_info_cache = account_info
             self._account_info_cache_at = now
             return account_info
-        raise RuntimeError("璐︽埛淇℃伅杩斿洖鏍煎紡寮傚父")
+        raise RuntimeError("??????????")
 
     def _emit_latency_trace(
         self,
@@ -187,7 +188,7 @@ class CryptoSword(ExecutionMixin, ScannerMixin, CycleMixin, SyncMixin, Confirmat
         threshold = threshold_ms if threshold_ms is not None else self._latency_alert_threshold_ms
         step_text = " | ".join(f"{name}={elapsed_ms:.0f}ms" for name, elapsed_ms in steps)
         logger.info(
-            f"鈴憋笍 {flow} latency{f' {symbol}' if symbol else ''}: "
+            f"{flow} latency{f' {symbol}' if symbol else ''}: "
             f"total={total_ms:.0f}ms"
             + (f" | {step_text}" if step_text else "")
         )
@@ -212,91 +213,28 @@ class CryptoSword(ExecutionMixin, ScannerMixin, CycleMixin, SyncMixin, Confirmat
 
     def run(self):
         """Main trading loop."""
-        mode_text = f"{self.config.mode_emoji} {self.config.mode_name} 模式"
-        logger.info("=" * 60)
-        logger.info(f"🗡️  {mode_text} 启动")
-        logger.info(f"🔡 杠杆: {self.config.leverage}x | 风险: {self.config.risk_per_trade_pct}%")
-        logger.info(
-            f"🛝 止损: {self.config.stop_loss_pct}% | 止盈: {self.config.take_profit_pct}% "
-            f"({self.config.take_profit_mode})"
-        )
-        logger.info(f"👀 扫描: 前 {self.config.scan_top_n} 币种 | 间隔: {self.config.scan_interval_sec}s")
-        logger.info(f"📱 最大持仓: {self.config.max_open_positions}")
-        logger.info("=" * 60)
-
-        try:
-            self.day_start_balance = self._run_health_checks()
-            self._start_market_ticker_stream()
-            self._start_user_data_stream()
-            self._start_background_protection_audit(source="startup_audit")
-            logger.info(f"🚀 启动健康检查通过 | 可用余额: ${self.day_start_balance:.2f}")
-        except Exception as e:
-            logger.error(f"❌ 启动健康检查失败: {e}")
-            send_telegram_message(
-                format_error_msg(
-                    error_type="启动健康检查失败",
-                    message=str(e),
-                    component="startup_checks",
-                )
-            )
-            raise
-
-        send_telegram_message(
-            format_startup_msg(
-                mode_name=mode_text,
-                leverage=self.config.leverage,
-                risk_pct=self.config.risk_per_trade_pct,
-                stop_loss_pct=self.config.stop_loss_pct,
-                take_profit_pct=self.config.take_profit_pct,
-                scan_top_n=self.config.scan_top_n,
-                scan_interval_sec=self.config.scan_interval_sec,
-                max_positions=self.config.max_open_positions,
-            )
-        )
-
-        self._refresh_market_profile()
+        bootstrap = BootstrapService(self, logger)
+        mode_text = bootstrap.mode_text()
+        bootstrap.log_startup_banner()
+        bootstrap.startup()
 
         while self.running:
             try:
                 self.run_scan_cycle()
                 sleep_sec = max(10, min(self.config.fast_scan_interval_sec, self._current_scan_interval))
-                logger.info(f"⏳ 等待 {sleep_sec}s 后进入下一轮扫描...")
+                logger.info(f"Wait {sleep_sec}s before next scan cycle")
                 time.sleep(sleep_sec)
             except KeyboardInterrupt:
-                logger.info("\n🛑 收到中断信号，准备停止...")
+                logger.info("Interrupted by user, stopping...")
                 self.running = False
             except Exception as e:
-                logger.error(f"❌ 主循环异常: {e}")
+                logger.error(f"Main loop exception: {e}")
                 send_telegram_message(
                     format_error_msg(
-                        error_type="主循环异常",
+                        error_type="Main loop exception",
                         message=str(e),
                     )
                 )
                 time.sleep(10)
 
-        summary = self._enrich_summary_with_db(self.tracker.get_summary())
-        send_telegram_message(
-            format_shutdown_msg(
-                mode_name=mode_text,
-                closed_trades=summary["closed_today"],
-                realized_pnl=summary["realized_pnl"],
-                unrealized_pnl=summary["total_unrealized_pnl"],
-            )
-        )
-        if self._ws_client:
-            try:
-                self._ws_client.stop()
-            except Exception:
-                pass
-        if self._market_ws_client:
-            try:
-                self._market_ws_client.stop()
-            except Exception:
-                pass
-        if self._user_ws_client:
-            try:
-                self._user_ws_client.stop()
-            except Exception:
-                pass
-
+        bootstrap.shutdown(mode_text)

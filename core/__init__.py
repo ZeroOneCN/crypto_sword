@@ -1,5 +1,6 @@
 """Core modules for Hermes Trader runtime."""
 
+from .bootstrap_service import BootstrapService
 from .cycle_mixin import CycleMixin
 from .confirmation_mixin import ConfirmationMixin
 from .execution_mixin import ExecutionMixin
@@ -18,4 +19,5 @@ __all__ = [
     "SyncMixin",
     "ConfirmationMixin",
     "MarketMixin",
+    "BootstrapService",
 ]
