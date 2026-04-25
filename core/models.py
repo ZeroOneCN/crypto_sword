@@ -75,6 +75,7 @@ class TradingConfig:
         market_style_refresh_sec: int = 900,
         target_altcoins: bool = True,
         target_memes: bool = True,
+        require_telegram_notify: bool = True,
     ):
         self.mode = mode
         self.leverage = leverage
@@ -137,6 +138,7 @@ class TradingConfig:
         self.market_style_refresh_sec = max(300, int(market_style_refresh_sec))
         self.target_altcoins = target_altcoins
         self.target_memes = target_memes
+        self.require_telegram_notify = require_telegram_notify
 
     @property
     def mode_emoji(self) -> str:

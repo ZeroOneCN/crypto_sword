@@ -59,7 +59,7 @@ class BootstrapService:
             )
             raise
 
-        send_telegram_message(
+        startup_notified = send_telegram_message(
             format_startup_msg(
                 mode_name=self.mode_text(),
                 leverage=self.trader.config.leverage,
@@ -71,12 +71,18 @@ class BootstrapService:
                 max_positions=self.trader.config.max_open_positions,
             )
         )
+        if not startup_notified:
+            message = "Telegram notification unavailable: startup message not delivered"
+            self.logger.error(message)
+            require_notify = bool(getattr(self.trader.config, "require_telegram_notify", True))
+            if require_notify and str(getattr(self.trader.config, "mode", "")).lower() == "live":
+                raise RuntimeError(message)
         self.trader._refresh_market_profile()
 
     def shutdown(self, mode_text: str | None = None):
         final_mode = mode_text or self.mode_text()
         summary = self.trader._enrich_summary_with_db(self.trader.tracker.get_summary())
-        send_telegram_message(
+        shutdown_notified = send_telegram_message(
             format_shutdown_msg(
                 mode_name=final_mode,
                 closed_trades=summary["closed_today"],
@@ -84,6 +90,8 @@ class BootstrapService:
                 unrealized_pnl=summary["total_unrealized_pnl"],
             )
         )
+        if not shutdown_notified:
+            self.logger.error("Telegram notification unavailable: shutdown summary not delivered")
 
         for client_name in ("_ws_client", "_market_ws_client", "_user_ws_client"):
             client = getattr(self.trader, client_name, None)
