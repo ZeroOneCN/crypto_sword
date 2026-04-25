@@ -687,7 +687,7 @@ class ExecutionMixin:
 
             take_profit_target_pcts, take_profit_ratios = self._build_take_profit_plan(strategy_line)
             step_started = time.perf_counter()
-            result = execution_service.execute_trade(
+            result = execution_service.execute_entry_trade(
                 signal=trading_signal,
                 account_balance=balance,
                 risk_per_trade_pct=self.config.risk_per_trade_pct,
@@ -696,8 +696,7 @@ class ExecutionMixin:
                 leverage=self.config.leverage,
                 quantity=quantity,
                 stop_loss_price=stop_loss,
-                take_profit_roi_pcts=take_profit_target_pcts if self.config.take_profit_mode == "roi" else None,
-                take_profit_price_pcts=take_profit_target_pcts if self.config.take_profit_mode != "roi" else None,
+                take_profit_target_pcts=take_profit_target_pcts,
                 take_profit_ratios=take_profit_ratios,
                 take_profit_mode=self.config.take_profit_mode,
                 stop_trigger_buffer_pct=stop_trigger_buffer_pct,
