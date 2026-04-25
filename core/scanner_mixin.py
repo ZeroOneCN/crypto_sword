@@ -6,7 +6,11 @@ import logging
 import time
 from typing import Any, List, Optional
 
-from binance_breakout_scanner import get_top_symbols_by_change, get_top_symbols_by_volume, scan_symbols
+from adapters.rest_gateway import (
+    get_top_symbols_by_change_rest,
+    get_top_symbols_by_volume_rest,
+    scan_symbols_rest,
+)
 from signal_enhancer import score_signal
 
 logger = logging.getLogger(__name__)
@@ -30,7 +34,7 @@ class ScannerMixin:
                 self.config.min_change_pct,
             )
             if not symbols:
-                symbols = get_top_symbols_by_change(
+                symbols = get_top_symbols_by_change_rest(
                     self.config.scan_top_n,
                     min_change=self.config.min_change_pct,
                 )
@@ -38,12 +42,12 @@ class ScannerMixin:
             else:
                 logger.info(f"🔥 妖币模式(WS) - 扫描 {len(symbols)} 个异动币种：{symbols[:5]}...")
         else:
-            symbols = get_top_symbols_by_volume(self.config.scan_top_n)
+            symbols = get_top_symbols_by_volume_rest(self.config.scan_top_n)
             logger.info(f"📊 成交量模式 - 扫描 {len(symbols)} 个币种：{symbols[:5]}...")
         self._record_latency_step(latency_steps, "select_symbols", step_started)
 
         step_started = time.perf_counter()
-        results = scan_symbols(
+        results = scan_symbols_rest(
             symbols,
             min_stage=self.config.min_stage,
             max_workers=self.config.scan_workers,
@@ -122,4 +126,3 @@ class ScannerMixin:
         self._emit_latency_trace("scan_for_signals", trace_started, latency_steps)
 
         return signals
-

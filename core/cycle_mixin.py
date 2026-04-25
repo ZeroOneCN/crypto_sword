@@ -7,7 +7,7 @@ import time
 from datetime import datetime, timedelta
 from typing import Any
 
-from binance_breakout_scanner import get_top_symbols_by_change, get_top_symbols_by_volume
+from adapters.rest_gateway import get_top_symbols_by_change_rest, get_top_symbols_by_volume_rest
 from telegram_notifier import (
     format_daily_report_msg,
     format_error_msg,
@@ -47,7 +47,7 @@ class CycleMixin:
             return list(dict.fromkeys(merged))[: self.config.scan_top_n]
 
         if self.config.scan_by_change:
-            symbols = get_top_symbols_by_change(
+            symbols = get_top_symbols_by_change_rest(
                 self.config.scan_top_n,
                 min_change=self.config.min_change_pct,
             )
@@ -55,7 +55,7 @@ class CycleMixin:
             merged = major_symbols + symbols if prefer_major else symbols + major_symbols
             return list(dict.fromkeys(merged))[: self.config.scan_top_n]
 
-        symbols = get_top_symbols_by_volume(self.config.scan_top_n)
+        symbols = get_top_symbols_by_volume_rest(self.config.scan_top_n)
         logger.info(f"📊 成交量模式 - 扫描 {len(symbols)} 个币种：{symbols[:5]}...")
         merged = major_symbols + symbols if prefer_major else symbols + major_symbols
         return list(dict.fromkeys(merged))[: self.config.scan_top_n]
@@ -357,4 +357,3 @@ class CycleMixin:
 
         self.last_scan_time = datetime.now()
         self._emit_latency_trace(f"run_scan_cycle_{cycle_type}", trace_started, latency_steps)
-

@@ -9,18 +9,15 @@ import time
 from datetime import datetime
 from typing import Any, Dict, List
 
-from binance_breakout_scanner import fetch_ticker_24hr
-from binance_trading_executor import get_account_balance, is_native_binance_configured
+from adapters.rest_gateway import fetch_symbol_ticker_24h, is_exchange_ready
+from adapters.ws_gateway import get_market_price_client_class, get_user_data_client_class
 from hermes_paths import hermes_logs_dir
 from telegram_notifier import format_close_position_msg, format_error_msg, get_telegram_config, send_telegram_message
 
 from .models import Position
 
-try:
-    from binance_websocket import BinanceUserDataWebSocketClient, BinanceWebSocketClient
-except Exception:
-    BinanceUserDataWebSocketClient = None
-    BinanceWebSocketClient = None
+BinanceUserDataWebSocketClient = get_user_data_client_class()
+BinanceWebSocketClient = get_market_price_client_class()
 
 logger = logging.getLogger(__name__)
 
@@ -338,7 +335,7 @@ class SyncMixin:
 
     def _passes_liquidity_filter(self, symbol: str, desired_position_value: float) -> bool:
         try:
-            ticker = fetch_ticker_24hr(symbol)
+            ticker = fetch_symbol_ticker_24h(symbol)
             quote_volume = float(ticker.get("quoteVolume", 0) or 0)
             if quote_volume < 250000:
                 logger.warning(f"⚠️ {symbol} 24h 成交额过低，跳过：{quote_volume:.2f} USDT")
@@ -447,7 +444,7 @@ class SyncMixin:
         if not telegram_config.get("bot_token") or not telegram_config.get("chat_id"):
             raise RuntimeError("Telegram 未配置 bot_token/chat_id")
 
-        native_ready = is_native_binance_configured()
+        native_ready = is_exchange_ready()
         if not native_ready:
             raise RuntimeError("原生 Binance API 未配置：请设置 BINANCE_API_KEY / BINANCE_API_SECRET")
         logger.info("🧬 原生 Binance API 交易通道已启用")
@@ -480,9 +477,8 @@ class SyncMixin:
                 if ws_price > 0:
                     prices[symbol] = ws_price
                     continue
-                ticker = fetch_ticker_24hr(symbol)
+                ticker = fetch_symbol_ticker_24h(symbol)
                 prices[symbol] = float(ticker.get("lastPrice", 0))
             except Exception as e:
                 logger.warning(f"获取 {symbol} 价格失败：{e}")
         return prices
-
