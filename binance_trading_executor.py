@@ -177,12 +177,16 @@ def calculate_min_quantity_for_notional(symbol: str, price: float, min_notional:
     return _ceil_to_step(target_notional / price, step_size)
 
 
-def adjust_quantity_precision(symbol: str, quantity: float) -> float:
+def adjust_quantity_precision(symbol: str, quantity: float, price: float = 0.0) -> float:
     """Adjust quantity precision based on Binance symbol stepSize.
-    
+
     Most USDT-M futures use stepSize of 0.001 or 0.01.
     Falls back to 3 decimal places if exchange info is unavailable.
+    
+    新增：名义价值二次校验，确保调整后 quantity 仍满足交易所最小名义价值要求。
     """
+    original_quantity = quantity
+    
     try:
         sym_info = get_symbol_info(symbol)
         if sym_info:
@@ -191,12 +195,39 @@ def adjust_quantity_precision(symbol: str, quantity: float) -> float:
                     step_size = float(f.get("stepSize", "0.001"))
                     quantity = _truncate_to_step(quantity, step_size)
                     logger.info(f"🔧 {symbol} 精度适配：stepSize={step_size}, 调整后 quantity={quantity}")
+                    
+                    # 名义价值二次校验
+                    if price > 0:
+                        notional_value = quantity * price
+                        min_notional = 5.0  # 币安默认最小名义价值 5 USDT
+                        
+                        # 检查 NOTIONAL 过滤器
+                        for nf in sym_info.get("filters", []):
+                            if nf.get("filterType") == "NOTIONAL":
+                                min_notional = float(nf.get("minNotional", 5.0))
+                                break
+                        
+                        if notional_value < min_notional:
+                            # 向上调整到满足最小名义价值
+                            adjusted_quantity = _ceil_to_step(min_notional / price, step_size)
+                            logger.warning(f"⚠️ {symbol} 名义价值 ${notional_value:.2f} < 最小 ${min_notional:.2f}，向上调整至 {adjusted_quantity}")
+                            quantity = adjusted_quantity
+                    
                     return quantity
     except Exception as e:
         logger.debug(f"获取 {symbol} 精度信息失败，使用默认 3 位小数: {e}")
-    
+
     # 默认截断到 3 位小数（适用于大多数 USDT 合约）
     quantity = _truncate_to_step(quantity, 0.001)
+    
+    # 默认名义价值校验（保守估计）
+    if price > 0:
+        notional_value = quantity * price
+        if notional_value < 5.0:
+            step_size = 0.001
+            quantity = _ceil_to_step(5.0 / price, step_size)
+            logger.warning(f"⚠️ {symbol} 默认名义价值校验：${notional_value:.2f} < $5.0，调整至 {quantity}")
+    
     return quantity
 
 
@@ -459,8 +490,17 @@ def place_market_order(
         OrderResult with execution details
     """
     try:
+        # 获取当前价格用于名义价值校验
+        current_price = 0.0
+        try:
+            ticker = get_ticker_24hr(symbol)
+            if isinstance(ticker, dict):
+                current_price = float(ticker.get("lastPrice", 0))
+        except Exception as e:
+            logger.debug(f"获取 {symbol} 价格失败，跳过名义价值校验: {e}")
+        
         # 调整 quantity 精度，防止 LOT_SIZE 过滤失败
-        quantity = adjust_quantity_precision(symbol, quantity)
+        quantity = adjust_quantity_precision(symbol, quantity, current_price)
 
         if not is_native_binance_configured() or not get_native_binance_client:
             raise RuntimeError("原生 Binance API 未配置，无法下单")

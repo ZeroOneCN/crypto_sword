@@ -463,15 +463,17 @@ def calculate_position_size(
     # 基于风险计算仓位
     risk_amount = account_balance * (risk_per_trade_pct / 100)
     stop_distance_pct = abs(entry_price - stop_loss_price) / entry_price * 100
-    
-    if stop_distance_pct == 0:
+
+    # 修复：浮点数精度问题可能导致 stop_distance_pct 极小但不为0，产生异常大的仓位
+    # 使用 < 0.01 阈值代替 == 0 判断
+    if stop_distance_pct < 0.01:
         return {
             "quantity": 0,
             "position_value": 0,
             "risk_amount": 0,
             "position_pct": 0,
             "is_capped": False,
-            "error": "止损距离为 0",
+            "error": f"止损距离过小 ({stop_distance_pct:.4f}%)，请检查止损价",
         }
     
     # 仓位价值 = 风险金额 / 止损百分比

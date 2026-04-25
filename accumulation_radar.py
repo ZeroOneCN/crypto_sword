@@ -329,9 +329,14 @@ def scan_accumulation_pool(symbols: List[str] = None) -> List[AccumulationSignal
                 logger.info(f"✅ {symbol} 收筹: {sideways_days}天, 波动{range_pct:.1f}%, 日均${avg_vol/1e6:.2f}M")
             
             time.sleep(0.3)  # API限流
-            
+
         except Exception as e:
-            logger.debug(f"{symbol} 扫描失败: {e}")
+            # 区分可恢复/不可恢复错误
+            error_msg = str(e).lower()
+            if any(kw in error_msg for kw in ["timeout", "connection", "rate limit", "429"]):
+                logger.debug(f"{symbol} 扫描失败（可恢复）: {e}")
+            else:
+                logger.warning(f"{symbol} 扫描失败（需关注）: {e}")
             continue
     
     logger.info(f"🏦 收筹池更新完成: {len(pool)} 个标的")
@@ -423,9 +428,14 @@ def scan_oi_changes(pool_symbols: List[str] = None) -> List[OIChangeSignal]:
                     logger.info(f"🎯 {symbol} 暗流信号！OI {oi_change_pct:+.1f}% 但价格 {price_change_pct:+.1f}%")
             
             time.sleep(0.5)
-            
+
         except Exception as e:
-            logger.debug(f"{symbol} OI扫描失败: {e}")
+            # 区分可恢复/不可恢复错误
+            error_msg = str(e).lower()
+            if any(kw in error_msg for kw in ["timeout", "connection", "rate limit", "429"]):
+                logger.debug(f"{symbol} OI扫描失败（可恢复）: {e}")
+            else:
+                logger.warning(f"{symbol} OI扫描失败（需关注）: {e}")
             continue
     
     # 按OI变化排序

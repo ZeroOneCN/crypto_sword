@@ -318,19 +318,20 @@ def _run_native_binance_compat(args: list[str], max_retries: int = 5) -> dict[st
 def fetch_ticker_24hr(symbol: str | None = None) -> dict[str, Any]:
     """Fetch 24hr ticker statistics. If symbol is None, fetch all."""
     cache_key = ("ticker_24hr", symbol or "ALL")
-    cached = _cache_get(cache_key, 5 if symbol is None else 10)
+    # 优化：全市场 ticker 缓存从 5s 延长至 30s，减少 API 调用频率
+    cached = _cache_get(cache_key, 30 if symbol is None else 30)
     if cached is not None:
         return cached
     if symbol:
-        all_tickers = _cache_get(("ticker_24hr", "ALL"), 5)
+        all_tickers = _cache_get(("ticker_24hr", "ALL"), 30)
         if isinstance(all_tickers, list):
             for ticker in all_tickers:
                 if ticker.get("symbol") == symbol:
-                    return _cache_set(cache_key, ticker, 10)
+                    return _cache_set(cache_key, ticker, 30)
     args = ["ticker24hr-price-change-statistics"]
     if symbol:
         args.extend(["--symbol", symbol])
-    return _cache_set(cache_key, _run_native_binance_compat(args), 5 if symbol is None else 10)  # type: ignore
+    return _cache_set(cache_key, _run_native_binance_compat(args), 30 if symbol is None else 30)  # type: ignore
 
 
 def fetch_open_interest(symbol: str) -> dict[str, Any]:

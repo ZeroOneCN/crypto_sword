@@ -20,25 +20,63 @@ from binance_compat import run_native_binance_compat
 
 logger = logging.getLogger(__name__)
 
-# ═══════════════════════════════════════════════
+
+# ═══════════════════════════════════════════════════════════════
+# TTLCache - 统一缓存机制（替代全局字典，防止内存泄漏）
+# ═══════════════════════════════════════════════════════════════
+
+class TTLCache:
+    """带 TTL 和 LRU 清理的缓存类
+    
+    Args:
+        ttl_sec: 缓存过期时间（秒）
+        max_size: 最大缓存条目数（超过时清理最旧的条目）
+    """
+    def __init__(self, ttl_sec: float = 30, max_size: int = 100):
+        self._cache: Dict[str, Tuple[Any, float]] = {}
+        self._ttl = ttl_sec
+        self._max_size = max_size
+    
+    def get(self, key: str) -> Any:
+        """获取缓存，过期则返回 None"""
+        if key in self._cache:
+            value, expires_at = self._cache[key]
+            if time.time() < expires_at:
+                return value
+            del self._cache[key]
+        return None
+    
+    def set(self, key: str, value: Any):
+        """设置缓存，超过 max_size 时清理最旧的条目"""
+        if len(self._cache) >= self._max_size:
+            # 清理最旧的条目
+            oldest_key = min(self._cache, key=lambda k: self._cache[k][1])
+            del self._cache[oldest_key]
+        self._cache[key] = (value, time.time() + self._ttl)
+    
+    def clear(self):
+        """清空缓存"""
+        self._cache.clear()
+    
+    def __len__(self) -> int:
+        return len(self._cache)
+
+
+# ═══════════════════════════════════════════════════════════════
 # K 线缓存 - 减少 API 调用
-# ═══════════════════════════════════════════════
-_klines_cache: Dict[str, Tuple[List, float]] = {}  # {key: (data, timestamp)}
-_KLINES_CACHE_TTL = 30  # 30 秒缓存
+# ═══════════════════════════════════════════════════════════════
+
+_klines_cache = TTLCache(ttl_sec=30, max_size=200)  # 30 秒 TTL，最多 200 个条目
 
 def _get_cached_klines(symbol: str, interval: str) -> Optional[List]:
     """获取缓存的 K 线数据"""
     key = f"{symbol}_{interval}"
-    if key in _klines_cache:
-        data, ts = _klines_cache[key]
-        if time.time() - ts < _KLINES_CACHE_TTL:
-            return data
-    return None
+    return _klines_cache.get(key)
 
 def _set_cached_klines(symbol: str, interval: str, data: List):
     """缓存 K 线数据"""
     key = f"{symbol}_{interval}"
-    _klines_cache[key] = (data, time.time())
+    _klines_cache.set(key, data)
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -80,8 +118,9 @@ class SignalScore:
         self._calculate_total()
 
     def _calculate_total(self):
-        """计算综合评分"""
-        weights = {
+        """计算综合评分（支持环境变量配置权重）"""
+        # 默认权重
+        default_weights = {
             'trend': 0.20,
             'volume': 0.20,
             'momentum': 0.15,
@@ -89,21 +128,32 @@ class SignalScore:
             'market': 0.10,
             'composite': 0.20,  # 🏦 新增庄家雷达权重
         }
-
+        
+        # 从环境变量读取权重（JSON 格式）
+        weights = default_weights
+        try:
+            env_weights = os.environ.get("HERMES_SCORE_WEIGHTS")
+            if env_weights:
+                import json
+                weights = json.loads(env_weights)
+                logger.debug(f"🎯 使用环境变量配置的评分权重: {weights}")
+        except Exception as e:
+            logger.debug(f"读取评分权重配置失败，使用默认值: {e}")
+        
         # 基础评分
         base_score = (
-            self.trend_score * weights['trend'] +
-            self.volume_score * weights['volume'] +
-            self.momentum_score * weights['momentum'] +
-            self.breakout_score * weights['breakout'] +
-            self.market_score * weights['market']
+            self.trend_score * weights.get('trend', default_weights['trend']) +
+            self.volume_score * weights.get('volume', default_weights['volume']) +
+            self.momentum_score * weights.get('momentum', default_weights['momentum']) +
+            self.breakout_score * weights.get('breakout', default_weights['breakout']) +
+            self.market_score * weights.get('market', default_weights['market'])
         )
 
         # 🏦 庄家雷达评分加成（如果可用）
         radar_bonus = 0
         if self.composite_score > 0:
-            radar_bonus = self.composite_score * weights['composite']
-        
+            radar_bonus = self.composite_score * weights.get('composite', default_weights['composite'])
+
         # 暗流信号额外加分（最高+15分）
         if self.dark_flow_score > 0:
             radar_bonus += min(self.dark_flow_score / 100 * 15, 15)
