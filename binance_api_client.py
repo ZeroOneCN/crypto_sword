@@ -348,7 +348,14 @@ class BinanceApiClient:
 
 
 def _format_decimal(value: float) -> str:
-    return f"{float(value):.16f}".rstrip("0").rstrip(".")
+    from decimal import Decimal, InvalidOperation
+
+    try:
+        normalized = Decimal(str(value))
+    except (InvalidOperation, ValueError, TypeError):
+        normalized = Decimal("0")
+    text = format(normalized, "f")
+    return text.rstrip("0").rstrip(".") if "." in text else text
 
 
 def _args_to_params(args: list[str]) -> dict[str, str]:

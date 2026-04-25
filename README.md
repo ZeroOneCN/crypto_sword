@@ -1,191 +1,133 @@
-# 🗡️ Crypto Sword - 诸神黄昏之剑
+﻿# Hermes Trader（Crypto Sword）
 
-> 统一 Binance 实盘自动交易系统 — 1-10x 杠杆，山寨/meme 币专项扫描与执行，庄家收筹雷达
+面向 Binance 合约的自动化交易系统，当前已采用 `core + services + adapters` 分层架构，主程序职责回归调度。
 
-## 架构
+## 本轮改造结果
 
-```
-crypto_sword.py              # 主入口 - 诸神黄昏之剑（统一调度器）
-├── binance_breakout_scanner.py  # 突破扫描器 - 发现机会
-├── binance_trading_executor.py  # 交易执行器 - 执行订单
-├── signal_enhancer.py           # 信号增强 - 多维度评分
-├── risk_manager.py              # 风控系统 - 仓位管理
-├── surf_enhancer.py             # Surf 数据增强 - 链上/舆情
-├── accumulation_radar.py        # 🏦 庄家收筹雷达 - OI异动/暗流检测
-├── trade_logger.py              # 交易日志 - SQLite 持久化
-├── telegram_notifier.py         # Telegram 通知
-├── speed_executor.py            # 高速执行器
-└── backtester.py                # 回测引擎
-```
+- 已下线未使用且重复的 `data_fetcher.py`。
+- 已移除 `accumulation_radar` 的系统入口（不再作为运行依赖）。
+- 已新增正式启动入口 `run_live.py`，不再依赖 `python -c`。
+- 已统一三类结构化输出（策略、执行、监控），便于后续回测对齐与统计。
+- 已增加 `feature_store/` 与交易复盘记录（每笔平仓都会生成 review）。
+- 已修复 Binance 条件单精度序列化问题，降低 `-1111 Precision` 报错概率。
 
-## 🏦 庄家雷达功能（新增）
-
-整合自 [accumulation-radar](https://github.com/connectfarm1/accumulation-radar)：
-
-### 核心功能
-
-| 功能 | 说明 | 使用频率 |
-|------|------|----------|
-| 🏦 **收筹池扫描** | 检测横盘≥45天的低调收筹标的 | 每日1次 |
-| ⚡ **OI异动监控** | 实时检测OI变化≥3%的标的 | 每小时1次 |
-| 🎯 **暗流信号** | OI变但价没动 = 最佳埋伏时机 | 实时推送 |
-| 🔥 **空头燃料** | 负费率+价格上涨 = 轧空潜力 | 每小时1次 |
-
-### 三策略评分体系
-
-**🔥 追多策略（短线轧空）**
-- 资金费率越负 = 做空人越多 = 空头燃料
-- 前提：涨>3% + 费率<-0.005% + Vol>$1M
-
-**📊 综合策略（四维均衡，各25分）**
-| 维度 | 权重 | 逻辑 |
-|------|------|------|
-| 🧊 费率 | 25分 | 越负越好 |
-| 💎 市值 | 25分 | <$50M满分 |
-| 💤 横盘 | 25分 | ≥120天满分 |
-| ⚡ OI | 25分 | ≥15%变化满分 |
-
-**🎯 埋伏策略（中长线布局）**
-- 市值(35%) + OI(30%) + 横盘(20%) + 费率(15%)
-- 前提：在收筹池内 + 涨幅<50%
-
-### 使用方式
+## 运行入口
 
 ```bash
-# 更新收筹池（每日）
-python3 accumulation_radar.py pool
-
-# OI异动监控（每小时）
-python3 accumulation_radar.py oi
-
-# 全量扫描
-python3 accumulation_radar.py full
-
-# 主程序自动集成雷达评分
-python3 crypto_sword.py --live
+python run_live.py --mode live
 ```
 
-## 快速开始
+常用参数：
 
 ```bash
-# 实盘模式（⚠️ 真实资金）
-python3 crypto_sword.py --live
-
-# 自定义参数
-python3 crypto_sword.py --live --leverage 10 --risk 0.5 --stop-loss 8 --take-profit 20 --top 30 --interval 300 --trailing 5 --max-positions 5
+python run_live.py \
+  --mode live \
+  --leverage 5 \
+  --risk 2.0 \
+  --max-positions 5 \
+  --scan-top-n 30 \
+  --scan-interval 300 \
+  --fast-interval 60
 ```
 
-> ⚠️ **警告**：本系统仅支持实盘交易。首次使用请确保已配置好 `binance-cli` 实盘 profile，并从小杠杆（3-5x）和低风险（0.5-1%）开始测试。
-
-## 参数说明
-
-| 参数 | 默认值 | 说明 |
-|------|--------|------|
-| `--live` | - | 实盘模式（必须） |
-| `--leverage` | 5 | 杠杆倍数 (1-10x) |
-| `--risk` | 1.0 | 每笔风险 (%) |
-| `--stop-loss` | 5 | 止损 (%) |
-| `--take-profit` | 10 | 止盈 (%) |
-| `--trailing` | 3 | 追踪止损 (%) |
-| `--max-positions` | 3 | 最大持仓数 |
-| `--top` | 30 | 扫描 Top N 币种 |
-| `--interval` | 300 | 扫描间隔 (秒) |
-
-## 目录结构
-
-```
-scripts/
-├── 🗡️ crypto_sword.py              # ✅ 主入口（唯一交易程序，集成所有核心功能）
-├── 📡 binance_breakout_scanner.py   # 突破扫描器（被主程序调用）
-├── ⚔️ binance_trading_executor.py   # 交易执行器（被主程序调用）
-├── 🎯 signal_enhancer.py            # 信号增强（被主程序调用）
-├── 🛡️ risk_manager.py               # 风控系统（被主程序调用）
-├── 🌊 surf_enhancer.py              # Surf 数据增强（被主程序调用）
-├── 🏦 accumulation_radar.py         # ✨ 庄家收筹雷达（新增强力模块）
-├── 📜 trade_logger.py               # 交易日志（被主程序调用）
-├── 📱 telegram_notifier.py          # Telegram 通知（被主程序调用）
-├── 📊 backtester.py                 # 回测引擎（独立工具）
-├── 📈 backtest_analyzer.py          # 回测分析（独立工具）
-├── ⚡ speed_executor.py             # ⚠️ 可选：高速执行器（WebSocket，勿与主程序同时运行）
-├── 📡 token_anomaly_radar.py        # 异常检测（被主程序调用）
-├── 🗑️ binance_monitor.py            # ❌ 已废弃（功能已集成到主程序）
-├── 🗑️ trailing_stop.py              # ❌ 已废弃（功能已集成到主程序）
-├── 🗑️ binance_auto_trader.py.bak    # 📦 旧版备份
-└── 🧪 tests/                        # 测试目录
-```
-
-> ⚠️ **重要**：本系统**仅使用 `crypto_sword.py` 作为主程序**。其他模块均为工具库或已废弃脚本，请勿独立运行（除 `accumulation_radar.py` 和 `speed_executor.py` 外，但也请勿与主程序同时运行）。
-
-## 配置
-
-### Binance API
+可关闭 OI/Funding 增强：
 
 ```bash
-# 使用 binance-cli 配置实盘 profile
-binance-cli profile create --name main --env mainnet --api-key "YOUR_KEY" --api-secret "YOUR_SECRET" -f
-binance-cli profile select --name main
+python run_live.py --mode live --disable-oi-funding
 ```
 
-### Telegram 通知
+## 当前架构
 
-编辑 `config/telegram.json`:
-```json
-{
-  "bot_token": "YOUR_BOT_TOKEN",
-  "chat_id": "YOUR_CHAT_ID"
-}
+```text
+run_live.py                    # 正式启动入口
+crypto_sword.py                # 运行时编排器（CryptoSword）
+core/
+  bootstrap_service.py
+  cycle_mixin.py
+  scanner_mixin.py
+  execution_mixin.py
+  sync_mixin.py
+  market_mixin.py
+  confirmation_mixin.py
+  models.py
+  monitoring.py                # 监控/结构化输出工具
+feature_store/
+  store.py                     # 事件与复盘 JSONL 持久化
+  reviewer.py                  # 每笔交易复盘摘要构建
+services/
+  signal_service.py
+  risk_service.py
+  execution_service.py
+  order_service.py
+  oi_funding_service.py
+adapters/
+  rest_gateway.py
+  ws_gateway.py
 ```
 
-## 通知功能
+## 结构化输出规范（已接线）
 
-`crypto_sword.py` 集成了完整的 Telegram 通知系统：
+统一通过 `core/monitoring.py` 构建：
 
-| 通知类型 | 触发条件 | 内容 |
-|---------|---------|------|
-| 🚀 启动通知 | 程序启动 | 杠杆、风险、止损、止盈、扫描参数 |
-| 🟢 开仓通知 | 成功开仓 | 币种、方向、入场价、仓位、止损、止盈、风险、雷达评分 |
-| 🔴 平仓通知 | 触发止损/止盈 | 币种、原因、入场/出场价、PnL |
-| ❌ 错误通知 | 开仓失败/API 错误 | 错误详情、当前状态 |
-| 📊 持仓汇总 | 每 6 小时 | 当前持仓、未实现 PnL、已平仓 PnL |
-| 🛑 停止通知 | 程序退出 | 总交易数、总盈亏、未实现 PnL |
-| 🎯 暗流信号 | OI异动但价不动 | 庄家收筹最佳埋伏时机 |
-| 🏦 收筹池报告 | 每日更新 | 横盘≥45天的低调收筹标的 |
+- `strategy_event`：扫描信号结果（分数、置信度、入场状态、OI/Funding bonus）
+- `execution_event`：开仓/平仓执行结果（价格、数量、PnL、原因）
+- `monitor_event`：周期监控快照（持仓数、未实现/已实现盈亏、已平仓数）
 
-> 💡 确保已配置 `config/telegram.json` 或环境变量 `TELEGRAM_BOT_TOKEN` 和 `TELEGRAM_CHAT_ID`。
+这些输出会进入运行日志，便于后续做统计聚合和回放。
 
-## 策略说明
+同时会落盘到特征仓：
 
-**突破交易策略**：
-- 扫描 24h 成交量和涨跌幅 Top 币种
-- 检测价格突破近期高低点
-- 结合资金费率、多空比、舆情评分
-- 🏦 新增：OI异动、横盘天数、市值三策略评分
-- 多维度信号评分后执行交易
-- 自动追踪止损止盈
+- `~/.hermes/logs/feature_store/<YYYY-MM-DD>/events.ndjson`
+- `~/.hermes/logs/feature_store/<YYYY-MM-DD>/reviews.ndjson`
 
-**庄家雷达核心理论**：
-> 庄家拉盘前必须先收筹 → 长期横盘+低量 = 收筹中 → OI暴涨 = 大资金进场 = 即将拉盘
+其中 `reviews.ndjson` 为每笔平仓复盘记录，包含：
 
-## 日志
+- 入场原因（阶段、策略线、评分、OI/Funding加分）
+- 出场原因（止盈/止损/手动、持仓时长、PnL）
+- 训练标签（profit/loss、stop_loss_exit/take_profit_exit、oi_funding_enhanced）
 
-```
-logs/
-├── crypto_sword.log     # 主程序日志
-└── trade_log.db         # SQLite 交易日志
-```
+## 已清理的冗余
 
-## 风险警告
+- 删除：`data_fetcher.py`
+- 停用：`jobs/radar_jobs.py`（对应 `accumulation_radar` 入口）
+- `signal_service` 已改为纯主评分链路，不再叠加外部雷达增强
 
-⚠️ **实盘交易涉及真实资金，请谨慎使用！**
-- 设置合理的风控参数（建议低杠杆 3-5x 起步）
-- 严格控制仓位和风险（每笔风险 0.5-1%）
-- 监控 Telegram 通知，实时掌握交易动态
-- 定期查看交易日志和回测报告优化策略
+## 配置说明
 
-## 致谢
+路径由 `hermes_paths.py` 管理：
 
-- [accumulation-radar](https://github.com/connectfarm1/accumulation-radar) - 庄家收筹雷达核心逻辑
+- `HERMES_HOME`（默认 `~/.hermes`）
+- `~/.hermes/config`
+- `~/.hermes/logs`
 
-## License
+Telegram 配置优先级：
 
-MIT
+1. 环境变量 `TELEGRAM_BOT_TOKEN` / `TELEGRAM_CHAT_ID`
+2. `config/telegram.json`
+3. `~/.hermes/config/telegram.json`
+
+## 日志与数据
+
+- 运行日志：`~/.hermes/logs/crypto_sword.log`
+- 交易日志库：`~/.hermes/logs/trade_log.db`
+- 日报统计：`trade_logger.py::get_daily_report`
+
+## 后续路线图
+
+### 短期（已完成）
+
+- 下线 `data_fetcher.py`，清除重复抓取逻辑。
+- 明确 `accumulation_radar` 策略为“移除系统入口”。
+
+### 中期（进行中）
+
+- 新增正式启动入口（已完成 `run_live.py`）。
+- 持续扩展“策略评分 / 执行统计 / 监控通知”的统一 schema。
+
+### 长期（规划）
+
+- 建立统一特征仓（feature store）与回放框架，实现实盘-回测同源数据闭环。
+
+## 风险提示
+
+实盘交易存在亏损风险，请严格控制杠杆、单笔风险和最大回撤阈值。

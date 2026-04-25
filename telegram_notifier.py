@@ -224,6 +224,33 @@ def _format_take_profit_targets(targets: list[dict[str, Any]] | None) -> str:
     return "\n".join(lines)
 
 
+def _format_oi_funding_brief(oi_funding: dict[str, Any] | None) -> str:
+    """Format compact OI/Funding enhancement details for notifications."""
+    if not oi_funding:
+        return ""
+    bonus = float(oi_funding.get("score_bonus", 0) or 0)
+    oi_change = float(oi_funding.get("oi_change_pct", 0) or 0)
+    funding_current = float(oi_funding.get("funding_current", 0) or 0)
+    turned_negative = bool(oi_funding.get("turned_negative", False))
+    oi_signal = bool(oi_funding.get("oi_signal", False))
+
+    tags: list[str] = []
+    if turned_negative:
+        tags.append("funding_turn")
+    if oi_signal:
+        tags.append("oi_expand")
+    if not tags and bonus > 0:
+        tags.append("score_boost")
+    tag_text = " / ".join(tags) if tags else "none"
+
+    return (
+        f"<b>OI/Funding</b>  <code>{_escape(tag_text)}</code> | "
+        f"Bonus <code>+{bonus:.1f}</code> | "
+        f"OI <code>{oi_change:+.1f}%</code> | "
+        f"Funding <code>{funding_current:+.4%}</code>"
+    )
+
+
 def format_open_position_msg(
     symbol: str,
     direction: str,
@@ -238,6 +265,7 @@ def format_open_position_msg(
     risk_level: str = "",
     session_id: str = "",
     strategy_line: str = "",
+    oi_funding: dict[str, Any] | None = None,
     target_roi_pct: float = 0,
     price_move_pct: float = 0,
     take_profit_targets: list[dict[str, Any]] | None = None,
@@ -263,6 +291,9 @@ def format_open_position_msg(
 
     if strategy_line:
         msg += f"\n<b>策略</b>  <code>{_escape(strategy_line)}</code>"
+    oi_funding_line = _format_oi_funding_brief(oi_funding)
+    if oi_funding_line:
+        msg += f"\n{oi_funding_line}"
     if target_roi_pct > 0:
         msg += f"\n<b>目标收益率</b>  <code>{target_roi_pct:.2f}% ROI</code>"
     if price_move_pct > 0:
@@ -304,6 +335,7 @@ def format_close_position_msg(
     duration_hours: float = 0,
     session_id: str = "",
     strategy_line: str = "",
+    oi_funding: dict[str, Any] | None = None,
     roi_pct: float = 0.0,
     price_move_pct: float = 0.0,
 ) -> str:
@@ -325,6 +357,9 @@ def format_close_position_msg(
 
     if strategy_line:
         msg += f"\n<b>策略</b>  <code>{_escape(strategy_line)}</code>"
+    oi_funding_line = _format_oi_funding_brief(oi_funding)
+    if oi_funding_line:
+        msg += f"\n{oi_funding_line}"
     if price_move_pct:
         msg += f"\n<b>价格涨幅</b>  <code>{price_move_pct:+.2f}%</code>"
     if roi_pct:
@@ -705,6 +740,20 @@ def format_daily_report_msg(report: dict[str, Any]) -> str:
         msg += "\n\n<b>平仓原因</b>"
         for reason, count in sorted(reason_counts.items(), key=lambda item: (-int(item[1] or 0), str(item[0]))):
             msg += f"\n•{_escape(str(reason))}  <code>{int(count or 0)}</code>"
+
+    oi_stats = report.get("oi_funding_stats") or {}
+    enhanced_trades = int(oi_stats.get("enhanced_trades", 0) or 0)
+    if enhanced_trades > 0:
+        enhanced_win_rate = float(oi_stats.get("enhanced_win_rate", 0) or 0)
+        enhanced_avg_pnl = float(oi_stats.get("enhanced_avg_pnl", 0) or 0)
+        enhanced_avg_bonus = float(oi_stats.get("enhanced_avg_bonus", 0) or 0)
+        msg += (
+            "\n\n<b>OI/Funding增强</b>"
+            f"\nTrades  <code>{enhanced_trades}</code>"
+            f"\nWinRate  <code>{enhanced_win_rate:.2f}%</code>"
+            f"\nAvgPnL  <code>{enhanced_avg_pnl:+,.2f} USDT</code>"
+            f"\nAvgBonus  <code>+{enhanced_avg_bonus:.2f}</code>"
+        )
 
     return msg
 

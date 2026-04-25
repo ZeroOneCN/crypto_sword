@@ -246,6 +246,23 @@ def _get_lot_step_size(symbol: str) -> float:
     return 0.001
 
 
+def _get_price_tick_size(symbol: str) -> float:
+    try:
+        sym_info = get_symbol_info(symbol)
+        if sym_info:
+            for f in sym_info.get("filters", []):
+                if f.get("filterType") == "PRICE_FILTER":
+                    return float(f.get("tickSize", "0.00001"))
+    except Exception:
+        pass
+    return 0.00001
+
+
+def _is_precision_error(exc: Exception) -> bool:
+    text = str(exc)
+    return "Precision is over the maximum defined for this asset" in text or '"code":-1111' in text
+
+
 def get_symbol_min_notional(symbol: str, default: float = 5.0) -> float:
     """Return the exchange minimum notional for a symbol."""
     try:
@@ -668,22 +685,12 @@ def place_stop_loss_order(
     reduce_only: bool = True,
     trigger_buffer_pct: float = 0.0,
 ) -> OrderResult:
-    """Place a stop-loss order.
-
-    Args:
-        symbol: Trading symbol
-        side: 'BUY' or 'SELL' (opposite of entry side)
-        quantity: Quantity to close
-        stop_price: Trigger price for stop loss
-
-    Returns:
-        OrderResult with execution details
-    """
+    """Place a stop-loss order."""
+    resolved_position_side = position_side or ("LONG" if side == "SELL" else "SHORT")
     try:
         if not is_native_binance_configured() or not get_native_binance_client:
-            raise RuntimeError("原生 Binance API 未配置，无法挂止损")
+            raise RuntimeError("Native Binance API is not configured; cannot place stop loss")
 
-        # 调整 quantity 和 price 精度
         quantity = adjust_quantity_precision(symbol, quantity)
         stop_price = adjust_price_precision(symbol, stop_price)
         trigger_price = stop_price
@@ -693,7 +700,6 @@ def place_stop_loss_order(
             else:
                 trigger_price = stop_price * (1 + trigger_buffer_pct / 100.0)
             trigger_price = adjust_price_precision(symbol, trigger_price)
-        resolved_position_side = position_side or ("LONG" if side == "SELL" else "SHORT")
 
         result = get_native_binance_client().new_algo_order(  # type: ignore
             symbol=symbol,
@@ -706,7 +712,7 @@ def place_stop_loss_order(
             working_type="MARK_PRICE",
             new_order_resp_type="RESULT",
         )
-        
+
         executed_qty = float(result.get("executedQty", 0))
         order_id = int(result.get("algoId", result.get("orderId", result.get("orderID", 0))))
         status = result.get("status", result.get("algoStatus", "ALGO_ORDER_PLACED"))
@@ -721,6 +727,41 @@ def place_stop_loss_order(
             message=f"Stop loss order placed | logical={stop_price:.8f} trigger={trigger_price:.8f}",
         )
     except Exception as e:
+        if _is_precision_error(e):
+            try:
+                step = _get_lot_step_size(symbol)
+                tick = _get_price_tick_size(symbol)
+                quantity_retry = _truncate_to_step(max(quantity - step, step), step)
+                trigger_retry = _truncate_to_step(trigger_price, tick)
+                result = get_native_binance_client().new_algo_order(  # type: ignore
+                    symbol=symbol,
+                    side=side,
+                    order_type="STOP_MARKET",
+                    quantity=quantity_retry,
+                    position_side=resolved_position_side,
+                    reduce_only=reduce_only,
+                    trigger_price=trigger_retry,
+                    working_type="MARK_PRICE",
+                    new_order_resp_type="RESULT",
+                )
+                executed_qty = float(result.get("executedQty", 0))
+                order_id = int(result.get("algoId", result.get("orderId", result.get("orderID", 0))))
+                status = result.get("status", result.get("algoStatus", "ALGO_ORDER_PLACED"))
+                logger.warning(
+                    f"?? {symbol} stop-loss precision retry success: qty {quantity} -> {quantity_retry}, "
+                    f"trigger {trigger_price} -> {trigger_retry}"
+                )
+                return OrderResult(
+                    symbol=symbol,
+                    side=side,
+                    quantity=executed_qty or quantity_retry,
+                    executed_price=trigger_retry,
+                    order_id=order_id,
+                    status=status,
+                    message=f"Stop loss order placed after precision retry | logical={stop_price:.8f} trigger={trigger_retry:.8f}",
+                )
+            except Exception as retry_error:
+                e = retry_error
         return OrderResult(
             symbol=symbol,
             side=side,
@@ -741,13 +782,13 @@ def place_take_profit_order(
     reduce_only: bool = True,
 ) -> OrderResult:
     """Place a TAKE_PROFIT_MARKET order."""
+    resolved_position_side = position_side or ("LONG" if side == "SELL" else "SHORT")
     try:
         if not is_native_binance_configured() or not get_native_binance_client:
-            raise RuntimeError("原生 Binance API 未配置，无法挂止盈")
+            raise RuntimeError("Native Binance API is not configured; cannot place take profit")
 
         quantity = adjust_quantity_precision(symbol, quantity)
         trigger_price = adjust_price_precision(symbol, trigger_price)
-        resolved_position_side = position_side or ("LONG" if side == "SELL" else "SHORT")
 
         result = get_native_binance_client().new_algo_order(  # type: ignore
             symbol=symbol,
@@ -775,6 +816,41 @@ def place_take_profit_order(
             message="Take profit order placed",
         )
     except Exception as e:
+        if _is_precision_error(e):
+            try:
+                step = _get_lot_step_size(symbol)
+                tick = _get_price_tick_size(symbol)
+                quantity_retry = _truncate_to_step(max(quantity - step, step), step)
+                trigger_retry = _truncate_to_step(trigger_price, tick)
+                result = get_native_binance_client().new_algo_order(  # type: ignore
+                    symbol=symbol,
+                    side=side,
+                    order_type="TAKE_PROFIT_MARKET",
+                    quantity=quantity_retry,
+                    position_side=resolved_position_side,
+                    reduce_only=reduce_only,
+                    trigger_price=trigger_retry,
+                    working_type="MARK_PRICE",
+                    new_order_resp_type="RESULT",
+                )
+                executed_qty = float(result.get("executedQty", 0))
+                order_id = int(result.get("algoId", result.get("orderId", result.get("orderID", 0))))
+                status = result.get("status", result.get("algoStatus", "ALGO_ORDER_PLACED"))
+                logger.warning(
+                    f"?? {symbol} take-profit precision retry success: qty {quantity} -> {quantity_retry}, "
+                    f"trigger {trigger_price} -> {trigger_retry}"
+                )
+                return OrderResult(
+                    symbol=symbol,
+                    side=side,
+                    quantity=executed_qty or quantity_retry,
+                    executed_price=trigger_retry,
+                    order_id=order_id,
+                    status=status,
+                    message="Take profit order placed after precision retry",
+                )
+            except Exception as retry_error:
+                e = retry_error
         return OrderResult(
             symbol=symbol,
             side=side,

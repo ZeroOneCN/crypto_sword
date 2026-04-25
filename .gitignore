@@ -36,3 +36,4 @@ Thumbs.db
 *.db
 *.sqlite
 trading.db
+oi_funding_scanner.py

@@ -44,6 +44,12 @@ class TradingConfig:
         alt_min_quote_volume_usdt: float = 1000000.0,
         max_position_to_volume_ratio: float = 0.002,
         alt_max_position_to_volume_ratio: float = 0.0012,
+        oi_funding_enabled: bool = True,
+        oi_funding_min_oi_change_pct: float = 8.0,
+        oi_funding_turn_bonus: float = 4.0,
+        oi_funding_rising_bonus: float = 8.0,
+        oi_funding_bonus_cap: float = 12.0,
+        oi_funding_cache_sec: int = 120,
         symbol_cooldown_sec: int = 24 * 3600,
         max_consecutive_losses: int = 3,
         loss_pause_sec: int = 30 * 60,
@@ -107,6 +113,12 @@ class TradingConfig:
         self.alt_min_quote_volume_usdt = alt_min_quote_volume_usdt
         self.max_position_to_volume_ratio = max_position_to_volume_ratio
         self.alt_max_position_to_volume_ratio = alt_max_position_to_volume_ratio
+        self.oi_funding_enabled = oi_funding_enabled
+        self.oi_funding_min_oi_change_pct = oi_funding_min_oi_change_pct
+        self.oi_funding_turn_bonus = oi_funding_turn_bonus
+        self.oi_funding_rising_bonus = oi_funding_rising_bonus
+        self.oi_funding_bonus_cap = oi_funding_bonus_cap
+        self.oi_funding_cache_sec = max(30, int(oi_funding_cache_sec))
         self.symbol_cooldown_sec = symbol_cooldown_sec
         self.max_consecutive_losses = max_consecutive_losses
         self.loss_pause_sec = loss_pause_sec
@@ -166,6 +178,9 @@ class Position:
         strategy_line: str = "",
         stop_loss_order_id: int = 0,
         session_id: str = "",
+        oi_funding: Optional[Dict[str, Any]] = None,
+        entry_score: Optional[Dict[str, Any]] = None,
+        entry_metrics: Optional[Dict[str, Any]] = None,
         target_roi_pct: float = 0.0,
         take_profit_targets: Optional[List[dict[str, Any]]] = None,
         take_profit_order_ids: Optional[List[int]] = None,
@@ -182,6 +197,9 @@ class Position:
         self.strategy_line = strategy_line
         self.stop_loss_order_id = stop_loss_order_id
         self.session_id = session_id
+        self.oi_funding = dict(oi_funding or {})
+        self.entry_score = dict(entry_score or {})
+        self.entry_metrics = dict(entry_metrics or {})
         self.target_roi_pct = target_roi_pct
         self.take_profit_targets = take_profit_targets or []
         self.take_profit_order_ids = take_profit_order_ids or []
@@ -268,6 +286,9 @@ class Position:
             "unrealized_pnl_pct": round(self.pnl_pct, 2),
             "session_id": self.session_id,
             "strategy_line": self.strategy_line,
+            "oi_funding": self.oi_funding,
+            "entry_score": self.entry_score,
+            "entry_metrics": self.entry_metrics,
         }
 
 

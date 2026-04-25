@@ -358,6 +358,15 @@ class TradeDatabase:
         }
         stage_stats: Dict[str, Dict[str, Any]] = {}
         loss_patterns: Dict[str, Dict[str, Any]] = {}
+        oi_funding_stats: Dict[str, Any] = {
+            "enhanced_trades": 0,
+            "enhanced_wins": 0,
+            "enhanced_total_pnl": 0.0,
+            "enhanced_avg_pnl": 0.0,
+            "enhanced_win_rate": 0.0,
+            "enhanced_avg_bonus": 0.0,
+        }
+        enhanced_bonus_values: list[float] = []
         for trade in trades:
             reason = (trade.exit_reason or "UNKNOWN").upper()
             if "TAKE_PROFIT" in reason:
@@ -386,6 +395,20 @@ class TradeDatabase:
             funding_rate = 0.0
             oi_24h = 0.0
             snapshot = trade.market_snapshot or {}
+            oi_funding = snapshot.get("_oi_funding") if isinstance(snapshot, dict) else {}
+            if not isinstance(oi_funding, dict):
+                oi_funding = {}
+            oi_bonus = float(oi_funding.get("score_bonus", 0) or 0)
+            if oi_bonus > 0:
+                oi_funding_stats["enhanced_trades"] += 1
+                if float(trade.pnl or 0) > 0:
+                    oi_funding_stats["enhanced_wins"] += 1
+                oi_funding_stats["enhanced_total_pnl"] = round(
+                    float(oi_funding_stats["enhanced_total_pnl"]) + float(trade.pnl or 0),
+                    2,
+                )
+                enhanced_bonus_values.append(oi_bonus)
+
             try:
                 funding_rate = float(snapshot.get("funding_rate", 0) or 0)
             except Exception:
@@ -428,6 +451,20 @@ class TradeDatabase:
                 "exit_reason": trade.exit_reason or "",
             }
 
+        if oi_funding_stats["enhanced_trades"] > 0:
+            oi_funding_stats["enhanced_avg_pnl"] = round(
+                float(oi_funding_stats["enhanced_total_pnl"]) / int(oi_funding_stats["enhanced_trades"]),
+                2,
+            )
+            oi_funding_stats["enhanced_win_rate"] = round(
+                float(oi_funding_stats["enhanced_wins"]) / int(oi_funding_stats["enhanced_trades"]) * 100.0,
+                2,
+            )
+            oi_funding_stats["enhanced_avg_bonus"] = round(
+                sum(enhanced_bonus_values) / max(1, len(enhanced_bonus_values)),
+                2,
+            )
+
         return {
             "date": report_date,
             "mode": mode or "all",
@@ -457,6 +494,7 @@ class TradeDatabase:
                 round(min(loss_patterns.items(), key=lambda item: item[1]["pnl"])[1]["pnl"], 2)
                 if loss_patterns else 0.0
             ),
+            "oi_funding_stats": oi_funding_stats,
         }
 
     def export_to_csv(self, output_path: Path, days: int = 30):

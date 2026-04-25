@@ -11,6 +11,7 @@ from typing import Any, Optional
 from binance_trading_executor import (
     OrderResult,
 )
+from feature_store import build_trade_review, feature_store
 from speed_executor import quick_close_position
 from telegram_notifier import (
     format_close_position_msg,
@@ -24,6 +25,7 @@ from services.execution_service import execution_service
 from services.order_service import order_service
 from services.risk_service import risk_service
 
+from .monitoring import build_execution_event, message_signature
 from .models import Position
 
 logger = logging.getLogger(__name__)
@@ -744,6 +746,7 @@ class ExecutionMixin:
                 side = "SELL"
 
             stop_loss_order = result.get("stop_loss_order", {})
+            oi_funding = signal.get("oi_funding") or {}
             position = Position(
                 symbol=symbol,
                 side=side,
@@ -757,6 +760,9 @@ class ExecutionMixin:
                 strategy_line=strategy_line,
                 stop_loss_order_id=stop_loss_order.get("order_id", 0),
                 session_id=session_id,
+                oi_funding=oi_funding,
+                entry_score=dict(signal.get("score") or {}),
+                entry_metrics=dict(signal.get("metrics") or {}),
                 target_roi_pct=primary_target_roi_pct,
                 take_profit_targets=take_profit_targets,
                 take_profit_order_ids=[
@@ -785,6 +791,7 @@ class ExecutionMixin:
                 risk_level=risk_level,
                 session_id=session_id,
                 strategy_line=strategy_line,
+                oi_funding=oi_funding,
                 target_roi_pct=primary_target_roi_pct,
                 price_move_pct=primary_price_move_pct,
                 take_profit_targets=take_profit_targets,
@@ -802,6 +809,7 @@ class ExecutionMixin:
                 f"strategy_tp_multiplier={strategy_profile['tp_multiplier']}",
                 f"strategy_stop_pct={stop_loss_pct}",
                 f"stop_trigger_buffer_pct={stop_trigger_buffer_pct}",
+                f"oi_funding_bonus={float(oi_funding.get('score_bonus', 0) or 0):.2f}",
                 f"tp_plan={json.dumps(take_profit_targets, separators=(',', ':'))}",
                 f"tp_order_ids={','.join(str(int(item.get('order_id', 0))) for item in take_profit_targets if item.get('order_id'))}",
             ]
@@ -818,12 +826,30 @@ class ExecutionMixin:
                 take_profit=tp_price,
                 entry_time=position.entry_time.isoformat(),
                 mode=self.config.mode,
-                market_snapshot=signal.get("metrics", {}),
+                market_snapshot={
+                    **(signal.get("metrics", {}) or {}),
+                    "_oi_funding": oi_funding,
+                },
                 notes=";".join(notes_parts),
             )
             step_started = time.perf_counter()
             trade_id = self.db.add_trade(trade)
-            logger.info(f"📜 交易已记录 (ID: {trade_id})")
+            logger.info(f"交易已记录 (ID: {trade_id})")
+            entry_event = build_execution_event(
+                event="entry_opened",
+                symbol=symbol,
+                direction=direction,
+                session_id=session_id,
+                metrics={
+                    "trade_id": trade_id,
+                    "entry_price": executed_entry_price,
+                    "quantity": position.quantity,
+                    "stop_loss": position.stop_loss_price,
+                    "take_profit": tp_price,
+                },
+            )
+            logger.info(f"execution_event {message_signature(entry_event)}")
+            feature_store.append_event(entry_event)
             self._record_latency_step(latency_steps, "db_write", step_started)
             self._emit_latency_trace("execute_entry", trace_started, latency_steps, symbol=symbol)
             return position
@@ -924,6 +950,7 @@ class ExecutionMixin:
                         duration_hours=duration_hours,
                         session_id=position.session_id,
                         strategy_line=position.strategy_line,
+                        oi_funding=getattr(position, "oi_funding", None),
                         roi_pct=pnl_pct * self.config.leverage,
                         price_move_pct=pnl_pct,
                     )
@@ -945,6 +972,39 @@ class ExecutionMixin:
                         logger.info(f"📜 交易已更新 (ID: {t.id})")
                         break
                 self._record_latency_step(latency_steps, "db_update", step_started)
+                close_direction = "LONG" if position.side == "BUY" else "SHORT"
+                close_event = build_execution_event(
+                    event="position_closed",
+                    symbol=symbol,
+                    direction=close_direction,
+                    session_id=position.session_id,
+                    metrics={
+                        "exit_reason": reason,
+                        "exit_price": exit_price,
+                        "pnl": pnl,
+                        "pnl_pct": pnl_pct,
+                    },
+                )
+                logger.info(f"execution_event {message_signature(close_event)}")
+                feature_store.append_event(close_event)
+                review = build_trade_review(
+                    symbol=symbol,
+                    session_id=position.session_id,
+                    direction=close_direction,
+                    stage=position.stage_at_entry,
+                    strategy_line=position.strategy_line,
+                    entry_price=position.entry_price,
+                    exit_price=exit_price,
+                    pnl=pnl,
+                    pnl_pct=pnl_pct,
+                    exit_reason=reason,
+                    hold_hours=duration_hours,
+                    score=getattr(position, "entry_score", {}) or {},
+                    metrics=getattr(position, "entry_metrics", {}) or {},
+                    oi_funding=getattr(position, "oi_funding", {}) or {},
+                )
+                feature_store.append_review(review)
+                logger.info(f"trade_review {message_signature(review)}")
                 self._emit_latency_trace("execute_exit", trace_started, latency_steps, symbol=symbol)
                 return True
 

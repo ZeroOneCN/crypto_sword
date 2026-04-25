@@ -1,4 +1,4 @@
-"""Market profile, radar jobs and all-market websocket mixin."""
+﻿"""Market profile and all-market websocket mixin."""
 
 from __future__ import annotations
 
@@ -8,69 +8,21 @@ from typing import Any
 
 from adapters.rest_gateway import load_market_overview
 from adapters.ws_gateway import get_all_market_ticker_client_class
-from jobs.radar_jobs import scan_accumulation_pool_job, scan_oi_changes_job
-from telegram_notifier import (
-    format_accumulation_pool_report,
-    format_dark_flow_alert,
-    format_radar_summary,
-    send_telegram_message,
-)
 
 logger = logging.getLogger(__name__)
 
 
 class MarketMixin:
     def _run_radar_background_scan(self, now: float):
-        """Run periodic OI anomaly and accumulation pool background scans."""
-        try:
-            if now - self._last_radar_scan_time >= self._radar_scan_interval:
-                logger.info("🛰 开始 OI 异动扫描...")
-                oi_signals = scan_oi_changes_job()
-                self._last_radar_scan_time = now
-
-                dark_flows = [signal for signal in oi_signals if getattr(signal, "is_dark_flow", False)]
-                if dark_flows:
-                    for dark_flow in dark_flows[:3]:
-                        msg = format_dark_flow_alert(
-                            symbol=dark_flow.symbol,
-                            oi_change_pct=dark_flow.oi_change_pct,
-                            price_change_pct=dark_flow.price_change_pct,
-                            funding_rate=dark_flow.funding_rate,
-                            market_cap=0,
-                        )
-                        send_telegram_message(msg)
-                        logger.info(f"📣 暗流信号已推送：{dark_flow.symbol}")
-
-                if oi_signals:
-                    summary = format_radar_summary(
-                        pool_count=0,
-                        oi_signals=len(oi_signals),
-                        dark_flows=len(dark_flows),
-                        short_fuel=0,
-                        top_dark_flow=dark_flows[0].symbol if dark_flows else None,
-                    )
-                    send_telegram_message(summary)
-
-            if now - self._last_pool_scan_time >= self._pool_scan_interval:
-                logger.info("🛰 开始吸筹池扫描...")
-                pool = scan_accumulation_pool_job()
-                self._last_pool_scan_time = now
-
-                if pool:
-                    send_telegram_message(format_accumulation_pool_report(pool))
-                    logger.info(f"🛰 吸筹池已更新：{len(pool)} 个标的")
-
-        except ImportError:
-            logger.debug("accumulation_radar 模块不可用，跳过雷达扫描")
-        except Exception as e:
-            logger.warning(f"雷达后台扫描失败：{e}")
+        """Radar entry removed: keep hook for scheduler compatibility."""
+        _ = now
 
     def _refresh_market_profile(self):
         """Update market-aware scan interval and TP multiplier."""
         try:
             self._market_overview = load_market_overview()
         except Exception as e:
-            logger.warning(f"🌐 市场环境刷新失败：{e}")
+            logger.warning(f"🌪 市场环境刷新失败：{e}")
             return
 
         fear_greed = self._market_overview.get("fear_greed", {})
@@ -99,7 +51,7 @@ class MarketMixin:
         self.config.scan_interval_sec = int(interval)
         self._tp_multiplier = tp_multiplier
         logger.info(
-            f"🌐 动态参数：扫描间隔={self._current_scan_interval}s, TP倍率={self._tp_multiplier:.2f}, "
+            f"🌪 动态参数：扫描间隔={self._current_scan_interval}s, TP倍率={self._tp_multiplier:.2f}, "
             f"情绪={sentiment}, 恐贪={fear_greed_value}, 清算={liquidation_risk}"
         )
 
@@ -154,7 +106,7 @@ class MarketMixin:
             "alt_win": alt_win,
         }
         logger.info(
-            f"📱 市场风格切换：mode={style_mode} | "
+            f"📫 市场风格切换：mode={style_mode} | "
             f"major={len(major_trades)} avg={major_avg:+.2f}% | "
             f"alt={len(alt_trades)} avg={alt_avg:+.2f}%"
         )
@@ -187,7 +139,7 @@ class MarketMixin:
             )
             if symbols:
                 logger.info(
-                    f"📗 WS异动榜命中 {len(symbols)} 个币种"
+                    f"📋 WS异动榜命中 {len(symbols)} 个币种 "
                     f"(缓存新鲜币种 {self._market_ws_client.size()}): {symbols[:5]}..."
                 )
             return symbols

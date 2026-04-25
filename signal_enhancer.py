@@ -740,68 +740,8 @@ def score_signal(
 # ═══════════════════════════════════════════════════════════════
 
 def enhance_with_radar_score(score: SignalScore, metrics: Dict[str, Any]) -> SignalScore:
-    """用庄家雷达评分增强信号评分
-    
-    Args:
-        score: 原始信号评分
-        metrics: 包含OI、费率、市值等数据的指标
-        
-    Returns:
-        增强后的 SignalScore
-    """
-    try:
-        from accumulation_radar import (
-            calculate_strategy_scores,
-            detect_dark_flow,
-            get_market_caps,
-        )
-        
-        # 获取市值
-        market_caps = get_market_caps()
-        market_cap = market_caps.get(score.symbol, 0)
-        
-        # 从 metrics 提取数据
-        funding_rate = metrics.get("funding_rate", 0)
-        oi_change_pct = metrics.get("oi_change_pct", 0) or metrics.get("oi_24h_pct", 0)
-        price_change_pct = metrics.get("change_24h_pct", 0)
-        volume_usd = metrics.get("volume_24h_usd", 0)
-        sideways_days = metrics.get("sideways_days", 0)
-        
-        # 计算三策略评分
-        strategy_scores = calculate_strategy_scores(
-            symbol=score.symbol,
-            funding_rate=funding_rate,
-            market_cap=market_cap,
-            sideways_days=sideways_days,
-            oi_change_pct=oi_change_pct,
-            price_change_pct=price_change_pct,
-            volume_usd=volume_usd,
-            in_pool=sideways_days >= 45,
-        )
-        
-        # 应用到 SignalScore
-        score.chase_score = strategy_scores.chase_score
-        score.composite_score = strategy_scores.composite_score
-        score.ambush_score = strategy_scores.ambush_score
-        score.market_cap_usd = market_cap
-        score.sideways_days = sideways_days
-        
-        # 检测暗流信号
-        is_dark, dark_score = detect_dark_flow(oi_change_pct, price_change_pct)
-        if is_dark:
-            score.dark_flow_score = dark_score
-            logger.info(f"🏦 {score.symbol} 暗流信号：OI {oi_change_pct:+.1f}% 但价格 {price_change_pct:+.1f}%")
-        
-        # 重新计算总分
-        score._calculate_total()
-        
-        logger.info(f"🏦 {score.symbol} 雷达评分：追多={score.chase_score:.0f} 综合={score.composite_score:.0f} 埯伏={score.ambush_score:.0f}")
-        
-    except ImportError:
-        logger.debug("accumulation_radar 模块不可用，跳过雷达评分")
-    except Exception as e:
-        logger.warning(f"雷达评分计算失败：{e}")
-    
+    """Compatibility no-op: radar module entry has been removed."""
+    _ = metrics
     return score
 
 

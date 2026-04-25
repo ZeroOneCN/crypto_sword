@@ -8,6 +8,7 @@ from datetime import datetime, timedelta
 from typing import Any
 
 from adapters.rest_gateway import get_top_symbols_by_change_rest, get_top_symbols_by_volume_rest
+from feature_store import feature_store
 from telegram_notifier import (
     format_daily_report_msg,
     format_error_msg,
@@ -16,7 +17,7 @@ from telegram_notifier import (
     send_telegram_message,
 )
 
-from .monitoring import build_monitor_delta, message_signature, stable_monitor_sort
+from .monitoring import build_monitor_delta, build_monitor_event, message_signature, stable_monitor_sort
 
 logger = logging.getLogger(__name__)
 
@@ -361,6 +362,15 @@ class CycleMixin:
 
         step_started = time.perf_counter()
         summary = self._enrich_summary_with_db(self.tracker.get_summary())
+        monitor_event = build_monitor_event(
+            open_positions=summary["open_positions"],
+            max_positions=self.config.max_open_positions,
+            unrealized_pnl=summary["total_unrealized_pnl"],
+            realized_pnl=summary["realized_pnl"],
+            closed_today=summary["closed_today"],
+        )
+        logger.info(f"monitor_event {message_signature(monitor_event)}")
+        feature_store.append_event(monitor_event)
         logger.info(
             f"Position summary: {summary['open_positions']} open | "
             f"unrealized PnL=${summary['total_unrealized_pnl']:.2f} | "
