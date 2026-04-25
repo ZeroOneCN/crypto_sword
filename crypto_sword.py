@@ -144,39 +144,27 @@ class CryptoSword(ExecutionMixin, ScannerMixin, CycleMixin, SyncMixin, Confirmat
             logger.debug(f"summary db enrichment skipped: {e}")
         return enriched
 
-    def _get_daily_report_snapshot(self) -> dict[str, Any]:
-        report_date = datetime.now().date().isoformat()
-        try:
-            report = self.db.get_daily_report(report_date, mode=self.config.mode)
-        except Exception as e:
-            logger.debug(f"daily report snapshot skipped: {e}")
-            report = {
-                "closed_trades": 0,
-                "winning_trades": 0,
-                "losing_trades": 0,
-                "win_rate": 0.0,
-                "total_pnl": 0.0,
-                "avg_pnl": 0.0,
-                "best_trade": None,
-                "worst_trade": None,
-            }
-
-        # 从 Binance API 获取当日真实交易数据，修正最佳/最差交易
+    def _enrich_daily_report_with_api(self, report: dict[str, Any], date_str: str) -> dict[str, Any]:
+        """从 Binance API 获取指定日期的真实交易数据，修正最佳/最差交易和统计。"""
         try:
             from binance_api_client import get_native_binance_client
-            from datetime import timezone
+            from collections import defaultdict
+            from datetime import timezone, timedelta
 
             client = get_native_binance_client()
-            now = datetime.now(timezone.utc)
-            # 当日 00:00 UTC+8 的时间戳
-            today_start = datetime(now.year, now.month, now.day, tzinfo=timezone.utc).timestamp() - 8 * 3600
-            start_ms = int(today_start * 1000)
-            end_ms = int(now.timestamp() * 1000)
+
+            # 解析日期字符串，计算该日 00:00-23:59 UTC+8 的时间戳
+            target_date = datetime.fromisoformat(date_str).replace(tzinfo=timezone.utc)
+            day_start_utc8 = target_date.replace(hour=0, minute=0, second=0, microsecond=0)
+            day_end_utc8 = day_start_utc8 + timedelta(days=1)
+
+            # 转换为 UTC 时间戳 (Binance API 使用 UTC 毫秒时间戳)
+            start_ms = int(day_start_utc8.timestamp() * 1000)
+            end_ms = int(day_end_utc8.timestamp() * 1000)
 
             trades = client.get_trade_history(start_time=start_ms, end_time=end_ms, limit=500)
 
             # 按交易对聚合已实现盈亏
-            from collections import defaultdict
             symbol_pnl: dict[str, float] = defaultdict(float)
             for trade in trades:
                 pnl = float(trade.get("realizedPnl", 0) or 0)
@@ -214,11 +202,30 @@ class CryptoSword(ExecutionMixin, ScannerMixin, CycleMixin, SyncMixin, Confirmat
                 report["win_rate"] = round(winning_count / closed_count * 100, 2) if closed_count else 0.0
                 report["avg_pnl"] = round(total_pnl_api / closed_count, 2) if closed_count else 0.0
 
-                logger.info(f"Daily report enriched from API: {closed_count} trades, PnL={total_pnl_api}, best={best_symbol}({best_pnl:+.2f}), worst={worst_symbol}({worst_pnl:+.2f})")
+                logger.info(f"Daily report enriched from API [{date_str}]: {closed_count} trades, PnL={total_pnl_api}, best={best_symbol}({best_pnl:+.2f}), worst={worst_symbol}({worst_pnl:+.2f})")
         except Exception as e:
-            logger.debug(f"API daily report enrichment skipped: {e}")
+            logger.debug(f"API daily report enrichment skipped [{date_str}]: {e}")
 
         return report
+
+    def _get_daily_report_snapshot(self) -> dict[str, Any]:
+        report_date = datetime.now().date().isoformat()
+        try:
+            report = self.db.get_daily_report(report_date, mode=self.config.mode)
+        except Exception as e:
+            logger.debug(f"daily report snapshot skipped: {e}")
+            report = {
+                "closed_trades": 0,
+                "winning_trades": 0,
+                "losing_trades": 0,
+                "win_rate": 0.0,
+                "total_pnl": 0.0,
+                "avg_pnl": 0.0,
+                "best_trade": None,
+                "worst_trade": None,
+            }
+
+        return self._enrich_daily_report_with_api(report, report_date)
 
     def _get_account_info_cached(self, ttl_sec: float = 3.0, force: bool = False) -> dict[str, Any]:
         now = time.time()
