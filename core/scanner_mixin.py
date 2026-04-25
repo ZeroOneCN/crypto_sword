@@ -11,7 +11,7 @@ from adapters.rest_gateway import (
     get_top_symbols_by_volume_rest,
     scan_symbols_rest,
 )
-from signal_enhancer import score_signal
+from services.signal_service import signal_service
 
 logger = logging.getLogger(__name__)
 
@@ -69,23 +69,12 @@ class ScannerMixin:
                 continue
 
             try:
-                signal_score = score_signal(
+                signal_score = signal_service.score(
                     symbol=r.symbol,
                     stage=r.stage,
                     direction=r.direction,
                     metrics=r.metrics,
-                    klines_1h=r.metrics.get("klines_1h"),
                 )
-
-                try:
-                    from signal_enhancer import enhance_with_radar_score
-
-                    signal_score = enhance_with_radar_score(signal_score, r.metrics)
-                except ImportError:
-                    pass
-                except Exception as e:
-                    logger.debug(f"雷达评分跳过 {r.symbol}: {e}")
-
                 if signal_score.confidence in {"低"}:
                     logger.info(f"🎯 {r.symbol} 信号质量过低 ({signal_score.total_score:.1f})，跳过")
                     continue

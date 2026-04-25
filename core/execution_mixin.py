@@ -10,18 +10,14 @@ from typing import Any, Optional
 
 from binance_trading_executor import (
     OrderResult,
-    TradingSignal,
     cancel_protective_order,
     cancel_stop_loss_order,
-    execute_trade,
     fetch_open_algo_orders,
     fetch_open_orders,
     place_market_order,
     place_stop_loss_order,
     place_take_profit_order,
-    should_trade,
 )
-from risk_manager import RiskConfig, assess_trade_risk
 from speed_executor import quick_close_position
 from telegram_notifier import (
     format_close_position_msg,
@@ -31,6 +27,8 @@ from telegram_notifier import (
     send_telegram_message,
 )
 from trade_logger import TradeRecord
+from services.execution_service import execution_service
+from services.risk_service import risk_service
 
 from .models import Position
 
@@ -586,7 +584,7 @@ class ExecutionMixin:
             return None
 
         try:
-            trading_signal = TradingSignal(
+            trading_signal = execution_service.build_trading_signal(
                 symbol=symbol,
                 stage=signal["stage"],
                 direction=direction,
@@ -600,7 +598,7 @@ class ExecutionMixin:
             stop_loss_pct = self._strategy_stop_loss_pct(strategy_line)
             stop_trigger_buffer_pct = self._strategy_stop_trigger_buffer_pct(strategy_line)
 
-            if not should_trade(trading_signal):
+            if not execution_service.should_trade(trading_signal):
                 return None
 
             step_started = time.perf_counter()
@@ -644,7 +642,7 @@ class ExecutionMixin:
                         }
                     )
 
-                risk_config = RiskConfig(
+                risk_config = risk_service.build_config(
                     risk_per_trade_pct=self.config.risk_per_trade_pct,
                     base_stop_loss_pct=stop_loss_pct,
                     base_take_profit_pct=self.config.take_profit_pct * strategy_profile["tp_multiplier"],
@@ -653,7 +651,7 @@ class ExecutionMixin:
                     max_correlated_positions=3,
                 )
 
-                risk_result = assess_trade_risk(
+                risk_result = risk_service.assess(
                     symbol=symbol,
                     side="LONG" if direction == "LONG" else "SHORT",
                     entry_price=price,
@@ -695,7 +693,7 @@ class ExecutionMixin:
 
             take_profit_target_pcts, take_profit_ratios = self._build_take_profit_plan(strategy_line)
             step_started = time.perf_counter()
-            result = execute_trade(
+            result = execution_service.execute_trade(
                 signal=trading_signal,
                 account_balance=balance,
                 risk_per_trade_pct=self.config.risk_per_trade_pct,
