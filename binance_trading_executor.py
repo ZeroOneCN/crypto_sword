@@ -110,7 +110,58 @@ def _record_latency(latency: float):
         _recent_latencies.pop(0)
 
 
-def _run_binance_root_cli(args: list[str], max_retries: int = 3) -> dict[str, Any] | list[Any]:
+# ═══════════════════════════════════════════════════════════════
+# P3 生产级稳定性功能
+# ═══════════════════════════════════════════════════════════════
+
+_exchange_health_cache = {"status": "OK", "last_check": 0.0}
+_EXCHANGE_HEALTH_CACHE_TTL = 60  # 60 秒缓存
+
+def check_exchange_health() -> bool:
+    """检查交易所系统状态 (P3-1)"""
+    global _exchange_health_cache
+    now = time.time()
+    
+    # 使用缓存避免频繁请求
+    if now - _exchange_health_cache["last_check"] < _EXCHANGE_HEALTH_CACHE_TTL:
+        return _exchange_health_cache["status"] == "OK"
+    
+    try:
+        # 获取系统状态
+        result = _run_binance_cli(["system-status"])
+        if isinstance(result, dict):
+            status = result.get("status", 0)
+            msg = result.get("msg", "Unknown")
+            is_normal = status == 0
+            
+            _exchange_health_cache = {
+                "status": "OK" if is_normal else f"MAINTENANCE ({msg})",
+                "last_check": now
+            }
+            
+            if not is_normal:
+                logger.warning(f"⚠️ 交易所状态异常：{msg} (Status: {status})")
+            return is_normal
+        return True  # 默认视为正常
+    except Exception as e:
+        logger.warning(f"检查交易所状态失败：{e}")
+        return True  # 失败时不阻塞交易
+
+
+def check_slippage(entry_price: float, executed_price: float, max_slippage_pct: float = 0.5) -> bool:
+    """检查滑点是否超过阈值 (P3-2)"""
+    if executed_price == 0 or entry_price == 0:
+        return True  # 无法计算时放行
+    
+    slippage = abs(executed_price - entry_price) / entry_price * 100
+    
+    if slippage > max_slippage_pct:
+        logger.warning(f"⚠️ 滑点过大：{slippage:.2f}% > {max_slippage_pct}% | 入场价：{entry_price:.4f} -> 成交价：{executed_price:.4f}")
+        return False
+    return True
+
+
+def ensure_profile_selected(profile: str = "main") -> None:
     """Deprecated compatibility shim; profile selection is no longer needed."""
     return {}
 
@@ -526,14 +577,25 @@ def place_market_order(
         OrderResult with execution details
     """
     try:
-        # 获取当前价格用于名义价值校验
+        # 获取当前价格用于名义价值校验和滑点保护
         current_price = 0.0
         try:
             ticker = get_ticker_24hr(symbol)
             if isinstance(ticker, dict):
                 current_price = float(ticker.get("lastPrice", 0))
         except Exception as e:
-            logger.debug(f"获取 {symbol} 价格失败，跳过名义价值校验: {e}")
+            logger.debug(f"获取 {symbol} 价格失败，跳过校验: {e}")
+        
+        # P3-1: 交易所健康检查
+        if not check_exchange_health():
+            return OrderResult(
+                symbol=symbol,
+                status="REJECTED",
+                reason="交易所维护中，暂停交易",
+                executed_qty=0,
+                executed_price=0,
+                order_id=0,
+            )
         
         # 调整 quantity 精度，防止 LOT_SIZE 过滤失败
         quantity = adjust_quantity_precision(symbol, quantity, current_price)
@@ -561,6 +623,13 @@ def place_market_order(
         executed_price = float(result.get("avgPrice", 0)) or float(result.get("price", 0))
         order_id = int(result.get("orderId", result.get("orderID", 0)))
         status = result.get("status", "UNKNOWN")
+
+        # P3-2: 滑点保护
+        if current_price > 0 and executed_price > 0:
+            if not check_slippage(current_price, executed_price):
+                logger.warning(f"⚠️ {symbol} 滑点过大，已成交但需关注")
+                # 标记为高滑点成交，但不取消订单（已成交）
+                status = "HIGH_SLIPPAGE"
 
         return OrderResult(
             symbol=symbol,

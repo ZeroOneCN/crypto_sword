@@ -2740,6 +2740,19 @@ class CryptoSword:
 
             entry_order = result.get("entry_order", {})
             executed_entry_price = float(entry_order.get("executed_price", price) or price)
+            
+            # P3-3: 部分成交处理
+            order_status = entry_order.get("status", "UNKNOWN")
+            actual_quantity = float(entry_order.get("quantity", 0) or result.get("quantity", 0))
+            
+            if order_status == "PARTIALLY_FILLED":
+                logger.warning(f"⚠️ {symbol} 部分成交！请求数量：{quantity}，实际成交：{actual_quantity}")
+                # 如果实际成交数量远小于请求数量（<50%），则视为失败
+                if actual_quantity < quantity * 0.5:
+                    logger.error(f"❌ {symbol} 部分成交比例过低，放弃持仓")
+                    self._emit_latency_trace("execute_entry_failed", trace_started, latency_steps, symbol=symbol)
+                    return None
+            
             take_profit_targets = result.get("take_profit_orders", [])
             take_profit_prices = result.get("take_profit_prices", [])
             target_roi_pcts = result.get("take_profit_roi_pcts", [])
@@ -2757,7 +2770,7 @@ class CryptoSword:
                 symbol=symbol,
                 side=side,
                 entry_price=executed_entry_price,
-                quantity=result.get("quantity", 0),
+                quantity=actual_quantity,  # 使用实际成交数量
                 order_id=result.get("order_id", 0),
                 stop_loss_price=result.get("stop_loss_price", 0),
                 take_profit_price=tp_price,

@@ -739,5 +739,61 @@ def main():
     print("\n" + "═" * 70 + "\n")
 
 
+# ═══════════════════════════════════════════════════════════════
+# P3-4: 最大回撤保护 (Drawdown Guard)
+# ═══════════════════════════════════════════════════════════════
+
+class DrawdownGuard:
+    """最大回撤熔断器
+    
+    监控账户余额相对于历史最高点的回撤幅度，
+    超过阈值时触发熔断，暂停新开仓。
+    """
+    def __init__(self, max_drawdown_pct: float = 10.0):
+        self.peak_balance: float = 0.0
+        self.max_drawdown_pct: float = max_drawdown_pct
+        self.is_fired: bool = False
+        self.last_drawdown: float = 0.0
+    
+    def check(self, current_balance: float) -> bool:
+        """检查是否触发回撤熔断
+        
+        Args:
+            current_balance: 当前账户余额
+            
+        Returns:
+            True: 正常，False: 触发熔断
+        """
+        if current_balance <= 0:
+            return False
+        
+        # 更新历史最高点
+        if current_balance > self.peak_balance:
+            self.peak_balance = current_balance
+            self.is_fired = False  # 创新高，重置熔断状态
+        
+        # 计算回撤
+        if self.peak_balance > 0:
+            drawdown = (self.peak_balance - current_balance) / self.peak_balance * 100
+            self.last_drawdown = drawdown
+            
+            if drawdown >= self.max_drawdown_pct:
+                if not self.is_fired:
+                    logger.error(f"🛑 触发最大回撤熔断！回撤 {drawdown:.2f}% >= 阈值 {self.max_drawdown_pct}%")
+                    self.is_fired = True
+                return False
+        
+        return True
+    
+    def get_status(self) -> Dict[str, Any]:
+        """获取回撤状态"""
+        return {
+            "peak_balance": self.peak_balance,
+            "max_drawdown_pct": self.max_drawdown_pct,
+            "current_drawdown_pct": self.last_drawdown,
+            "is_fired": self.is_fired,
+        }
+
+
 if __name__ == "__main__":
     main()
