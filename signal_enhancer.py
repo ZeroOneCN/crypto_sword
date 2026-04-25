@@ -51,44 +51,65 @@ class SignalScore:
     symbol: str
     stage: str
     direction: str
-    
+
     # 各项评分 (0-100)
     trend_score: float = 0.0      # 趋势强度
     volume_score: float = 0.0     # 成交量确认
     momentum_score: float = 0.0   # 动量强度
     breakout_score: float = 0.0   # 突破质量
     market_score: float = 0.0     # 市场环境
-    
+
+    # 🏦 庄家雷达评分（新增）
+    chase_score: float = 0.0      # 🔥 追多策略评分
+    composite_score: float = 0.0  # 📊 综合策略评分
+    ambush_score: float = 0.0     # 🎯 埯伏策略评分
+    dark_flow_score: float = 0.0  # 暗流信号评分
+    sideways_days: int = 0        # 横盘天数
+    market_cap_usd: float = 0.0   # 流通市值
+
     # 综合评分
     total_score: float = 0.0
     confidence: str = "中"  # 低 / 中 / 高 / 极高
-    
+
     # 否决项
     veto_signals: List[str] = None
-    
+
     def __post_init__(self):
         if self.veto_signals is None:
             self.veto_signals = []
         self._calculate_total()
-    
+
     def _calculate_total(self):
         """计算综合评分"""
         weights = {
-            'trend': 0.25,
-            'volume': 0.25,
-            'momentum': 0.20,
-            'breakout': 0.20,
+            'trend': 0.20,
+            'volume': 0.20,
+            'momentum': 0.15,
+            'breakout': 0.15,
             'market': 0.10,
+            'composite': 0.20,  # 🏦 新增庄家雷达权重
         }
-        
-        self.total_score = (
+
+        # 基础评分
+        base_score = (
             self.trend_score * weights['trend'] +
             self.volume_score * weights['volume'] +
             self.momentum_score * weights['momentum'] +
             self.breakout_score * weights['breakout'] +
             self.market_score * weights['market']
         )
+
+        # 🏦 庄家雷达评分加成（如果可用）
+        radar_bonus = 0
+        if self.composite_score > 0:
+            radar_bonus = self.composite_score * weights['composite']
         
+        # 暗流信号额外加分（最高+15分）
+        if self.dark_flow_score > 0:
+            radar_bonus += min(self.dark_flow_score / 100 * 15, 15)
+
+        self.total_score = base_score + radar_bonus
+
         # 确定置信度（降低阈值，更容易交易）
         if self.total_score >= 70:
             self.confidence = "极高"
@@ -98,10 +119,7 @@ class SignalScore:
             self.confidence = "中"
         else:
             self.confidence = "低"
-        
-        # 否决信号只警告，不再强制降级（数据不足时不惩罚）
-        # 只有真正的风险信号才降级
-    
+
     def to_dict(self) -> dict:
         return {
             "symbol": self.symbol,
@@ -113,10 +131,16 @@ class SignalScore:
                 "momentum": round(self.momentum_score, 2),
                 "breakout": round(self.breakout_score, 2),
                 "market": round(self.market_score, 2),
+                "chase": round(self.chase_score, 2),
+                "composite": round(self.composite_score, 2),
+                "ambush": round(self.ambush_score, 2),
+                "dark_flow": round(self.dark_flow_score, 2),
             },
             "total_score": round(self.total_score, 2),
             "confidence": self.confidence,
             "veto_signals": self.veto_signals,
+            "sideways_days": self.sideways_days,
+            "market_cap_usd": round(self.market_cap_usd, 2),
         }
 
 
@@ -657,6 +681,76 @@ def score_signal(
     
     # 重新计算总分（会自动调用 _calculate_total）
     score._calculate_total()
+    
+    return score
+
+
+# ═══════════════════════════════════════════════════════════════
+# 🏦 庄家雷达评分集成
+# ═══════════════════════════════════════════════════════════════
+
+def enhance_with_radar_score(score: SignalScore, metrics: Dict[str, Any]) -> SignalScore:
+    """用庄家雷达评分增强信号评分
+    
+    Args:
+        score: 原始信号评分
+        metrics: 包含OI、费率、市值等数据的指标
+        
+    Returns:
+        增强后的 SignalScore
+    """
+    try:
+        from accumulation_radar import (
+            calculate_strategy_scores,
+            detect_dark_flow,
+            get_market_caps,
+        )
+        
+        # 获取市值
+        market_caps = get_market_caps()
+        market_cap = market_caps.get(score.symbol, 0)
+        
+        # 从 metrics 提取数据
+        funding_rate = metrics.get("funding_rate", 0)
+        oi_change_pct = metrics.get("oi_change_pct", 0) or metrics.get("oi_24h_pct", 0)
+        price_change_pct = metrics.get("change_24h_pct", 0)
+        volume_usd = metrics.get("volume_24h_usd", 0)
+        sideways_days = metrics.get("sideways_days", 0)
+        
+        # 计算三策略评分
+        strategy_scores = calculate_strategy_scores(
+            symbol=score.symbol,
+            funding_rate=funding_rate,
+            market_cap=market_cap,
+            sideways_days=sideways_days,
+            oi_change_pct=oi_change_pct,
+            price_change_pct=price_change_pct,
+            volume_usd=volume_usd,
+            in_pool=sideways_days >= 45,
+        )
+        
+        # 应用到 SignalScore
+        score.chase_score = strategy_scores.chase_score
+        score.composite_score = strategy_scores.composite_score
+        score.ambush_score = strategy_scores.ambush_score
+        score.market_cap_usd = market_cap
+        score.sideways_days = sideways_days
+        
+        # 检测暗流信号
+        is_dark, dark_score = detect_dark_flow(oi_change_pct, price_change_pct)
+        if is_dark:
+            score.dark_flow_score = dark_score
+            logger.info(f"🏦 {score.symbol} 暗流信号：OI {oi_change_pct:+.1f}% 但价格 {price_change_pct:+.1f}%")
+        
+        # 重新计算总分
+        score._calculate_total()
+        
+        logger.info(f"🏦 {score.symbol} 雷达评分：追多={score.chase_score:.0f} 综合={score.composite_score:.0f} 埯伏={score.ambush_score:.0f}")
+        
+    except ImportError:
+        logger.debug("accumulation_radar 模块不可用，跳过雷达评分")
+    except Exception as e:
+        logger.warning(f"雷达评分计算失败：{e}")
     
     return score
 

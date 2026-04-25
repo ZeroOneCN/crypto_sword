@@ -683,6 +683,94 @@ _Binance Breakout Monitor_
     return send_telegram_message(message)
 
 
+# ═══════════════════════════════════════════════════════════════
+# 🏦 庄家雷达通知模板
+# ═══════════════════════════════════════════════════════════════
+
+def format_dark_flow_alert(symbol: str, oi_change_pct: float, price_change_pct: float,
+                           funding_rate: float, market_cap: float) -> str:
+    """格式化暗流信号通知
+    
+    暗流定义：OI变化 >= 3%，但价格变化 < 1%
+    这是最经典的庄家收筹信号：大资金进场但价格不动
+    """
+    msg = f"""🎯 <b>暗流信号！庄家收筹</b>
+
+<b>标的</b>  <code>{_escape(symbol)}</code>
+<b>OI变化</b>  {oi_change_pct:+.1f}%
+<b>价格变化</b>  <code>{price_change_pct:+.1f}%</code>
+<b>资金费率</b>  <code>{funding_rate:.4f}%</code>
+<b>流通市值</b>  <code>${market_cap/1e6:.1f}M</code>
+
+💡 <b>解读</b>：OI暴涨但价格不动 = 大资金进场收筹 = 最佳埋伏时机"""
+
+    return msg
+
+
+def format_accumulation_pool_report(pool: list, limit: int = 10) -> str:
+    """格式化收筹池报告"""
+    msg = f"""🏦 <b>庄家收筹池</b>
+
+<b>池内标的</b>  <code>{len(pool)} 个</code>
+───────────────"""
+
+    for i, p in enumerate(pool[:limit], 1):
+        symbol = p.get("symbol", "")
+        days = p.get("sideways_days", 0)
+        range_pct = p.get("price_range_pct", 0)
+        cap = p.get("market_cap_usd", 0)
+
+        msg += f"""
+{i}. <code>{_escape(symbol)}</code> | 横盘<b>{days}天</b> | 波动{range_pct:.0f}% | ${cap/1e6:.1f}M"""
+
+    if len(pool) > limit:
+        msg += f"\n... 还有 {len(pool) - limit} 个标的"
+
+    msg += "\n\n💡 横盘≥45天+低波动 = 庄家低调收筹 = 爆发前兆"
+
+    return msg
+
+
+def format_short_fuel_report(fuel_list: list, limit: int = 5) -> str:
+    """格式化空头燃料报告"""
+    msg = f"""🔥 <b>空头燃料榜</b>
+
+<b>空头燃料</b>  <code>{len(fuel_list)} 个</code>
+───────────────"""
+
+    for i, f in enumerate(fuel_list[:limit], 1):
+        symbol = f.get("symbol", "")
+        rate = f.get("funding_rate", 0)
+        price_pct = f.get("price_change_pct", 0)
+        vol = f.get("volume_usd", 0)
+
+        msg += f"""
+{i}. <code>{_escape(symbol)}</code> | 费率<b>{rate:.3f}%</b> | 涨{price_pct:.0f}% | Vol ${vol/1e6:.1f}M"""
+
+    if len(fuel_list) > limit:
+        msg += f"\n... 还有 {len(fuel_list) - limit} 个标的"
+
+    msg += "\n\n💡 费率越负 = 做空人越多 = 空头燃料 = 继续拉的动能"
+
+    return msg
+
+
+def format_radar_summary(pool_count: int, oi_signals: int, dark_flows: int,
+                         short_fuel: int, top_dark_flow: str = None) -> str:
+    """格式化雷达摘要通知"""
+    msg = f"""📊 <b>庄家雷达摘要</b>
+
+<b>收筹池</b>  <code>{pool_count} 个</code>
+<b>OI异动</b>  <code>{oi_signals} 个</code>
+<b>暗流信号</b>  <code>{dark_flows} 个</code>
+<b>空头燃料</b>  <code>{short_fuel} 个</code>"""
+
+    if top_dark_flow:
+        msg += f"\n\n<b>最佳埋伏</b>：<code>{_escape(top_dark_flow)}</code> 暗流确认"
+
+    return msg
+
+
 def main():
     """Test Telegram notifications."""
     import argparse
