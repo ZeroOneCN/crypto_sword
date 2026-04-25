@@ -37,13 +37,13 @@ class CycleMixin:
         send_telegram_message(format_daily_report_msg(report))
         self._last_daily_report_sent_for = today
 
-    def _select_deep_scan_symbols(self) -> list[str]:
+    def _select_deep_scan_symbols(self, candidates: list[str] | None = None) -> list[str]:
         """Pick symbols for expensive deep scan, preferring fresh fast-scan candidates."""
         major_symbols = list(self.config.major_symbols)
         prefer_major = self._market_style_mode in {"major", "balanced"}
-        candidates = self._fast_scan_candidates()
-        if candidates:
-            merged = major_symbols + candidates if prefer_major else candidates + major_symbols
+        selected_candidates = candidates if candidates is not None else self._fast_scan_candidates()
+        if selected_candidates:
+            merged = major_symbols + selected_candidates if prefer_major else selected_candidates + major_symbols
             return list(dict.fromkeys(merged))[: self.config.scan_top_n]
 
         if self.config.scan_by_change:
@@ -294,7 +294,7 @@ class CycleMixin:
         signals = []
         if deep_due:
             step_started = time.perf_counter()
-            deep_symbols = self._select_deep_scan_symbols()
+            deep_symbols = self._select_deep_scan_symbols(candidates)
             signals = self.scan_for_signals(deep_symbols, scan_source="merged_selector")
             self._last_deep_scan_time = now
             self._record_latency_step(latency_steps, "deep_scan_signals", step_started)
