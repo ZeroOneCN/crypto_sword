@@ -44,7 +44,6 @@ try:
     from binance_breakout_scanner import (
         get_top_symbols_by_volume,
         get_top_symbols_by_change,
-        scan_symbols,
         classify_and_direction,
         fetch_ticker_24hr,
     )
@@ -86,8 +85,6 @@ try:
         analyze_trend,
         analyze_volume,
         get_klines,
-        score_signal,
-        SignalScore,
     )
     from risk_manager import (  # 🛡️ 风控系统
         assess_trade_risk,
@@ -143,13 +140,14 @@ from core.monitoring import (
     stable_monitor_sort,
 )
 from core.execution_mixin import ExecutionMixin
+from core.scanner_mixin import ScannerMixin
 
 
 # ═══════════════════════════════════════════════════════════════
 # 主交易引擎 - 诸神黄昏之剑
 # ═══════════════════════════════════════════════════════════════
 
-class CryptoSword(ExecutionMixin):
+class CryptoSword(ExecutionMixin, ScannerMixin):
     """
     🗡️ CRYPTO SWORD - 诸神黄昏之剑
 
@@ -1580,118 +1578,6 @@ class CryptoSword(ExecutionMixin):
             except Exception as e:
                 logger.warning(f"获取 {symbol} 价格失败：{e}")
         return prices
-
-    def scan_for_signals(self, symbols: Optional[List[str]] = None, scan_source: str = "deep") -> List[dict]:
-        """扫描交易信号 - 弗丽嘉的鹰眼"""
-        trace_started = time.perf_counter()
-        latency_steps: list[tuple[str, float]] = []
-        self._prune_entry_watchlist()
-        step_started = time.perf_counter()
-        if symbols is not None:
-            symbols = list(dict.fromkeys(symbols))[: self.config.scan_top_n]
-            logger.info(f"⚡ Deep scan from {scan_source}: {len(symbols)} symbols | {symbols[:5]}...")
-        elif self.config.scan_by_change:
-            symbols = self._get_ws_top_symbols_by_change(
-                self.config.scan_top_n,
-                self.config.min_change_pct,
-            )
-            if not symbols:
-                symbols = get_top_symbols_by_change(
-                    self.config.scan_top_n,
-                    min_change=self.config.min_change_pct
-                )
-                logger.info(f"🔥 妖币模式(REST) - 扫描 {len(symbols)} 个异动币种：{symbols[:5]}...")
-            else:
-                logger.info(f"🔥 妖币模式(WS) - 扫描 {len(symbols)} 个异动币种：{symbols[:5]}...")
-        else:
-            symbols = get_top_symbols_by_volume(self.config.scan_top_n)
-            logger.info(f"📊 成交量模式 - 扫描 {len(symbols)} 个币种：{symbols[:5]}...")
-        self._record_latency_step(latency_steps, "select_symbols", step_started)
-
-        step_started = time.perf_counter()
-        results = scan_symbols(
-            symbols,
-            min_stage=self.config.min_stage,
-            max_workers=self.config.scan_workers,
-        )
-        self._record_latency_step(latency_steps, "deep_scan", step_started)
-
-        signals = []
-        step_started = time.perf_counter()
-        for r in results:
-            if r.stage in {"neutral", "error"}:
-                continue
-            if r.direction not in {"LONG", "SHORT"}:
-                continue
-            if r.symbol in self.tracker.positions:
-                continue
-            rejection_reason = self._entry_rejection_reason(r.symbol, r.direction, r.metrics)
-            if rejection_reason:
-                logger.info(f"🧊 {r.symbol} 入场过滤：{rejection_reason}")
-                continue
-
-            # 🎯 信号质量评分
-            try:
-                signal_score = score_signal(
-                    symbol=r.symbol,
-                    stage=r.stage,
-                    direction=r.direction,
-                    metrics=r.metrics,
-                    klines_1h=r.metrics.get("klines_1h"),
-                )
-
-                # 🏦 庄家雷达评分增强
-                try:
-                    from signal_enhancer import enhance_with_radar_score
-                    signal_score = enhance_with_radar_score(signal_score, r.metrics)
-                except ImportError:
-                    pass  # 雷达模块不可用时跳过
-                except Exception as e:
-                    logger.debug(f"雷达评分跳过 {r.symbol}: {e}")
-
-                # 过滤低质量信号（降低阈值：允许中等以上）
-                if signal_score.confidence in {"低"}:
-                    logger.info(f"🎯 {r.symbol} 信号质量过低 ({signal_score.total_score:.1f})，跳过")
-                    continue
-                
-                # 记录评分
-                logger.info(f"🎯 {r.symbol} 信号评分：{signal_score.total_score:.1f}/100 ({signal_score.confidence})")
-                
-            except Exception as e:
-                logger.warning(f"信号评分失败 {r.symbol}: {e}")
-                signal_score = None
-
-            signal_data = {
-                "symbol": r.symbol,
-                "stage": r.stage,
-                "direction": r.direction,
-                "price": r.metrics.get("last_price", 0),
-                "metrics": r.metrics,
-                "trigger": r.trigger,
-                "risk": r.risk,
-                "score": signal_score.to_dict() if signal_score else None,
-            }
-            signals.append(self._apply_entry_confirmation(signal_data))
-
-        # 按评分排序
-        def _signal_priority(item: dict[str, Any]) -> tuple[int, float]:
-            symbol = str(item.get("symbol", "")).upper()
-            if self._market_style_mode == "major":
-                major_bonus = 2 if symbol in self.config.major_symbols else 0
-            elif self._market_style_mode == "alt":
-                major_bonus = -1 if symbol in self.config.major_symbols else 1
-            else:
-                major_bonus = 1 if symbol in self.config.major_symbols else 0
-            score_total = float((item.get("score") or {}).get("total_score", 0) or 0)
-            return major_bonus, score_total
-
-        signals.sort(key=_signal_priority, reverse=True)
-        self._record_latency_step(latency_steps, "score_filter", step_started)
-        
-        logger.info(f"📡 发现 {len(signals)} 个有效信号（已按质量排序）")
-        self._emit_latency_trace("scan_for_signals", trace_started, latency_steps)
-
-        return signals
 
     def run_scan_cycle(self):
         """Run one fast or deep trading cycle."""
