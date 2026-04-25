@@ -1065,6 +1065,8 @@ class CryptoSword:
             and funding <= 0
         ):
             return "趋势突破线"
+        if self._is_accumulation_candidate(metrics, score_total):
+            return "趋势突破线"
         if self.config.momentum_entry_enabled and self._soft_breakout_candidate(metrics, score_total):
             return "趋势突破线"
         return "回踩确认线"
@@ -3391,7 +3393,7 @@ def main():
                         metavar="1-10", help="杠杆倍数 (1-10x, 默认：5x)")
 
     # 风控 - 英灵殿的盾牌
-    parser.add_argument("--risk", "-r", type=float, default=2.0, help="每笔风险 %% (默认：2%%)")
+    parser.add_argument("--risk", "-r", type=float, default=1.0, help="每笔风险 %% (默认：1%%)")
     parser.add_argument("--stop-loss", "-s", type=float, default=8.0, help="止损 %% (默认：8%%)")
     parser.add_argument("--take-profit", "-t", type=float, default=20.0, help="止盈 %% (默认：20%%)")
     parser.add_argument(
@@ -3400,7 +3402,7 @@ def main():
         default="roi",
         help="止盈百分比口径：roi=杠杆后收益率，price=标的价格涨跌幅 (默认：roi)",
     )
-    parser.add_argument("--max-positions", "-m", type=int, default=5, help="最大持仓数 (默认：5)")
+    parser.add_argument("--max-positions", "-m", type=int, default=3, help="最大持仓数 (默认：3)")
     parser.add_argument("--max-daily-loss", type=float, default=5.0, help="每日最大亏损 %% (默认：5%%)")
 
     # 扫描 - 弗丽嘉的鹰眼
@@ -3415,6 +3417,11 @@ def main():
     parser.add_argument("--entry-confirm-timeout", type=int, default=1800, help="候选观察超时秒数")
     parser.add_argument("--no-momentum-entry", action="store_true", help="禁用强趋势动量确认入场")
     parser.add_argument("--momentum-score", type=float, default=68.0, help="动量入场最低评分 (默认：68)")
+    parser.add_argument("--accumulation-score", type=float, default=58.0, help="吸筹暗流最低评分 (默认：58)")
+    parser.add_argument("--accumulation-min-oi", type=float, default=18.0, help="吸筹暗流最小 OI 变化%% (默认：18)")
+    parser.add_argument("--accumulation-max-change", type=float, default=10.0, help="吸筹暗流最大涨跌幅%% (默认：10)")
+    parser.add_argument("--max-consecutive-losses", type=int, default=3, help="连续亏损熔断笔数 (默认：3)")
+    parser.add_argument("--loss-pause-mins", type=int, default=30, help="连续亏损后暂停分钟 (默认：30)")
     parser.add_argument("--no-daily-report", action="store_true", help="禁用每日复盘通知")
 
     # 追踪止损 - 海姆达尔的守望
@@ -3465,6 +3472,11 @@ def main():
         entry_confirmation_timeout_sec=max(300, args.entry_confirm_timeout),
         momentum_entry_enabled=not args.no_momentum_entry,
         momentum_entry_score=max(0.0, args.momentum_score),
+        max_consecutive_losses=max(1, int(args.max_consecutive_losses)),
+        loss_pause_sec=max(300, int(args.loss_pause_mins) * 60),
+        accumulation_entry_score=max(0.0, args.accumulation_score),
+        accumulation_entry_min_oi_pct=max(0.0, args.accumulation_min_oi),
+        accumulation_entry_max_change_pct=max(0.0, args.accumulation_max_change),
         daily_report_enabled=not args.no_daily_report,
     )
 
