@@ -344,6 +344,9 @@ def main():
     parser.add_argument("--accumulation-score", type=float, default=58.0, help="暗流最低评分 (默认：58)")
     parser.add_argument("--accumulation-min-oi", type=float, default=18.0, help="暗流最小OI变化% (默认：18)")
     parser.add_argument("--accumulation-max-change", type=float, default=10.0, help="暗流最大涨跌幅% (默认：10)")
+    parser.add_argument("--max-abs-funding-rate", type=float, default=0.005, help="最大绝对资金费率 (默认：0.5%%)")
+    parser.add_argument("--max-range-position", type=float, default=92.0, help="最大24h区间位置%% (默认：92)")
+    parser.add_argument("--max-chase-change", type=float, default=35.0, help="最大追涨24h涨幅%% (默认：35)")
     parser.add_argument("--max-consecutive-losses", type=int, default=3, help="连续亏损熔断笔数")
     parser.add_argument("--loss-pause-mins", type=int, default=30, help="连续亏损后暂停分钟")
     parser.add_argument("--no-daily-report", action="store_true", help="禁用每日复盘通知")
@@ -388,8 +391,11 @@ def main():
         min_stage="pre_break",
         scan_by_change=not args.by_volume,
         min_change_pct=args.min_change,
+        max_chase_change_pct=args.max_chase_change,
         min_pullback_pct=max(0.5, args.min_pullback),
         reclaim_volume_ratio=max(0.8, args.reclaim_volume),
+        max_range_position_pct=args.max_range_position,
+        max_abs_funding_rate=args.max_abs_funding_rate,
         entry_confirmation_enabled=not args.no_entry_confirm,
         entry_confirmation_timeout_sec=max(300, args.entry_confirm_timeout),
         momentum_entry_enabled=not args.no_momentum_entry,
