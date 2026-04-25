@@ -134,6 +134,18 @@ class BinanceApiClient:
         data = self._request("GET", "/fapi/v1/openOrders", params=params, signed=True)
         return data if isinstance(data, list) else []
 
+    def get_trade_history(self, symbol: str | None = None, start_time: int | None = None, end_time: int | None = None, limit: int = 500) -> list[dict[str, Any]]:
+        """Get trade history for a symbol or all symbols."""
+        params: dict[str, Any] = {"limit": limit}
+        if symbol:
+            params["symbol"] = symbol
+        if start_time:
+            params["startTime"] = start_time
+        if end_time:
+            params["endTime"] = end_time
+        data = self._request("GET", "/fapi/v1/userTrades", params=params, signed=True)
+        return data if isinstance(data, list) else []
+
     def open_algo_orders(self, symbol: str | None = None) -> list[dict[str, Any]]:
         params: dict[str, Any] = {}
         if symbol:

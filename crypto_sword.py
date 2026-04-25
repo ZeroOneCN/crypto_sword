@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import argparse
 import logging
 import os
 import sys
@@ -146,10 +147,10 @@ class CryptoSword(ExecutionMixin, ScannerMixin, CycleMixin, SyncMixin, Confirmat
     def _get_daily_report_snapshot(self) -> dict[str, Any]:
         report_date = datetime.now().date().isoformat()
         try:
-            return self.db.get_daily_report(report_date, mode=self.config.mode)
+            report = self.db.get_daily_report(report_date, mode=self.config.mode)
         except Exception as e:
             logger.debug(f"daily report snapshot skipped: {e}")
-            return {
+            report = {
                 "closed_trades": 0,
                 "winning_trades": 0,
                 "losing_trades": 0,
@@ -159,6 +160,65 @@ class CryptoSword(ExecutionMixin, ScannerMixin, CycleMixin, SyncMixin, Confirmat
                 "best_trade": None,
                 "worst_trade": None,
             }
+
+        # 从 Binance API 获取当日真实交易数据，修正最佳/最差交易
+        try:
+            from binance_api_client import get_native_binance_client
+            from datetime import timezone
+
+            client = get_native_binance_client()
+            now = datetime.now(timezone.utc)
+            # 当日 00:00 UTC+8 的时间戳
+            today_start = datetime(now.year, now.month, now.day, tzinfo=timezone.utc).timestamp() - 8 * 3600
+            start_ms = int(today_start * 1000)
+            end_ms = int(now.timestamp() * 1000)
+
+            trades = client.get_trade_history(start_time=start_ms, end_time=end_ms, limit=500)
+
+            # 按交易对聚合已实现盈亏
+            from collections import defaultdict
+            symbol_pnl: dict[str, float] = defaultdict(float)
+            for trade in trades:
+                pnl = float(trade.get("realizedPnl", 0) or 0)
+                if pnl != 0:
+                    symbol = trade.get("symbol", "")
+                    symbol_pnl[symbol] += pnl
+
+            if symbol_pnl:
+                # 找出最佳交易
+                best_symbol = max(symbol_pnl, key=symbol_pnl.get)
+                best_pnl = symbol_pnl[best_symbol]
+                report["best_trade"] = {
+                    "symbol": best_symbol,
+                    "pnl": round(best_pnl, 2),
+                }
+
+                # 找出最差交易
+                worst_symbol = min(symbol_pnl, key=symbol_pnl.get)
+                worst_pnl = symbol_pnl[worst_symbol]
+                report["worst_trade"] = {
+                    "symbol": worst_symbol,
+                    "pnl": round(worst_pnl, 2),
+                }
+
+                # 用 API 数据修正总盈亏和胜率
+                total_pnl_api = round(sum(symbol_pnl.values()), 2)
+                winning_count = sum(1 for pnl in symbol_pnl.values() if pnl > 0)
+                losing_count = sum(1 for pnl in symbol_pnl.values() if pnl < 0)
+                closed_count = len(symbol_pnl)
+
+                report["total_pnl"] = total_pnl_api
+                report["closed_trades"] = closed_count
+                report["winning_trades"] = winning_count
+                report["losing_trades"] = losing_count
+                report["win_rate"] = round(winning_count / closed_count * 100, 2) if closed_count else 0.0
+                report["avg_pnl"] = round(total_pnl_api / closed_count, 2) if closed_count else 0.0
+
+                logger.info(f"Daily report enriched from API: {closed_count} trades, PnL={total_pnl_api}, best={best_symbol}({best_pnl:+.2f}), worst={worst_symbol}({worst_pnl:+.2f})")
+        except Exception as e:
+            logger.debug(f"API daily report enrichment skipped: {e}")
+
+        return report
 
     def _get_account_info_cached(self, ttl_sec: float = 3.0, force: bool = False) -> dict[str, Any]:
         now = time.time()
@@ -238,3 +298,107 @@ class CryptoSword(ExecutionMixin, ScannerMixin, CycleMixin, SyncMixin, Confirmat
                 time.sleep(10)
 
         bootstrap.shutdown(mode_text)
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        description="CRYPTO SWORD 实盘交易程序",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="示例:\n  crypto-sword\n  crypto-sword --leverage 10",
+    )
+
+    parser.add_argument("--live", action="store_true", default=True, help="实盘模式（默认开启）")
+    parser.add_argument("--leverage", "-l", type=int, default=5, choices=range(1, 11),
+                        metavar="1-10", help="杠杆倍数 (1-10x)")
+
+    parser.add_argument("--risk", "-r", type=float, default=1.0, help="每笔风险百分比")
+    parser.add_argument("--stop-loss", "-s", type=float, default=8.0, help="止损百分比")
+    parser.add_argument("--take-profit", "-t", type=float, default=20.0, help="止盈百分比")
+    parser.add_argument(
+        "--take-profit-mode",
+        choices=["price", "roi"],
+        default="roi",
+        help="止盈口径：roi=杠杆后收益率，price=标的价格涨跌幅",
+    )
+    parser.add_argument("--max-positions", "-m", type=int, default=3, help="最大持仓数")
+    parser.add_argument("--max-daily-loss", type=float, default=5.0, help="每日最大亏损百分比")
+
+    parser.add_argument("--top", type=int, default=30, help="扫描前 N 个币种")
+    parser.add_argument("--interval", "-i", type=int, default=300, help="扫描间隔秒数")
+    parser.add_argument("--scan-workers", type=int, default=6, help="深度扫描并发数")
+    parser.add_argument("--min-change", type=float, default=3.0, help="最小涨跌幅百分比")
+    parser.add_argument("--min-pullback", type=float, default=3.0, help="最小回踩百分比")
+    parser.add_argument("--reclaim-volume", type=float, default=1.15, help="回踩后 5m 量能回归倍数")
+    parser.add_argument("--by-volume", action="store_true", help="按成交量排序（默认按涨幅）")
+    parser.add_argument("--no-entry-confirm", action="store_true", help="禁用回踩确认入场")
+    parser.add_argument("--entry-confirm-timeout", type=int, default=1800, help="候选观察超时秒数")
+    parser.add_argument("--no-momentum-entry", action="store_true", help="禁用强趋势动量入场")
+    parser.add_argument("--momentum-score", type=float, default=68.0, help="动量入场最低评分 (默认：68)")
+    parser.add_argument("--accumulation-score", type=float, default=58.0, help="暗流最低评分 (默认：58)")
+    parser.add_argument("--accumulation-min-oi", type=float, default=18.0, help="暗流最小OI变化% (默认：18)")
+    parser.add_argument("--accumulation-max-change", type=float, default=10.0, help="暗流最大涨跌幅% (默认：10)")
+    parser.add_argument("--max-consecutive-losses", type=int, default=3, help="连续亏损熔断笔数")
+    parser.add_argument("--loss-pause-mins", type=int, default=30, help="连续亏损后暂停分钟")
+    parser.add_argument("--no-daily-report", action="store_true", help="禁用每日复盘通知")
+
+    parser.add_argument("--trailing", type=float, default=5.0, help="追踪止损百分比")
+    parser.add_argument("--no-trailing", action="store_true", help="禁用追踪止损")
+
+    args = parser.parse_args()
+
+    mode = "live"
+    print("\n" + "=" * 50)
+    print("⚠️  ⚠️  ⚠️  实盘交易警告  ⚠️  ⚠️  ⚠️")
+    print("=" * 50)
+    print("\n即将使用真实资金进行交易")
+    print(f"杠杆: {args.leverage}x | 风险: {args.risk}% | 止损: {args.stop_loss}%")
+    print("\n确认继续？输入 'y' 继续，其他键取消")
+    if not sys.stdin.isatty():
+        print("ℹ️ 后台模式，跳过确认")
+        confirm = "y"
+    else:
+        confirm = input("> ").strip().lower()
+    if confirm != "y":
+        print("❌ 已取消")
+        sys.exit(0)
+
+    # 创建配置
+    config = TradingConfig(
+        mode=mode,
+        leverage=args.leverage,
+        risk_per_trade_pct=args.risk,
+        stop_loss_pct=args.stop_loss,
+        take_profit_pct=args.take_profit,
+        take_profit_mode=args.take_profit_mode,
+        max_position_pct=20.0,
+        max_daily_loss_pct=args.max_daily_loss,
+        max_open_positions=args.max_positions,
+        trailing_stop_pct=args.trailing,
+        trailing_stop_enabled=not args.no_trailing,
+        scan_top_n=args.top,
+        scan_interval_sec=args.interval,
+        scan_workers=max(1, args.scan_workers),
+        min_stage="pre_break",
+        scan_by_change=not args.by_volume,
+        min_change_pct=args.min_change,
+        min_pullback_pct=max(0.5, args.min_pullback),
+        reclaim_volume_ratio=max(0.8, args.reclaim_volume),
+        entry_confirmation_enabled=not args.no_entry_confirm,
+        entry_confirmation_timeout_sec=max(300, args.entry_confirm_timeout),
+        momentum_entry_enabled=not args.no_momentum_entry,
+        momentum_entry_score=max(0.0, args.momentum_score),
+        max_consecutive_losses=max(1, int(args.max_consecutive_losses)),
+        loss_pause_sec=max(300, int(args.loss_pause_mins) * 60),
+        accumulation_entry_score=max(0.0, args.accumulation_score),
+        accumulation_entry_min_oi_pct=max(0.0, args.accumulation_min_oi),
+        accumulation_entry_max_change_pct=max(0.0, args.accumulation_max_change),
+        daily_report_enabled=not args.no_daily_report,
+    )
+
+    # 启动交易引擎
+    trader = CryptoSword(config)
+    trader.run()
+
+
+if __name__ == "__main__":
+    main()

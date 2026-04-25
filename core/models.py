@@ -233,6 +233,10 @@ class Position:
                 if self.current_stop > self.lowest_price * (1 + trailing_stop_pct / 100):
                     self.current_stop = self.lowest_price * (1 + trailing_stop_pct / 100)
 
+        if self.entry_price <= 0:
+            self.pnl = 0.0
+            self.pnl_pct = 0.0
+            return
         if self.side == "BUY":
             self.pnl = (current_price - self.entry_price) * self.quantity
             self.pnl_pct = (current_price - self.entry_price) / self.entry_price * 100
