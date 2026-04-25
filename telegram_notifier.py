@@ -28,6 +28,30 @@ _last_message_time = 0.0
 _min_message_interval = 0.5  # seconds (avoid hitting Telegram rate limits)
 
 
+def _normalize_telegram_value(value: Any) -> str:
+    text = str(value or "").strip().strip('"').strip("'")
+    return text
+
+
+def _sanitize_token_preview(token: str) -> str:
+    token = _normalize_telegram_value(token)
+    if len(token) <= 10:
+        return token
+    return f"{token[:6]}...{token[-4:]}"
+
+
+def _looks_like_placeholder(value: str) -> bool:
+    upper = value.upper()
+    return upper.startswith("YOUR_") or "PLACEHOLDER" in upper or upper in {"BOT_TOKEN", "CHAT_ID"}
+
+
+def _is_valid_bot_token(token: str) -> bool:
+    token = _normalize_telegram_value(token)
+    if token.startswith("bot"):
+        token = token[3:]
+    return bool(re.match(r"^\d{6,}:[A-Za-z0-9_-]{20,}$", token))
+
+
 def _hermes_home() -> Path:
     """Return Hermes home dir (cross-platform).
 
@@ -50,8 +74,8 @@ def get_telegram_config() -> dict[str, Any]:
       - user: ~/.hermes/config/telegram.json (recommended for prod)
     """
     config: dict[str, Any] = {
-        "bot_token": os.environ.get("TELEGRAM_BOT_TOKEN", ""),
-        "chat_id": os.environ.get("TELEGRAM_CHAT_ID", ""),
+        "bot_token": _normalize_telegram_value(os.environ.get("TELEGRAM_BOT_TOKEN", "")),
+        "chat_id": _normalize_telegram_value(os.environ.get("TELEGRAM_CHAT_ID", "")),
     }
 
     if config["bot_token"] and config["chat_id"]:
@@ -67,11 +91,14 @@ def get_telegram_config() -> dict[str, Any]:
         try:
             with open(path, "r", encoding="utf-8") as f:
                 file_config = json.load(f) or {}
-            config["bot_token"] = config["bot_token"] or file_config.get("bot_token", "")
-            config["chat_id"] = config["chat_id"] or file_config.get("chat_id", "")
+            config["bot_token"] = config["bot_token"] or _normalize_telegram_value(file_config.get("bot_token", ""))
+            config["chat_id"] = config["chat_id"] or _normalize_telegram_value(file_config.get("chat_id", ""))
             break
         except Exception as e:
             logger.warning(f"Failed to load Telegram config from {path}: {e}")
+
+    if config["bot_token"].startswith("bot"):
+        config["bot_token"] = config["bot_token"][3:]
 
     return config
 
@@ -81,9 +108,26 @@ def send_telegram_message(message: str, parse_mode: str | None = "HTML") -> bool
     global _last_message_time
 
     config = get_telegram_config()
-    if not config.get("bot_token") or not config.get("chat_id"):
+    token = _normalize_telegram_value(config.get("bot_token", ""))
+    chat_id = _normalize_telegram_value(config.get("chat_id", ""))
+
+    if not token or not chat_id:
         logger.warning("Telegram not configured - skipping notification")
         logger.info(f"[TG] {message}")
+        return False
+
+    if _looks_like_placeholder(token) or _looks_like_placeholder(chat_id):
+        logger.error(
+            "Telegram config uses placeholder values. "
+            "Please set real TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID or config/telegram.json."
+        )
+        return False
+
+    if not _is_valid_bot_token(token):
+        logger.error(
+            f"Telegram bot token format invalid: {_sanitize_token_preview(token)} "
+            "(expected <digits>:<secret>)"
+        )
         return False
 
     with _telegram_lock:
@@ -91,7 +135,7 @@ def send_telegram_message(message: str, parse_mode: str | None = "HTML") -> bool
         if elapsed < _min_message_interval:
             time.sleep(_min_message_interval - elapsed)
 
-        url = f"https://api.telegram.org/bot{config['bot_token']}/sendMessage"
+        url = f"https://api.telegram.org/bot{token}/sendMessage"
 
         try:
             import urllib.error
@@ -102,7 +146,7 @@ def send_telegram_message(message: str, parse_mode: str | None = "HTML") -> bool
                 attempts.append((_strip_html(message), None))
 
             for index, (attempt_message, attempt_parse_mode) in enumerate(attempts):
-                payload: dict[str, Any] = {"chat_id": config["chat_id"], "text": attempt_message}
+                payload: dict[str, Any] = {"chat_id": chat_id, "text": attempt_message}
                 if attempt_parse_mode:
                     payload["parse_mode"] = attempt_parse_mode
 
@@ -123,6 +167,11 @@ def send_telegram_message(message: str, parse_mode: str | None = "HTML") -> bool
                 except urllib.error.HTTPError as e:
                     body = e.read().decode("utf-8", errors="replace")
                     logger.error(f"Telegram HTTP {e.code}: {body[:300]}")
+                    if e.code == 404:
+                        logger.error(
+                            "Telegram endpoint 404, usually caused by invalid bot token. "
+                            f"token={_sanitize_token_preview(token)}"
+                        )
                     if e.code == 400 and index + 1 < len(attempts):
                         continue
                     raise
@@ -766,4 +815,3 @@ def main() -> None:
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO)
     main()
-
