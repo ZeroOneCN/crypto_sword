@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Any
 
 from exchange_client import ExchangeClient
+from hermes_paths import hermes_config_dir
 
 
 logger = logging.getLogger(__name__)
@@ -382,11 +383,12 @@ def _required(params: dict[str, str], key: str) -> str:
 
 def _load_binance_config() -> dict[str, Any]:
     """Load Binance credentials from common Hermes config files."""
+    repo_config_dir = Path(__file__).resolve().parent / "config"
     candidates = [
-        Path("/root/.hermes/config/binance.json"),
-        Path("/root/.hermes/config/binance_live.json"),
-        Path("config/binance.json"),
-        Path("config/binance_live.json"),
+        repo_config_dir / "binance.json",
+        repo_config_dir / "binance_live.json",
+        hermes_config_dir() / "binance.json",
+        hermes_config_dir() / "binance_live.json",
     ]
 
     for path in candidates:

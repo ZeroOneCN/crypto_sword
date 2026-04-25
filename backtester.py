@@ -12,9 +12,6 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Callable, Optional
 
-import sys
-sys.path.insert(0, str(Path("/root/.hermes/scripts")))
-
 from binance_breakout_scanner import classify_and_direction, derive_venues_events
 
 logger = logging.getLogger(__name__)

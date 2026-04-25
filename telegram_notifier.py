@@ -1,4 +1,13 @@
-"""Telegram notification module for trading alerts."""
+# -*- coding: utf-8 -*-
+"""Telegram notification helpers for Hermes Trader.
+
+This module is intentionally self-contained (no third-party deps) and focuses on:
+- loading Telegram config
+- sending rate-limited messages
+- formatting common trading notifications (HTML by default)
+"""
+
+from __future__ import annotations
 
 import html
 import json
@@ -13,57 +22,71 @@ from typing import Any
 
 logger = logging.getLogger(__name__)
 
-# Thread-safe message queue
+# Thread-safe message queue / rate limit
 _telegram_lock = threading.Lock()
-_last_message_time = 0
-_min_message_interval = 0.5  # 500ms between messages to avoid rate limits
+_last_message_time = 0.0
+_min_message_interval = 0.5  # seconds (avoid hitting Telegram rate limits)
+
+
+def _hermes_home() -> Path:
+    """Return Hermes home dir (cross-platform).
+
+    Priority:
+      1) $HERMES_HOME
+      2) ~/.hermes
+    """
+    env = os.environ.get("HERMES_HOME")
+    if env:
+        return Path(env).expanduser().resolve()
+    return (Path.home() / ".hermes").resolve()
 
 
 def get_telegram_config() -> dict[str, Any]:
-    """Load Telegram config from environment or config file."""
-    config = {
+    """Load Telegram config from environment or json file.
+
+    Supported:
+      - env: TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID
+      - repo: ./config/telegram.json (recommended for local dev)
+      - user: ~/.hermes/config/telegram.json (recommended for prod)
+    """
+    config: dict[str, Any] = {
         "bot_token": os.environ.get("TELEGRAM_BOT_TOKEN", ""),
         "chat_id": os.environ.get("TELEGRAM_CHAT_ID", ""),
     }
 
-    # Try to load from config file if env vars not set
-    if not config["bot_token"] or not config["chat_id"]:
-        config_path = Path("/root/.hermes/config/telegram.json")
-        if config_path.exists():
-            try:
-                with open(config_path) as f:
-                    file_config = json.load(f)
-                    # 修复：应该从 file_config 读取，而不是 config
-                    config["bot_token"] = config["bot_token"] or file_config.get("bot_token", "")
-                    config["chat_id"] = config["chat_id"] or file_config.get("chat_id", "")
-            except Exception as e:
-                logger.warning(f"Failed to load Telegram config: {e}")
+    if config["bot_token"] and config["chat_id"]:
+        return config
+
+    candidates = [
+        (Path(__file__).resolve().parent / "config" / "telegram.json"),
+        (_hermes_home() / "config" / "telegram.json"),
+    ]
+    for path in candidates:
+        if not path.exists():
+            continue
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                file_config = json.load(f) or {}
+            config["bot_token"] = config["bot_token"] or file_config.get("bot_token", "")
+            config["chat_id"] = config["chat_id"] or file_config.get("chat_id", "")
+            break
+        except Exception as e:
+            logger.warning(f"Failed to load Telegram config from {path}: {e}")
 
     return config
 
 
-def send_telegram_message(message: str, parse_mode: str = "HTML") -> bool:
-    """Send a message to Telegram (thread-safe with rate limiting).
-
-    Args:
-        message: Message text (supports Markdown/HTML)
-        parse_mode: "Markdown", "MarkdownV2", "HTML", or None for plain text
-
-    Returns:
-        True if sent successfully
-    """
+def send_telegram_message(message: str, parse_mode: str | None = "HTML") -> bool:
+    """Send a message to Telegram (thread-safe with simple rate limiting)."""
     global _last_message_time
 
     config = get_telegram_config()
-
-    if not config["bot_token"] or not config["chat_id"]:
+    if not config.get("bot_token") or not config.get("chat_id"):
         logger.warning("Telegram not configured - skipping notification")
         logger.info(f"[TG] {message}")
         return False
 
-    # Thread-safe sending with rate limiting
     with _telegram_lock:
-        # Wait if needed to respect rate limit
         elapsed = time.time() - _last_message_time
         if elapsed < _min_message_interval:
             time.sleep(_min_message_interval - elapsed)
@@ -71,18 +94,15 @@ def send_telegram_message(message: str, parse_mode: str = "HTML") -> bool:
         url = f"https://api.telegram.org/bot{config['bot_token']}/sendMessage"
 
         try:
-            import urllib.request
             import urllib.error
+            import urllib.request
 
-            attempts = [(message, parse_mode)]
+            attempts: list[tuple[str, str | None]] = [(message, parse_mode)]
             if parse_mode is not None:
                 attempts.append((_strip_html(message), None))
 
             for index, (attempt_message, attempt_parse_mode) in enumerate(attempts):
-                payload = {
-                    "chat_id": config["chat_id"],
-                    "text": attempt_message,
-                }
+                payload: dict[str, Any] = {"chat_id": config["chat_id"], "text": attempt_message}
                 if attempt_parse_mode:
                     payload["parse_mode"] = attempt_parse_mode
 
@@ -108,7 +128,6 @@ def send_telegram_message(message: str, parse_mode: str = "HTML") -> bool:
                     raise
 
             return False
-
         except Exception as e:
             _last_message_time = time.time()
             logger.error(f"Failed to send Telegram message: {e}")
@@ -122,7 +141,8 @@ def _escape(value: Any) -> str:
 
 def _strip_html(message: str) -> str:
     """Convert a simple Telegram HTML message to plain text."""
-    text = re.sub(r"</?(b|code|i|u|s|pre)>", "", message)
+    text = re.sub(r"(?i)<br\\s*/?>", "\n", message)
+    text = re.sub(r"</?(b|code|i|u|s|pre)>", "", text)
     return html.unescape(text)
 
 
@@ -134,48 +154,53 @@ def _fmt_num(value: Any, decimals: int = 6) -> str:
         return str(value)
 
 
-def _format_take_profit_targets(targets: list[dict[str, Any]]) -> str:
+def _format_take_profit_targets(targets: list[dict[str, Any]] | None) -> str:
     """Format staged take-profit targets for Telegram."""
     if not targets:
         return ""
 
-    lines = []
+    lines: list[str] = []
     for target in targets:
         roi_pct = float(target.get("target_roi_pct", 0) or 0)
         price_move_pct = float(target.get("price_move_pct", 0) or 0)
         price = float(target.get("price", 0) or 0)
         ratio = float(target.get("ratio", 0) or 0) * 100
         quantity = float(target.get("quantity", 0) or 0)
+        level = int(target.get("level", len(lines) + 1) or (len(lines) + 1))
         lines.append(
-            f"TP{int(target.get('level', len(lines) + 1))}: "
-            f"<code>{price_move_pct:.2f}% 价格 / {roi_pct:.2f}% ROI</code> → <code>${price:,.4f}</code> "
+            f"TP{level}: "
+            f"<code>{price_move_pct:.2f}% 价格 / {roi_pct:.2f}% ROI</code> →<code>${price:,.4f}</code> "
             f"({ratio:.0f}% / {_fmt_num(quantity)})"
         )
     return "\n".join(lines)
 
 
-# ═══════════════════════════════════════════════════════════════
-# 结构化通知模板 - 赫尔墨斯的信使
-# ═══════════════════════════════════════════════════════════════
-
-def format_open_position_msg(symbol: str, direction: str, entry_price: float, quantity: float, 
-                             leverage: int, stop_loss: float, take_profit: float, 
-                             risk_amount: float, risk_pct: float, score: float = 0,
-                             risk_level: str = "", session_id: str = "",
-                             strategy_line: str = "",
-                             target_roi_pct: float = 0, price_move_pct: float = 0,
-                             take_profit_targets: list[dict[str, Any]] = None) -> str:
+def format_open_position_msg(
+    symbol: str,
+    direction: str,
+    entry_price: float,
+    quantity: float,
+    leverage: int,
+    stop_loss: float,
+    take_profit: float,
+    risk_amount: float,
+    risk_pct: float,
+    score: float = 0,
+    risk_level: str = "",
+    session_id: str = "",
+    strategy_line: str = "",
+    target_roi_pct: float = 0,
+    price_move_pct: float = 0,
+    take_profit_targets: list[dict[str, Any]] | None = None,
+) -> str:
     """格式化开仓通知"""
-    direction_emoji = "🟢" if direction == "LONG" else "🔴"
+    direction_emoji = "[GREEN]" if direction == "LONG" else "[RED]"
     direction_text = "做多 LONG" if direction == "LONG" else "做空 SHORT"
-    
-    # 计算止损止盈百分比
-    sl_pct = abs(entry_price - stop_loss) / entry_price * 100
-    tp_pct = abs(take_profit - entry_price) / entry_price * 100
-    
-    # 计算名义价值
+
+    sl_pct = abs(entry_price - stop_loss) / entry_price * 100 if entry_price else 0.0
+    tp_pct = abs(take_profit - entry_price) / entry_price * 100 if entry_price else 0.0
     notional_value = entry_price * quantity
-    
+
     msg = f"""{direction_emoji} <b>宙斯交易中枢 | 开仓成功</b>
 
 <b>标的</b>  <code>{_escape(symbol)}</code>
@@ -195,15 +220,15 @@ def format_open_position_msg(symbol: str, direction: str, entry_price: float, qu
         msg += f"\n<b>实际价格目标</b>  <code>{price_move_pct:.2f}%</code>"
     if take_profit_targets:
         msg += f"\n<b>分批止盈</b>\n{_format_take_profit_targets(take_profit_targets)}"
-    
+
     if score > 0:
-        confidence = "极高" if score >= 80 else "高" if score >= 60 else "中" if score >= 40 else "低"
+        confidence = "极高" if score >= 80 else ("高" if score >= 60 else ("中" if score >= 40 else "低"))
         msg += f"\n<b>评分</b>  <code>{score:.0f}/100</code>  |  {confidence}"
     if risk_level:
         msg += f"\n<b>风险等级</b>  <code>{_escape(risk_level)}</code>"
     if session_id:
         msg += f"\n<b>流水号</b>  <code>{_escape(session_id)}</code>"
-        
+
     return msg
 
 
@@ -218,27 +243,37 @@ def _humanize_close_reason(reason: str) -> str:
     return reason
 
 
-def format_close_position_msg(symbol: str, direction: str, entry_price: float, exit_price: float, 
-                              quantity: float, pnl: float, pnl_pct: float, reason: str, 
-                              duration_hours: float = 0, session_id: str = "",
-                              strategy_line: str = "", roi_pct: float = 0.0,
-                              price_move_pct: float = 0.0) -> str:
+def format_close_position_msg(
+    symbol: str,
+    direction: str,
+    entry_price: float,
+    exit_price: float,
+    quantity: float,
+    pnl: float,
+    pnl_pct: float,
+    reason: str,
+    duration_hours: float = 0,
+    session_id: str = "",
+    strategy_line: str = "",
+    roi_pct: float = 0.0,
+    price_move_pct: float = 0.0,
+) -> str:
     """格式化平仓通知"""
-    direction_emoji = "🟢" if pnl >= 0 else "🔴"
-    pnl_emoji = "🟢" if pnl >= 0 else "🔴"
+    direction_emoji = "[GREEN]" if pnl >= 0 else "[RED]"
+    pnl_emoji = "[GREEN]" if pnl >= 0 else "[RED]"
     pnl_sign = "+" if pnl >= 0 else ""
     direction_text = "做多 LONG" if direction == "LONG" else "做空 SHORT"
-    
+
     msg = f"""{direction_emoji} <b>宙斯交易中枢 | 平仓完成</b>
 
 <b>标的</b>  <code>{_escape(symbol)}</code>
 <b>方向</b>  {direction_text}
 <b>入场</b>  <code>${entry_price:,.4f}</code>
 <b>出场</b>  <code>${exit_price:,.4f}</code>
-<b>数量</b>  <code>{quantity}</code>
+<b>数量</b>  <code>{_fmt_num(quantity)}</code>
 <b>盈亏</b>  {pnl_emoji} <b>{pnl_sign}${pnl:,.2f}</b>  ({pnl_sign}{pnl_pct:.2f}%)
 <b>原因</b>  <code>{_escape(_humanize_close_reason(reason))}</code>"""
-    
+
     if strategy_line:
         msg += f"\n<b>策略</b>  <code>{_escape(strategy_line)}</code>"
     if price_move_pct:
@@ -249,7 +284,7 @@ def format_close_position_msg(symbol: str, direction: str, entry_price: float, e
         msg += f"\n<b>持仓</b>  {duration_hours:.1f} 小时"
     if session_id:
         msg += f"\n<b>流水号</b>  <code>{_escape(session_id)}</code>"
-        
+
     return msg
 
 
@@ -271,22 +306,21 @@ def format_partial_take_profit_msg(
     pnl_sign = "+" if pnl >= 0 else ""
     level_text = f"TP{level}" if level else "部分止盈"
 
-    msg = f"""🎯 <b>宙斯交易中枢 | 分批止盈成交</b>
+    msg = f"""🔄 <b>宙斯交易中枢 | 分批止盈成交</b>
 
 <b>标的</b>  <code>{_escape(symbol)}</code>
 <b>方向</b>  {direction_text}
 <b>档位</b>  <code>{_escape(level_text)}</code>
 <b>入场</b>  <code>${entry_price:,.4f}</code>
-<b>成交价</b>  <code>${exit_price:,.4f}</code>
+<b>成交价格</b>  <code>${exit_price:,.4f}</code>
 <b>止盈数量</b>  <code>{_fmt_num(quantity)}</code>
 <b>剩余数量</b>  <code>{_fmt_num(remaining_quantity)}</code>
-<b>本次盈亏</b>  🟢 <b>{pnl_sign}${pnl:,.2f}</b>  ({pnl_sign}{pnl_pct:.2f}%)"""
+<b>本次盈亏</b>  [GREEN] <b>{pnl_sign}${pnl:,.2f}</b>  ({pnl_sign}{pnl_pct:.2f}%)"""
 
     if strategy_line:
         msg += f"\n<b>策略</b>  <code>{_escape(strategy_line)}</code>"
     if session_id:
         msg += f"\n<b>流水号</b>  <code>{_escape(session_id)}</code>"
-
     return msg
 
 
@@ -295,7 +329,7 @@ def format_protection_status_msg(
     stop_loss_ok: bool,
     take_profit_ok: bool,
     stop_loss_order_id: int = 0,
-    take_profit_order_ids: list[int] = None,
+    take_profit_order_ids: list[int] | None = None,
     session_id: str = "",
     source: str = "audit",
     message: str = "",
@@ -303,7 +337,7 @@ def format_protection_status_msg(
     """Format exchange-side protection status notification."""
     tp_ids = take_profit_order_ids or []
     ok = stop_loss_ok and take_profit_ok
-    title = "🛡️ 宙斯交易中枢 | 保护单确认" if ok else "🚨 宙斯交易中枢 | 裸仓风险"
+    title = "🛡️ <b>宙斯交易中枢 | 保护单确认</b>" if ok else "⚠️ <b>宙斯交易中枢 | 裸仓风险</b>"
     status_text = "✅ 已受保护" if ok else "❌ 保护不完整"
     sl_text = f"✅ {stop_loss_order_id}" if stop_loss_ok else "❌ 缺失"
     tp_text = f"✅ {', '.join(str(x) for x in tp_ids)}" if take_profit_ok else "❌ 缺失"
@@ -337,7 +371,7 @@ def format_latency_alert_msg(
         slowest_name, slowest_ms = max(steps, key=lambda item: item[1])
 
     lines = [
-        "⏱️ <b>宙斯交易中枢 | 延迟告警</b>",
+        "⚡ <b>宙斯交易中枢 | 延迟警告</b>",
         "",
         f"<b>流程</b>  <code>{_escape(flow)}</code>",
         f"<b>总耗时</b>  <code>{total_ms:.0f} ms</code>",
@@ -352,7 +386,7 @@ def format_latency_alert_msg(
         lines.append("")
         lines.append("<b>分段耗时</b>")
         for name, elapsed_ms in steps:
-            lines.append(f"• {_escape(name)}  <code>{elapsed_ms:.0f} ms</code>")
+            lines.append(f"•{_escape(name)}  <code>{elapsed_ms:.0f} ms</code>")
 
     return "\n".join(lines)
 
@@ -370,36 +404,41 @@ def format_summary_msg(
 
 <b>持仓数</b>  <code>{len(positions)}</code>
 <b>未实现</b>  <code>{total_pnl:+,.2f} USDT</code>
-<b>已实现</b>  <code>{realized_pnl:+,.2f} USDT</code>"""
+<b>已实现</b>  <code>{realized_pnl:.2f} USDT</code>"""
     if total_balance > 0:
         msg += f"\n<b>总余额</b>  <code>{total_balance:,.2f} USDT</code>"
     if available_balance > 0:
         msg += f"\n<b>可用余额</b>  <code>{available_balance:,.2f} USDT</code>"
-    
+
     if not positions:
-        msg += "\n\n📭 当前无持仓"
-    else:
-        for i, pos in enumerate(positions, 1):
-            pnl = pos.get('unrealized_pnl', 0)
-            pnl_sign = "+" if pnl >= 0 else ""
-            pnl_emoji = "🟢" if pnl >= 0 else "🔴"
-            side = pos.get('side', 'UNKNOWN')
-            current_price = pos.get('current_price', 0)
-            
-            take_profit_display = pos.get('take_profit_targets_text') or f"${pos.get('take_profit', 0):,.4f}"
+        msg += "\n\n[EMPTY] 当前无持仓"
+        return msg
 
-            msg += f"""
+    for i, pos in enumerate(positions, 1):
+        pnl = float(pos.get("unrealized_pnl", 0) or 0)
+        pnl_sign = "+" if pnl >= 0 else ""
+        pnl_emoji = "[GREEN]" if pnl >= 0 else "[RED]"
+        side = pos.get("side", "UNKNOWN")
+        current_price = float(pos.get("current_price", 0) or 0)
+        take_profit_display = pos.get("take_profit_targets_text") or f"${float(pos.get('take_profit', 0) or 0):,.4f}"
 
-<b>{i}.</b> <code>{_escape(pos['symbol'])}</code>  {side}
-入场 <code>${pos.get('entry_price', 0):,.4f}</code>  |  现价 <code>${current_price:,.4f}</code>
-止损 <code>${pos.get('stop_loss', 0):,.4f}</code>  |  止盈 <code>{_escape(take_profit_display)}</code>
-盈亏 {pnl_emoji} <code>{pnl_sign}${pnl:,.2f}</code>  ({pos.get('unrealized_pnl_pct', 0):+.2f}%)"""
-            
+        msg += f"""
+
+<b>{i}.</b> <code>{_escape(pos.get('symbol', 'UNKNOWN'))}</code>  {side}
+入场 <code>${float(pos.get('entry_price', 0) or 0):,.4f}</code>  |  现价 <code>${current_price:,.4f}</code>
+止损 <code>${float(pos.get('stop_loss', 0) or 0):,.4f}</code>  |  止盈 <code>{_escape(take_profit_display)}</code>
+盈亏 {pnl_emoji} <code>{pnl_sign}${pnl:,.2f}</code>  ({float(pos.get('unrealized_pnl_pct', 0) or 0):+.2f}%)"""
+
     return msg
 
 
-def format_error_msg(error_type: str, message: str, symbol: str = None,
-                     session_id: str = "", component: str = "") -> str:
+def format_error_msg(
+    error_type: str,
+    message: str,
+    symbol: str | None = None,
+    session_id: str = "",
+    component: str = "",
+) -> str:
     """格式化错误通知"""
     msg = f"""❌ <b>宙斯交易中枢 | 交易异常</b>
 
@@ -411,7 +450,6 @@ def format_error_msg(error_type: str, message: str, symbol: str = None,
     if session_id:
         msg += f"\n<b>流水号</b>  <code>{_escape(session_id)}</code>"
     msg += f"\n<b>详情</b>\n<code>{_escape(message)}</code>"
-    
     return msg
 
 
@@ -426,13 +464,13 @@ def format_startup_msg(
     max_positions: int,
 ) -> str:
     """格式化启动通知"""
-    return f"""⚔️ <b>宙斯交易中枢 | 系统启动</b>
+    return f"""🚀 <b>宙斯交易中枢 | 系统启动</b>
 
 <b>模式</b>  <code>{_escape(mode_name)}</code>
 <b>杠杆</b>  {leverage}x
 <b>单笔风险</b>  {risk_pct:.2f}%
 <b>止损 / 止盈</b>  {stop_loss_pct:.2f}% / {take_profit_pct:.2f}%
-<b>扫描范围</b>  前 <code>{scan_top_n}</code> 个币种
+<b>扫描范围</b>  前<code>{scan_top_n}</code> 个币种
 <b>扫描间隔</b>  <code>{scan_interval_sec}</code> 秒
 <b>最大持仓</b>  <code>{max_positions}</code> 个"""
 
@@ -444,32 +482,23 @@ def format_shutdown_msg(
     unrealized_pnl: float,
 ) -> str:
     """格式化停机通知"""
-    return f"""🛑 <b>宙斯交易中枢 | 系统停止</b>
+    return f"""[STOP] <b>宙斯交易中枢 | 系统停止</b>
 
 <b>模式</b>  <code>{_escape(mode_name)}</code>
 <b>已平仓</b>  <code>{closed_trades}</code> 笔
-<b>已实现</b>  <code>{realized_pnl:+,.2f} USDT</code>
-<b>未实现</b>  <code>{unrealized_pnl:+,.2f} USDT</code>"""
+<b>已实现</b>  <code>{realized_pnl:.2f} USDT</code>
+<b>未实现</b>  <code>{unrealized_pnl:.2f} USDT</code>"""
 
 
 def format_signal_message(signal: dict[str, Any], trade_result: dict[str, Any]) -> str:
-    """Format a trading signal as a Telegram message.
-
-    Args:
-        signal: Signal dict with symbol, stage, direction, metrics
-        trade_result: Trade execution result
-
-    Returns:
-        Formatted message string
-    """
+    """Format a trading signal as a Telegram HTML message."""
     symbol = signal.get("symbol", "UNKNOWN")
     stage = signal.get("stage", "UNKNOWN")
     direction = signal.get("direction", "UNKNOWN")
-    metrics = signal.get("metrics", {})
-    trade = trade_result
+    metrics = signal.get("metrics", {}) or {}
+    trade = trade_result or {}
 
-    # Emoji based on direction
-    direction_emoji = "🟢" if direction == "LONG" else "🔴"
+    direction_emoji = "🟢" if direction == "LONG" else "🔴" if direction == "SHORT" else "🟡"
     stage_emoji = {
         "pre_break": "⚡",
         "confirmed_breakout": "🚀",
@@ -477,66 +506,59 @@ def format_signal_message(signal: dict[str, Any], trade_result: dict[str, Any]) 
         "exhaustion": "⚠️",
     }.get(stage, "📊")
 
-    # Build message
     action = trade.get("action", "UNKNOWN")
-    action_emoji = {"EXECUTED": "✅", "DRY_RUN": "🧪", "SKIPPED": "⏭️", "FAILED": "❌"}.get(action, "📝")
+    action_emoji = {
+        "EXECUTED": "✅",
+        "DRY_RUN": "🎮",
+        "SKIPPED": "🔔",
+        "FAILED": "❌",
+    }.get(action, "📦")
 
-    msg = f"""{stage_emoji * 2} *BREAKOUT SIGNAL* {stage_emoji * 2}
+    change_24h = float(metrics.get("change_24h_pct", metrics.get("change_24h", 0)) or 0)
+    oi_24h = float(metrics.get("oi_24h_pct", metrics.get("oi_24h", 0)) or 0)
+    funding = float(metrics.get("funding_rate", metrics.get("funding", 0)) or 0)
+    ls_ratio = float(metrics.get("ls_ratio_now", metrics.get("ls_ratio", 0)) or 0)
 
-{direction_emoji} *{symbol}* {direction}
-📊 Stage: *{stage}*
-{action_emoji} Action: *{action}*
+    msg = f"""{stage_emoji}{stage_emoji} <b>BREAKOUT SIGNAL</b> {stage_emoji}{stage_emoji}
 
-━━━━━━━━━━━━━━━━━━━━
-📈 *Market Metrics*
-• 24h Change: `{metrics.get('change_24h', 0):+.2f}%`
-• OI 24h: `{metrics.get('oi_24h', 0):+.2f}%`
-• Funding: `{metrics.get('funding', 0):.6f}`
-• L/S Ratio: `{metrics.get('ls_ratio', 0):.2f}`
+{direction_emoji} <b>{_escape(symbol)}</b>  <code>{_escape(direction)}</code>
+📊 <b>Stage</b>  <code>{_escape(stage)}</code>
+{action_emoji} <b>Action</b>  <code>{_escape(action)}</code>
 
-━━━━━━━━━━━━━━━━━━━━
-💰 *Trade Details*
-"""
+<b>Market Metrics</b>
+•24h Change  <code>{change_24h:+.2f}%</code>
+•OI 24h  <code>{oi_24h:+.2f}%</code>
+•Funding  <code>{funding:.6f}</code>
+•L/S Ratio  <code>{ls_ratio:.2f}</code>"""
 
     if action in {"EXECUTED", "DRY_RUN"}:
         msg += f"""
-• Entry Price: *${trade.get('entry_price', 0):,.2f}*
-• Quantity: `{trade.get('quantity', 0)}`
-• Position Value: *${trade.get('position_value_usdt', 0):,.2f}*
-• Stop Loss: *${trade.get('stop_loss_price', 0):,.2f}*
-• Risk: *${trade.get('risk_amount_usdt', 0):,.2f}*
-"""
-    else:
-        msg += f"\n• Reason: {trade.get('reason', 'N/A')}\n"
 
-    mode = "🧪 DRY RUN" if trade.get("action") == "DRY_RUN" else "💰 LIVE"
-    msg += f"\n━━━━━━━━━━━━━━━━━━━━\n Mode: *{mode}*"
+<b>Trade Details</b>
+•Entry Price  <code>${float(trade.get('entry_price', 0) or 0):,.4f}</code>
+•Quantity  <code>{_fmt_num(trade.get('quantity', 0))}</code>
+•Position Value  <code>${float(trade.get('position_value_usdt', 0) or 0):,.2f}</code>
+•Stop Loss  <code>${float(trade.get('stop_loss_price', 0) or 0):,.4f}</code>
+•Risk  <code>${float(trade.get('risk_amount_usdt', 0) or 0):,.2f}</code>"""
+    else:
+        msg += f"\n\n<b>Reason</b>  <code>{_escape(trade.get('reason', 'N/A'))}</code>"
 
     return msg
 
 
 def send_signal_alert(signal: dict[str, Any], trade_result: dict[str, Any]) -> bool:
-    """Send a signal alert to Telegram.
-
-    Args:
-        signal: Signal dict
-        trade_result: Trade execution result
-
-    Returns:
-        True if sent successfully
-    """
-    message = format_signal_message(signal, trade_result)
-    return send_telegram_message(message)
+    """Send a signal alert to Telegram."""
+    return send_telegram_message(format_signal_message(signal, trade_result))
 
 
 def format_scan_monitor_msg(
     signals: list[dict[str, Any]],
     scanned_count: int = 0,
     max_items: int = 5,
-    report_title: str = "宙斯交易中枢 | 妖币扫描报告",
+    report_title: str = "宙斯交易中枢 | 币种扫描报告",
     count_label: str = "扫描数量",
 ) -> str:
-    """Format a compact real-time scanner monitor report with entry-confirmation states."""
+    """Format a compact real-time scanner monitor report."""
     now_text = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     msg = f"""📡 <b>{_escape(report_title)}</b>
 <code>{now_text}</code>
@@ -550,34 +572,42 @@ def format_scan_monitor_msg(
     for item in signals[:max_items]:
         symbol = item.get("symbol", "UNKNOWN")
         direction = item.get("direction", "UNKNOWN")
-        score = (item.get("score") or {}).get("total_score", 0)
+        score = float((item.get("score") or {}).get("total_score", 0) or 0)
         confidence = (item.get("score") or {}).get("confidence", "")
         metrics = item.get("metrics", {}) or {}
-        funding = float(metrics.get("funding_rate", 0) or 0) * 100
+
+        funding_pct = float(metrics.get("funding_rate", 0) or 0) * 100
         price = float(metrics.get("last_price", item.get("price", 0)) or 0)
         change_24h = float(metrics.get("change_24h_pct", 0) or 0)
         oi_24h = float(metrics.get("oi_24h_pct", 0) or 0)
+
         entry_status_text = item.get("entry_status_text", "")
         entry_note = item.get("entry_note", "")
         strategy_line = item.get("strategy_line", "")
         watch_stage = item.get("watch_stage", "")
+
         tag = "跟多信号" if direction in {"LONG", "CONSIDER_LONG"} else "跟空信号"
-        funding_tag = "极负费率" if funding <= -0.5 else "负费率" if funding < 0 else "正费率"
+        if funding_pct <= -0.5:
+            funding_tag = "极负费率"
+        elif funding_pct < 0:
+            funding_tag = "负费率"
+        else:
+            funding_tag = "正费率"
 
         msg += f"""
 
-📨 <b>{_escape(tag)} ({_escape(funding_tag)})</b>
-• <code>{_escape(symbol)}</code> 评分 <code>{float(score):.1f}</code> {_escape(str(confidence))}
-        • 费率 <code>{funding:+.4f}%</code>  价格 <code>{change_24h:+.2f}%</code>
-        • OI <code>{oi_24h:+.2f}%</code>  现价 <code>${price:,.6f}</code>"""
+🧭 <b>{_escape(tag)} ({_escape(funding_tag)})</b>
+•<code>{_escape(symbol)}</code> 评分 <code>{score:.1f}</code> {_escape(str(confidence))}
+•费率 <code>{funding_pct:+.4f}%</code>  价格 <code>{change_24h:+.2f}%</code>
+•OI <code>{oi_24h:+.2f}%</code>  现价 <code>${price:,.6f}</code>"""
         if strategy_line:
-            msg += f"\n• 策略 <code>{_escape(strategy_line)}</code>"
+            msg += f"\n•策略 <code>{_escape(strategy_line)}</code>"
         if watch_stage:
-            msg += f"\n• 阶段 <code>{_escape(watch_stage)}</code>"
+            msg += f"\n•阶段 <code>{_escape(watch_stage)}</code>"
         if entry_status_text:
-            msg += f"\n• 状态 <code>{_escape(entry_status_text)}</code>"
+            msg += f"\n•状态 <code>{_escape(entry_status_text)}</code>"
         if entry_note:
-            msg += f"\n• 说明 <code>{_escape(entry_note)}</code>"
+            msg += f"\n•说明 <code>{_escape(entry_note)}</code>"
 
     return msg
 
@@ -591,9 +621,9 @@ def format_daily_report_msg(report: dict[str, Any]) -> str:
     avg_pnl = float(report.get("avg_pnl", 0) or 0)
     winning = int(report.get("winning_trades", 0) or 0)
     losing = int(report.get("losing_trades", 0) or 0)
-    pnl_emoji = "🟢" if total_pnl >= 0 else "🔴"
+    pnl_emoji = "[GREEN]" if total_pnl >= 0 else "[RED]"
 
-    msg = f"""📘 <b>宙斯交易中枢 | 每日复盘</b>
+    msg = f"""📝 <b>宙斯交易中枢 | 每日复盘</b>
 <code>{report_date}</code>
 
 <b>已平仓</b>  <code>{closed_trades}</code>
@@ -623,160 +653,110 @@ def format_daily_report_msg(report: dict[str, Any]) -> str:
 
     reason_counts = report.get("reason_counts") or {}
     if reason_counts:
-        reason_text = " | ".join(
-            f"{_escape(str(key))}: <code>{int(value)}</code>"
-            for key, value in reason_counts.items()
-        )
-        msg += f"\n\n<b>平仓分布</b>  {reason_text}"
-
-    side_stats = report.get("side_stats") or {}
-    long_stats = side_stats.get("LONG", {})
-    short_stats = side_stats.get("SHORT", {})
-    msg += (
-        f"\n\n<b>LONG</b>  <code>{int(long_stats.get('count', 0) or 0)}</code> 笔 / "
-        f"<code>{float(long_stats.get('pnl', 0) or 0):+,.2f} USDT</code>"
-        f"\n<b>SHORT</b>  <code>{int(short_stats.get('count', 0) or 0)}</code> 笔 / "
-        f"<code>{float(short_stats.get('pnl', 0) or 0):+,.2f} USDT</code>"
-    )
-
-    worst_stage = report.get("worst_stage") or ""
-    worst_stage_pnl = float(report.get("worst_stage_pnl", 0) or 0)
-    if worst_stage:
-        msg += f"\n\n<b>最亏阶段</b>  <code>{_escape(worst_stage)}</code> / <code>{worst_stage_pnl:+,.2f} USDT</code>"
-
-    worst_pattern = report.get("worst_pattern") or ""
-    worst_pattern_pnl = float(report.get("worst_pattern_pnl", 0) or 0)
-    if worst_pattern:
-        msg += f"\n<b>最亏模式</b>  <code>{_escape(worst_pattern)}</code> / <code>{worst_pattern_pnl:+,.2f} USDT</code>"
+        msg += "\n\n<b>平仓原因</b>"
+        for reason, count in sorted(reason_counts.items(), key=lambda item: (-int(item[1] or 0), str(item[0]))):
+            msg += f"\n•{_escape(str(reason))}  <code>{int(count or 0)}</code>"
 
     return msg
 
 
-def send_daily_summary(trades: list[dict], pnl: float, balance: float) -> bool:
-    """Send daily trading summary.
-
-    Args:
-        trades: List of trade results
-        pnl: Daily PnL
-        balance: Current balance
-
-    Returns:
-        True if sent successfully
-    """
-    total_trades = len(trades)
-    executed = sum(1 for t in trades if t.get("trade_result", {}).get("action") == "EXECUTED")
-
-    pnl_emoji = "🟢" if pnl >= 0 else "🔴"
-
-    message = f"""
-📊 *Daily Trading Summary*
-
-{pnl_emoji} PnL: *${pnl:,.2f}*
-💰 Balance: *${balance:,.2f}*
-
-📈 Trades: *{total_trades}*
-✅ Executed: *{executed}*
-
-━━━━━━━━━━━━━━━━━━━━
-_Binance Breakout Monitor_
-"""
-    return send_telegram_message(message)
-
-
-# ═══════════════════════════════════════════════════════════════
-# 🏦 庄家雷达通知模板
-# ═══════════════════════════════════════════════════════════════
-
-def format_dark_flow_alert(symbol: str, oi_change_pct: float, price_change_pct: float,
-                           funding_rate: float, market_cap: float) -> str:
-    """格式化暗流信号通知
-    
-    暗流定义：OI变化 >= 3%，但价格变化 < 1%
-    这是最经典的庄家收筹信号：大资金进场但价格不动
-    """
-    msg = f"""🎯 <b>暗流信号！庄家收筹</b>
+def format_dark_flow_alert(
+    symbol: str,
+    oi_change_pct: float,
+    price_change_pct: float,
+    funding_rate: float,
+    market_cap: float,
+) -> str:
+    """Format a 'dark flow' alert (OI up while price barely moves)."""
+    return f"""🔄 <b>暗流信号</b>
 
 <b>标的</b>  <code>{_escape(symbol)}</code>
-<b>OI变化</b>  {oi_change_pct:+.1f}%
+<b>OI 变化</b>  <code>{oi_change_pct:+.1f}%</code>
 <b>价格变化</b>  <code>{price_change_pct:+.1f}%</code>
 <b>资金费率</b>  <code>{funding_rate:.4f}%</code>
-<b>流通市值</b>  <code>${market_cap/1e6:.1f}M</code>
+<b>市值</b>  <code>${market_cap/1e6:.1f}M</code>
 
-💡 <b>解读</b>：OI暴涨但价格不动 = 大资金进场收筹 = 最佳埋伏时机"""
-
-    return msg
+📌 <b>解读</b>  OI 上升但价格滞涨，可能有埋伏资金/对冲盘，避免情绪化追涨。"""
 
 
 def format_accumulation_pool_report(pool: list, limit: int = 10) -> str:
-    """格式化收筹池报告"""
-    msg = f"""🏦 <b>庄家收筹池</b>
+    """Format a compact accumulation pool report."""
+    msg = f"""🎯 <b>收筹池报告</b>
 
-<b>池内标的</b>  <code>{len(pool)} 个</code>
-───────────────"""
+<b>池内标的</b>  <code>{len(pool)}</code>
+────────────"""
 
     for i, p in enumerate(pool[:limit], 1):
         symbol = p.get("symbol", "")
-        days = p.get("sideways_days", 0)
-        range_pct = p.get("price_range_pct", 0)
-        cap = p.get("market_cap_usd", 0)
-
-        msg += f"""
-{i}. <code>{_escape(symbol)}</code> | 横盘<b>{days}天</b> | 波动{range_pct:.0f}% | ${cap/1e6:.1f}M"""
+        days = int(p.get("sideways_days", 0) or 0)
+        range_pct = float(p.get("price_range_pct", 0) or 0)
+        cap = float(p.get("market_cap_usd", 0) or 0)
+        msg += (
+            f"\n{i}. <code>{_escape(symbol)}</code>"
+            f"  | 横盘 <code>{days}d</code>"
+            f"  | 振幅 <code>{range_pct:.0f}%</code>"
+            f"  | 市值 <code>${cap/1e6:.1f}M</code>"
+        )
 
     if len(pool) > limit:
-        msg += f"\n... 还有 {len(pool) - limit} 个标的"
+        msg += f"\n… 还有 <code>{len(pool) - limit}</code> 个标的未展示"
 
-    msg += "\n\n💡 横盘≥45天+低波动 = 庄家低调收筹 = 爆发前兆"
-
+    msg += "\n\n📌 <b>提示</b>  横盘时间越久 + 振幅越小，越可能处在“收筹/蓄势”阶段。"
     return msg
 
 
 def format_short_fuel_report(fuel_list: list, limit: int = 5) -> str:
-    """格式化空头燃料报告"""
-    msg = f"""🔥 <b>空头燃料榜</b>
+    """Format a short-fuel (crowded shorts) report."""
+    msg = f"""🔥 <b>空头燃料报告</b>
 
-<b>空头燃料</b>  <code>{len(fuel_list)} 个</code>
-───────────────"""
+<b>候选标的</b>  <code>{len(fuel_list)}</code>
+────────────"""
 
     for i, f in enumerate(fuel_list[:limit], 1):
         symbol = f.get("symbol", "")
-        rate = f.get("funding_rate", 0)
-        price_pct = f.get("price_change_pct", 0)
-        vol = f.get("volume_usd", 0)
-
-        msg += f"""
-{i}. <code>{_escape(symbol)}</code> | 费率<b>{rate:.3f}%</b> | 涨{price_pct:.0f}% | Vol ${vol/1e6:.1f}M"""
+        rate = float(f.get("funding_rate", 0) or 0)
+        price_pct = float(f.get("price_change_pct", 0) or 0)
+        vol = float(f.get("volume_usd", 0) or 0)
+        msg += (
+            f"\n{i}. <code>{_escape(symbol)}</code>"
+            f"  | 费率 <code>{rate:.3f}%</code>"
+            f"  | 涨跌 <code>{price_pct:+.0f}%</code>"
+            f"  | Vol <code>${vol/1e6:.1f}M</code>"
+        )
 
     if len(fuel_list) > limit:
-        msg += f"\n... 还有 {len(fuel_list) - limit} 个标的"
+        msg += f"\n… 还有 <code>{len(fuel_list) - limit}</code> 个标的未展示"
 
-    msg += "\n\n💡 费率越负 = 做空人越多 = 空头燃料 = 继续拉的动能"
-
+    msg += "\n\n📌 <b>提示</b>  费率越负，做空越拥挤；若价格转强，容易触发反向挤压。"
     return msg
 
 
-def format_radar_summary(pool_count: int, oi_signals: int, dark_flows: int,
-                         short_fuel: int, top_dark_flow: str = None) -> str:
-    """格式化雷达摘要通知"""
-    msg = f"""📊 <b>庄家雷达摘要</b>
+def format_radar_summary(
+    pool_count: int,
+    oi_signals: int,
+    dark_flows: int,
+    short_fuel: int,
+    top_dark_flow: str | None = None,
+) -> str:
+    """Format a compact radar summary."""
+    msg = f"""📊 <b>雷达摘要</b>
 
-<b>收筹池</b>  <code>{pool_count} 个</code>
-<b>OI异动</b>  <code>{oi_signals} 个</code>
-<b>暗流信号</b>  <code>{dark_flows} 个</code>
-<b>空头燃料</b>  <code>{short_fuel} 个</code>"""
+<b>收筹池</b>  <code>{pool_count}</code>
+<b>OI 异动</b>  <code>{oi_signals}</code>
+<b>暗流信号</b>  <code>{dark_flows}</code>
+<b>空头燃料</b>  <code>{short_fuel}</code>"""
 
     if top_dark_flow:
-        msg += f"\n\n<b>最佳埋伏</b>：<code>{_escape(top_dark_flow)}</code> 暗流确认"
-
+        msg += f"\n\n<b>重点暗流</b>  <code>{_escape(top_dark_flow)}</code>"
     return msg
 
 
-def main():
-    """Test Telegram notifications."""
+def main() -> None:
+    """Manual CLI test."""
     import argparse
 
     parser = argparse.ArgumentParser(description="Test Telegram notifications")
-    parser.add_argument("--message", "-m", default="Test message from binance-monitor")
+    parser.add_argument("--message", "-m", default="Test message from Hermes Trader")
     args = parser.parse_args()
 
     success = send_telegram_message(args.message)
@@ -786,3 +766,4 @@ def main():
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO)
     main()
+

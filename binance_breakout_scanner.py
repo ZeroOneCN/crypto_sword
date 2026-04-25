@@ -10,15 +10,19 @@ For now, we start with small, unit-tested metric helpers.
 
 from __future__ import annotations
 
+import importlib.util
 import json
 import logging
 import os
+import sys
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Iterable, List, Tuple
+
+from hermes_paths import hermes_scripts_dir
 
 logger = logging.getLogger(__name__)
 
@@ -47,9 +51,6 @@ def _cache_set(key: tuple[Any, ...], value: Any, ttl_sec: float) -> Any:
     with _CACHE_LOCK:
         _CACHE[key] = (time.time() + ttl_sec, value)
     return value
-
-import importlib.util
-import sys
 
 try:
     from binance_api_client import get_native_binance_client
@@ -174,13 +175,30 @@ _radar_mod = None
 
 
 def _load_radar_module():
-    """Load token_anomaly_radar.py via absolute path (keeps tests self-contained)."""
+    """Load token_anomaly_radar module.
+
+    Prefer regular imports (repo-local). If not importable, fall back to
+    `$HERMES_HOME/scripts/token_anomaly_radar.py` for legacy deployments.
+    """
     global _radar_mod
     if _radar_mod is not None:
         return _radar_mod
 
-    module_path = Path("/root/.hermes/scripts/token_anomaly_radar.py")
+    try:
+        import token_anomaly_radar as mod  # type: ignore
+
+        _radar_mod = mod
+        return mod
+    except Exception:
+        pass
+
+    module_path = hermes_scripts_dir() / "token_anomaly_radar.py"
+    if not module_path.exists():
+        raise FileNotFoundError(f"token_anomaly_radar.py not found: {module_path}")
+
     spec = importlib.util.spec_from_file_location("token_anomaly_radar", module_path)
+    if spec is None or spec.loader is None:
+        raise ImportError(f"Failed to load spec for token_anomaly_radar from {module_path}")
     mod = importlib.util.module_from_spec(spec)
     sys.modules[spec.name] = mod
     spec.loader.exec_module(mod)

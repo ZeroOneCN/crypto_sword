@@ -17,8 +17,10 @@ from pathlib import Path
 from typing import Optional, List, Dict, Any
 from dataclasses import dataclass, asdict
 
+from hermes_paths import hermes_logs_dir
+
 # 支持环境变量配置路径，兼容现有部署
-_DEFAULT_DB_PATH = Path("/root/.hermes/logs/trade_log.db")
+_DEFAULT_DB_PATH = hermes_logs_dir() / "trade_log.db"
 DB_PATH = Path(os.environ.get("HERMES_DB_PATH", str(_DEFAULT_DB_PATH)))
 
 # 确保目录存在

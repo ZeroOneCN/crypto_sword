@@ -11,12 +11,15 @@
 
 import sqlite3
 import json
+import os
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import List, Dict, Any, Optional
 import csv
 
-DB_PATH = Path("/root/.hermes/logs/trade_log.db")
+from hermes_paths import hermes_logs_dir
+
+DB_PATH = Path(os.environ.get("HERMES_DB_PATH", str(hermes_logs_dir() / "trade_log.db")))
 
 
 def get_connection():
