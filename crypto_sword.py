@@ -160,7 +160,7 @@ class TradingConfig:
         # 杠杆 - 奥丁的长矛
         leverage: int = 5,
         # 风控 - 英灵殿的盾牌
-        risk_per_trade_pct: float = 0.5,
+        risk_per_trade_pct: float = 2.0,  # 与 CLI 默认值统一
         stop_loss_pct: float = 8.0,
         take_profit_pct: float = 20.0,
         take_profit_mode: str = "roi",
@@ -171,7 +171,7 @@ class TradingConfig:
         trailing_stop_pct: float = 5.0,
         trailing_stop_enabled: bool = True,
         # 扫描 - 弗丽嘉的鹰眼
-        scan_top_n: int = 50,
+        scan_top_n: int = 30,  # 与 CLI 默认值统一
         scan_interval_sec: int = 300,
         fast_scan_interval_sec: int = 60,
         scan_workers: int = 6,
@@ -490,6 +490,13 @@ class CryptoSword:
         # 通知控制
         self._last_summary_time: float = 0
         self._summary_interval: int = 6 * 3600  # 每 6 小时发送一次持仓汇总
+        
+        # 🏦 庄家雷达后台监控（初始化到 __init__ 防止 AttributeError）
+        self._last_radar_scan_time: float = 0
+        self._radar_scan_interval: int = 3600  # 每小时扫描一次 OI 异动
+        self._last_pool_scan_time: float = 0
+        self._pool_scan_interval: int = 86400  # 每天更新一次收筹池
+        
         self._base_scan_interval = config.scan_interval_sec
         self._current_scan_interval = config.scan_interval_sec
         self._market_overview: dict[str, Any] = {}
@@ -2745,6 +2752,10 @@ class CryptoSword:
             order_status = entry_order.get("status", "UNKNOWN")
             actual_quantity = float(entry_order.get("quantity", 0) or result.get("quantity", 0))
             
+            # 修复：quantity 可能为 None（风控评估失败时）
+            if quantity is None:
+                quantity = actual_quantity if actual_quantity > 0 else 0
+            
             if order_status == "PARTIALLY_FILLED":
                 logger.warning(f"⚠️ {symbol} 部分成交！请求数量：{quantity}，实际成交：{actual_quantity}")
                 # 如果实际成交数量远小于请求数量（<50%），则视为失败
@@ -3309,12 +3320,6 @@ class CryptoSword:
 
         # 🌊 获取市场概览（Surf 数据增强）
         self._refresh_market_profile()
-
-        # 🏦 启动庄家雷达后台监控
-        self._last_radar_scan_time = 0
-        self._radar_scan_interval = 3600  # 每小时扫描一次 OI 异动
-        self._last_pool_scan_time = 0
-        self._pool_scan_interval = 86400  # 每天更新一次收筹池
 
         # 主循环
         while self.running:

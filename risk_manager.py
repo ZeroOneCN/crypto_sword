@@ -80,19 +80,23 @@ class PositionRisk:
     risk_level: str = "低"  # 低 / 中 / 高 / 严重
     
     def __post_init__(self):
-        # 计算未实现盈亏
-        if self.side == "LONG":
-            self.unrealized_pnl = (self.current_price - self.entry_price) * self.quantity
-            self.unrealized_pnl_pct = (self.current_price - self.entry_price) / self.entry_price * 100
+        # 计算未实现盈亏（修复：除零保护）
+        if self.entry_price > 0:
+            if self.side == "LONG":
+                self.unrealized_pnl = (self.current_price - self.entry_price) * self.quantity
+                self.unrealized_pnl_pct = (self.current_price - self.entry_price) / self.entry_price * 100
+            else:
+                self.unrealized_pnl = (self.entry_price - self.current_price) * self.quantity
+                self.unrealized_pnl_pct = (self.entry_price - self.current_price) / self.entry_price * 100
         else:
-            self.unrealized_pnl = (self.entry_price - self.current_price) * self.quantity
-            self.unrealized_pnl_pct = (self.entry_price - self.current_price) / self.entry_price * 100
-        
+            self.unrealized_pnl = 0.0
+            self.unrealized_pnl_pct = 0.0
+
         # 计算风险回报比
         risk = abs(self.entry_price - self.stop_loss)
         reward = abs(self.take_profit - self.entry_price)
         self.risk_reward_ratio = reward / risk if risk > 0 else 0
-        
+
         # 评估风险等级
         self._assess_risk_level()
     

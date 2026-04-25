@@ -21,6 +21,14 @@ except Exception:
     def is_native_binance_configured() -> bool:
         return False
 
+# 导入行情获取函数（用于滑点保护和名义价值校验）
+try:
+    from binance_breakout_scanner import fetch_ticker_24hr as get_ticker_24hr
+except ImportError:
+    def get_ticker_24hr(symbol: str = None) -> dict:
+        """Fallback: 返回空字典"""
+        return {}
+
 
 logger = logging.getLogger(__name__)
 _leverage_cache: dict[str, int] = {}
@@ -121,27 +129,29 @@ def check_exchange_health() -> bool:
     """检查交易所系统状态 (P3-1)"""
     global _exchange_health_cache
     now = time.time()
-    
+
     # 使用缓存避免频繁请求
     if now - _exchange_health_cache["last_check"] < _EXCHANGE_HEALTH_CACHE_TTL:
         return _exchange_health_cache["status"] == "OK"
-    
+
     try:
-        # 获取系统状态
-        result = _run_binance_cli(["system-status"])
-        if isinstance(result, dict):
-            status = result.get("status", 0)
-            msg = result.get("msg", "Unknown")
-            is_normal = status == 0
-            
-            _exchange_health_cache = {
-                "status": "OK" if is_normal else f"MAINTENANCE ({msg})",
-                "last_check": now
-            }
-            
-            if not is_normal:
-                logger.warning(f"⚠️ 交易所状态异常：{msg} (Status: {status})")
-            return is_normal
+        # 获取系统状态（使用原生客户端）
+        if get_native_binance_client and is_native_binance_configured():
+            client = get_native_binance_client()
+            result = client.system_status()
+            if isinstance(result, dict):
+                status = result.get("status", 0)
+                msg = result.get("msg", "Unknown")
+                is_normal = status == 0
+
+                _exchange_health_cache = {
+                    "status": "OK" if is_normal else f"MAINTENANCE ({msg})",
+                    "last_check": now
+                }
+
+                if not is_normal:
+                    logger.warning(f"⚠️ 交易所状态异常：{msg} (Status: {status})")
+                return is_normal
         return True  # 默认视为正常
     except Exception as e:
         logger.warning(f"检查交易所状态失败：{e}")
@@ -159,11 +169,6 @@ def check_slippage(entry_price: float, executed_price: float, max_slippage_pct: 
         logger.warning(f"⚠️ 滑点过大：{slippage:.2f}% > {max_slippage_pct}% | 入场价：{entry_price:.4f} -> 成交价：{executed_price:.4f}")
         return False
     return True
-
-
-def ensure_profile_selected(profile: str = "main") -> None:
-    """Deprecated compatibility shim; profile selection is no longer needed."""
-    return {}
 
 
 def ensure_profile_selected(profile: str = "main") -> None:
@@ -366,7 +371,8 @@ def calculate_position_size(
     risk_amount = account_balance * (risk_per_trade_pct / 100.0)
     stop_loss_pct = abs(entry_price - stop_loss_price) / entry_price * 100
 
-    if stop_loss_pct == 0:
+    # 修复：浮点数精度问题，使用阈值判断代替 == 0
+    if stop_loss_pct < 0.01:
         return 0.0
 
     # Position size = risk_amount / stop_loss_percentage
@@ -590,11 +596,12 @@ def place_market_order(
         if not check_exchange_health():
             return OrderResult(
                 symbol=symbol,
-                status="REJECTED",
-                reason="交易所维护中，暂停交易",
-                executed_qty=0,
+                side=side,
+                quantity=quantity,
                 executed_price=0,
                 order_id=0,
+                status="REJECTED",
+                message="交易所维护中，暂停交易",
             )
         
         # 调整 quantity 精度，防止 LOT_SIZE 过滤失败
