@@ -503,6 +503,8 @@ class ExecutionMixin:
     def _entry_rejection_reason(self, symbol: str, direction: str, metrics: dict) -> str:
         """Reject obvious chase entries before expensive scoring and live orders."""
         is_major_symbol = symbol.upper() in self.config.major_symbols
+        if getattr(self.config, "target_altcoins", False) and is_major_symbol:
+            return "altcoin-only mode: skip major symbols"
         change_24h = float(metrics.get("change_24h_pct", 0.0) or 0.0)
         drawdown = float(metrics.get("drawdown_from_24h_high_pct", 0.0) or 0.0)
         range_position = float(metrics.get("range_position_24h_pct", 50.0) or 50.0)

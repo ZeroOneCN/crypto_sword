@@ -27,6 +27,9 @@ class ScannerMixin:
         step_started = time.perf_counter()
         if symbols is not None:
             symbols = list(dict.fromkeys(symbols))[: self.config.scan_top_n]
+            if getattr(self.config, "target_altcoins", False):
+                major_set = {symbol.upper() for symbol in self.config.major_symbols}
+                symbols = [symbol for symbol in symbols if symbol.upper() not in major_set]
             logger.info(f"⚡ Deep scan from {scan_source}: {len(symbols)} symbols | {symbols[:5]}...")
         elif self.config.scan_by_change:
             symbols = self._get_ws_top_symbols_by_change(

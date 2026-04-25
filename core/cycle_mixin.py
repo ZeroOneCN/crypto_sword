@@ -24,6 +24,12 @@ logger = logging.getLogger(__name__)
 class CycleMixin:
     """Runtime cycle scheduling and monitor notifications."""
 
+    def _filter_altcoin_symbols(self, symbols: list[str]) -> list[str]:
+        if not getattr(self.config, "target_altcoins", False):
+            return symbols
+        major_set = {symbol.upper() for symbol in self.config.major_symbols}
+        return [symbol for symbol in symbols if symbol.upper() not in major_set]
+
     def _send_daily_report_if_due(self):
         if not self.config.daily_report_enabled or not self.config.daily_report_on_first_cycle:
             return
@@ -43,8 +49,11 @@ class CycleMixin:
         prefer_major = self._market_style_mode in {"major", "balanced"}
         selected_candidates = candidates if candidates is not None else self._fast_scan_candidates()
         if selected_candidates:
+            selected_candidates = self._filter_altcoin_symbols(selected_candidates)
+        if selected_candidates:
             merged = major_symbols + selected_candidates if prefer_major else selected_candidates + major_symbols
-            return list(dict.fromkeys(merged))[: self.config.scan_top_n]
+            merged = list(dict.fromkeys(merged))[: self.config.scan_top_n]
+            return self._filter_altcoin_symbols(merged)
 
         if self.config.scan_by_change:
             symbols = get_top_symbols_by_change_rest(
@@ -53,12 +62,14 @@ class CycleMixin:
             )
             logger.info(f"🔥 妖币模式(REST) - 扫描 {len(symbols)} 个异动币种：{symbols[:5]}...")
             merged = major_symbols + symbols if prefer_major else symbols + major_symbols
-            return list(dict.fromkeys(merged))[: self.config.scan_top_n]
+            merged = list(dict.fromkeys(merged))[: self.config.scan_top_n]
+            return self._filter_altcoin_symbols(merged)
 
         symbols = get_top_symbols_by_volume_rest(self.config.scan_top_n)
         logger.info(f"📊 成交量模式 - 扫描 {len(symbols)} 个币种：{symbols[:5]}...")
         merged = major_symbols + symbols if prefer_major else symbols + major_symbols
-        return list(dict.fromkeys(merged))[: self.config.scan_top_n]
+        merged = list(dict.fromkeys(merged))[: self.config.scan_top_n]
+        return self._filter_altcoin_symbols(merged)
 
     def _check_new_day(self):
         today = datetime.now().date().isoformat()
