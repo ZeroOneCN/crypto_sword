@@ -597,8 +597,12 @@ class ExecutionMixin:
 
             step_started = time.perf_counter()
             try:
-                balance_info = self._get_account_info_cached(ttl_sec=3.0)
-                balance = float(balance_info.get("availableBalance", 10000))
+                balance_hint = signal.get("_balance_hint")
+                if balance_hint is not None:
+                    balance = float(balance_hint)
+                else:
+                    balance_info = self._get_account_info_cached(ttl_sec=3.0)
+                    balance = float(balance_info.get("availableBalance", 10000))
             except Exception:
                 balance = 10000
             self._record_latency_step(latency_steps, "account_query", step_started)

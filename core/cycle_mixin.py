@@ -294,8 +294,8 @@ class CycleMixin:
         signals = []
         if deep_due:
             step_started = time.perf_counter()
-            deep_symbols = candidates[: self.config.scan_top_n] if candidates else None
-            signals = self.scan_for_signals(deep_symbols, scan_source="fast_candidates")
+            deep_symbols = self._select_deep_scan_symbols()
+            signals = self.scan_for_signals(deep_symbols, scan_source="merged_selector")
             self._last_deep_scan_time = now
             self._record_latency_step(latency_steps, "deep_scan_signals", step_started)
             ready_count = sum(1 for item in signals if item.get("entry_status") == "ready")
@@ -321,12 +321,20 @@ class CycleMixin:
 
         step_started = time.perf_counter()
         if deep_due:
+            balance_hint = None
+            try:
+                balance_info = self._get_account_info_cached(ttl_sec=3.0)
+                balance_hint = float(balance_info.get("availableBalance", 0) or 0)
+            except Exception:
+                balance_hint = None
             for signal in signals:
                 if self.tracker.get_open_count() >= self.config.max_open_positions:
                     logger.info(f"Max open positions reached ({self.config.max_open_positions})")
                     break
                 if signal.get("entry_status") != "ready":
                     continue
+                if balance_hint is not None:
+                    signal["_balance_hint"] = balance_hint
 
                 position = self.execute_entry(signal)
                 if position:
