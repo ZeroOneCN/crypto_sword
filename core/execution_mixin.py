@@ -860,20 +860,17 @@ class ExecutionMixin:
                     int(item.get("order_id", 0) or 0) for item in take_profit_targets if item.get("order_id")
                 ],
             )
-            step_started = time.perf_counter()
-            self._ensure_position_protection(position)
-            self._send_protection_status(position, source="entry_confirm", force=True)
-            self._record_latency_step(latency_steps, "protection_confirm", step_started)
 
             from telegram_notifier import format_open_position_msg
 
             score = signal.get("score", {}).get("total_score", 0) if signal.get("score") else 0
+            leverage_applied = int(result.get("leverage_applied", self.config.leverage) or self.config.leverage)
             msg = format_open_position_msg(
                 symbol=symbol,
                 direction=direction,
                 entry_price=executed_entry_price,
                 quantity=position.quantity,
-                leverage=self.config.leverage,
+                leverage=leverage_applied,
                 stop_loss=position.stop_loss_price,
                 take_profit=tp_price,
                 risk_amount=result.get("risk_amount_usdt", 0),
@@ -899,6 +896,11 @@ class ExecutionMixin:
                 )
                 feature_store.append_event(notify_event)
 
+            step_started = time.perf_counter()
+            self._ensure_position_protection(position)
+            self._send_protection_status(position, source="entry_confirm", force=True)
+            self._record_latency_step(latency_steps, "protection_confirm", step_started)
+
             notes_parts = [
                 f"session_id={session_id}",
                 f"strategy_line={strategy_line}",
@@ -910,6 +912,7 @@ class ExecutionMixin:
                 f"strategy_tp_multiplier={strategy_profile['tp_multiplier']}",
                 f"strategy_stop_pct={stop_loss_pct}",
                 f"stop_trigger_buffer_pct={stop_trigger_buffer_pct}",
+                f"leverage_applied={leverage_applied}",
                 f"oi_funding_bonus={float(oi_funding.get('score_bonus', 0) or 0):.2f}",
                 f"tp_plan={json.dumps(take_profit_targets, separators=(',', ':'))}",
                 f"tp_order_ids={','.join(str(int(item.get('order_id', 0))) for item in take_profit_targets if item.get('order_id'))}",
@@ -930,6 +933,7 @@ class ExecutionMixin:
                 market_snapshot={
                     **(signal.get("metrics", {}) or {}),
                     "_oi_funding": oi_funding,
+                    "_leverage_applied": leverage_applied,
                 },
                 notes=";".join(notes_parts),
             )

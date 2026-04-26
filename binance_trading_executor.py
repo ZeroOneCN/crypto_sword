@@ -34,6 +34,39 @@ logger = logging.getLogger(__name__)
 _leverage_cache: dict[str, int] = {}
 
 
+def _query_symbol_leverage(symbol: str) -> int:
+    """Read current symbol leverage from exchange position risk."""
+    if not get_native_binance_client:
+        raise RuntimeError("原生 Binance API 客户端不可用")
+    positions = get_native_binance_client().position_risk(symbol)  # type: ignore
+    if not isinstance(positions, list):
+        return 0
+    for item in positions:
+        if str(item.get("symbol", "")).upper() != symbol.upper():
+            continue
+        try:
+            value = int(float(item.get("leverage", 0) or 0))
+            if value > 0:
+                return value
+        except Exception:
+            continue
+    return 0
+
+
+def _ensure_symbol_leverage(symbol: str, target_leverage: int) -> int:
+    """Force symbol leverage to target value and return applied leverage."""
+    if not get_native_binance_client:
+        raise RuntimeError("原生 Binance API 客户端不可用")
+    current = _query_symbol_leverage(symbol)
+    if current != int(target_leverage):
+        get_native_binance_client().change_leverage(symbol, int(target_leverage))  # type: ignore
+        current = _query_symbol_leverage(symbol)
+    if current <= 0:
+        current = int(target_leverage)
+    _leverage_cache[symbol.upper()] = int(current)
+    return int(current)
+
+
 @dataclass
 class TradingSignal:
     """A trading signal from the scanner."""
@@ -628,9 +661,13 @@ def place_market_order(
             raise RuntimeError("原生 Binance API 未配置，无法下单")
 
         resolved_position_side = position_side or ("LONG" if side == "BUY" else "SHORT")
-        if not reduce_only and _leverage_cache.get(symbol) != leverage:
-            get_native_binance_client().change_leverage(symbol, leverage)  # type: ignore
-            _leverage_cache[symbol] = leverage
+        applied_leverage = int(leverage)
+        if not reduce_only:
+            applied_leverage = _ensure_symbol_leverage(symbol, int(leverage))
+            if applied_leverage != int(leverage):
+                logger.error(
+                    f"⚠️ {symbol} 杠杆校验不一致: 期望={int(leverage)}x, 实际={applied_leverage}x"
+                )
 
         result = get_native_binance_client().new_order(  # type: ignore
             symbol=symbol,
@@ -662,7 +699,7 @@ def place_market_order(
             executed_price=executed_price,
             order_id=order_id,
             status=status,
-            message=f"Leverage: {leverage}x",
+            message=f"Leverage: {applied_leverage}x",
         )
     except Exception as e:
         return OrderResult(
@@ -990,6 +1027,12 @@ def execute_trade(
         leverage,
         position_side=signal.direction,
     )
+    leverage_applied = int(leverage)
+    try:
+        if isinstance(entry_result.message, str) and "Leverage:" in entry_result.message:
+            leverage_applied = int(str(entry_result.message).split("Leverage:")[1].split("x")[0].strip())
+    except Exception:
+        leverage_applied = int(leverage)
 
     if entry_result.status != "FILLED":
         return {
@@ -1083,6 +1126,7 @@ def execute_trade(
         "take_profit_roi_pcts": effective_roi_pcts,
         "take_profit_price_pcts": price_move_pcts,
         "take_profit_mode": take_profit_mode,
+        "leverage_applied": leverage_applied,
         "risk_amount_usdt": round(account_balance * risk_per_trade_pct / 100, 2),
         "stage": signal.stage,
     }
