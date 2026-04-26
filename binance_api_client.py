@@ -382,6 +382,10 @@ class BinanceApiClient:
             headers["X-MBX-APIKEY"] = self.api_key
             if params:
                 query = urllib.parse.urlencode(params, doseq=True)
+        else:
+            # Public endpoint without API key - still need to encode params
+            if params:
+                query = urllib.parse.urlencode(params, doseq=True)
 
         url = f"{self.base_url}{path}"
         if query:

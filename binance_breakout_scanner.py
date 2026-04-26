@@ -308,7 +308,7 @@ class SymbolBreakoutResult:
         }
 
 
-def _run_native_binance_compat(args: list[str], max_retries: int = 5) -> dict[str, Any] | list[Any]:
+def _run_native_binance_compat(args: list[str], max_retries: int = 3) -> dict[str, Any] | list[Any]:
     """Compatibility wrapper backed by native Binance REST.
     
     Added retry logic and empty response handling to prevent JSON parse errors.
@@ -320,13 +320,13 @@ def _run_native_binance_compat(args: list[str], max_retries: int = 5) -> dict[st
 
     for attempt in range(max_retries + 1):
         try:
-            throttle_sec = float(os.getenv("HERMES_BINANCE_PUBLIC_THROTTLE_SEC", "0.05"))
+            throttle_sec = float(os.getenv("HERMES_BINANCE_PUBLIC_THROTTLE_SEC", "0.02"))
             if throttle_sec > 0:
                 time.sleep(throttle_sec)
             return get_native_binance_client().command_compat(args)  # type: ignore
         except Exception as e:
             if attempt < max_retries:
-                time.sleep(2 ** attempt)
+                time.sleep(0.5 * (attempt + 1))  # Faster backoff: 0.5s, 1s
                 continue
             raise RuntimeError(f"原生 Binance API 调用失败：{e}")
 
@@ -346,10 +346,20 @@ def fetch_ticker_24hr(symbol: str | None = None) -> dict[str, Any]:
             for ticker in all_tickers:
                 if ticker.get("symbol") == symbol:
                     return _cache_set(cache_key, ticker, 30)
-    args = ["ticker24hr-price-change-statistics"]
-    if symbol:
-        args.extend(["--symbol", symbol])
-    return _cache_set(cache_key, _run_native_binance_compat(args), 30 if symbol is None else 30)  # type: ignore
+    # Binance API ticker24hr-price-change-statistics does not support --symbol filter
+    # Always fetch all tickers and extract the target symbol
+    all_data = _run_native_binance_compat(["ticker24hr-price-change-statistics"])
+    ttl = 30
+    if isinstance(all_data, list):
+        # Cache the full list for future lookups
+        _cache_set(("ticker_24hr", "ALL"), all_data, ttl)
+        if symbol:
+            for ticker in all_data:
+                if ticker.get("symbol") == symbol:
+                    return _cache_set(cache_key, ticker, ttl)
+            logger.warning(f"Symbol {symbol} not found in ticker list")
+            return {}
+    return _cache_set(cache_key, all_data, ttl)  # type: ignore
 
 
 def fetch_open_interest(symbol: str) -> dict[str, Any]:
@@ -555,7 +565,7 @@ def build_symbol_metrics(symbol: str) -> dict[str, Any] | None:
     }
 
 
-def scan_symbols(symbols: list[str], min_stage: str | None = None, max_workers: int = 6) -> list[SymbolBreakoutResult]:
+def scan_symbols(symbols: list[str], min_stage: str | None = None, max_workers: int = 10) -> list[SymbolBreakoutResult]:
     """Scan multiple symbols and return breakout results.
     
     Two-stage scanning for efficiency:
@@ -583,7 +593,7 @@ def scan_symbols(symbols: list[str], min_stage: str | None = None, max_workers: 
     
     def scan_single(symbol: str) -> SymbolBreakoutResult | None:
         """Scan a single symbol with retry logic."""
-        max_retries = 2
+        max_retries = 1
         for attempt in range(max_retries + 1):
             try:
                 metrics = build_symbol_metrics(symbol)
@@ -606,7 +616,7 @@ def scan_symbols(symbols: list[str], min_stage: str | None = None, max_workers: 
                 )
             except Exception as e:
                 if attempt < max_retries:
-                    time.sleep(0.5 * (attempt + 1))  # Exponential backoff
+                    time.sleep(0.2 * (attempt + 1))  # Fast retry
                     continue
                 logger.debug(f"Scan failed for {symbol}: {e}")
                 return None  # Skip problematic symbols silently
