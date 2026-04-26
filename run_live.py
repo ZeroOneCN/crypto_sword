@@ -1,5 +1,11 @@
 #!/usr/bin/env python3
-"""Official runtime entry for Crypto Sword live/dry execution."""
+"""Lightweight runtime entry for Crypto Sword.
+
+For full parameter control, use crypto_sword.py directly:
+  python3 crypto_sword.py --live --leverage 5 --risk 2 --stop-loss 5 --take-profit 10 ...
+
+This entry provides sensible defaults for quick launch.
+"""
 
 from __future__ import annotations
 
@@ -10,10 +16,13 @@ from crypto_sword import CryptoSword
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Run Hermes Trader runtime")
+    parser = argparse.ArgumentParser(description="Run Crypto Sword runtime (simplified entry)")
     parser.add_argument("--mode", default="live", choices=["live", "dry_run"], help="Runtime mode")
     parser.add_argument("--leverage", type=int, default=5, help="Leverage multiplier")
     parser.add_argument("--risk", type=float, default=2.0, help="Risk per trade (%)")
+    parser.add_argument("--stop-loss", type=float, default=8.0, help="Stop loss (%)")
+    parser.add_argument("--take-profit", type=float, default=20.0, help="Take profit (%)")
+    parser.add_argument("--trailing", type=float, default=5.0, help="Trailing stop (%)")
     parser.add_argument("--max-positions", type=int, default=5, help="Max open positions")
     parser.add_argument("--scan-top-n", type=int, default=30, help="Top N symbols per deep scan")
     parser.add_argument("--scan-interval", type=int, default=300, help="Deep scan interval seconds")
@@ -28,6 +37,9 @@ def main() -> None:
         mode=args.mode,
         leverage=args.leverage,
         risk_per_trade_pct=args.risk,
+        stop_loss_pct=args.stop_loss,
+        take_profit_pct=args.take_profit,
+        trailing_stop_pct=args.trailing,
         max_open_positions=args.max_positions,
         scan_top_n=args.scan_top_n,
         scan_interval_sec=args.scan_interval,

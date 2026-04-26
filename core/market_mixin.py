@@ -1,4 +1,4 @@
-﻿"""Market profile and all-market websocket mixin."""
+"""Market profile and all-market websocket mixin."""
 
 from __future__ import annotations
 

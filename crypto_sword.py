@@ -318,7 +318,7 @@ def main():
     parser.add_argument("--leverage", "-l", type=int, default=5, choices=range(1, 11),
                         metavar="1-10", help="杠杆倍数 (1-10x)")
 
-    parser.add_argument("--risk", "-r", type=float, default=1.0, help="每笔风险百分比")
+    parser.add_argument("--risk", "-r", type=float, default=2.0, help="每笔风险百分比")
     parser.add_argument("--stop-loss", "-s", type=float, default=8.0, help="止损百分比")
     parser.add_argument("--take-profit", "-t", type=float, default=20.0, help="止盈百分比")
     parser.add_argument(
@@ -327,7 +327,7 @@ def main():
         default="roi",
         help="止盈口径：roi=杠杆后收益率，price=标的价格涨跌幅",
     )
-    parser.add_argument("--max-positions", "-m", type=int, default=3, help="最大持仓数")
+    parser.add_argument("--max-positions", "-m", type=int, default=5, help="最大持仓数")
     parser.add_argument("--max-daily-loss", type=float, default=5.0, help="每日最大亏损百分比")
 
     parser.add_argument("--top", type=int, default=30, help="扫描前 N 个币种")

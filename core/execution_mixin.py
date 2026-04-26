@@ -1073,6 +1073,4 @@ class ExecutionMixin:
             self._emit_latency_trace("execute_exit_exception", trace_started, latency_steps, symbol=symbol)
             return False
 
-        self._emit_latency_trace("execute_exit_failed", trace_started, latency_steps, symbol=symbol)
-        return False
 
