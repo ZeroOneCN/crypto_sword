@@ -252,13 +252,13 @@ class ExecutionMixin:
         repaired = []
         failed = []
         
-        for position in self.tracker.positions.values():
+        for position in list(self.tracker.positions.values()):
             status = self._position_protection_status(position)
             if not status["protected"]:
                 naked.append(position.symbol)
                 # Try to auto-repair
                 try:
-                    protected = self._ensure_position_protection(position)
+                    protected = self._ensure_position_protection(position, refresh_guard=False)
                     if protected:
                         repaired.append(position.symbol)
                         logger.info(f"🛡️ {position.symbol} 保护单已自动修复")
@@ -289,7 +289,7 @@ class ExecutionMixin:
         if repaired:
             logger.info(f"🛡️ 保护单自动修复成功：{', '.join(repaired)}")
 
-    def _ensure_position_protection(self, position: Position):
+    def _ensure_position_protection(self, position: Position, refresh_guard: bool = True):
         """Place missing exchange-side SL/TP orders for tracked or restored positions."""
         close_side = "SELL" if position.side == "BUY" else "BUY"
         position_side = "LONG" if position.side == "BUY" else "SHORT"
@@ -332,7 +332,6 @@ class ExecutionMixin:
             }
         ]
         if position.take_profit_order_ids:
-            self._refresh_protection_risk_switch()
             return self._position_protection_status(position)["protected"]
 
         new_tp_order_ids: list[int] = []
@@ -383,7 +382,8 @@ class ExecutionMixin:
         if protected:
             position.protection_failures = 0
             position.last_protection_error = ""
-        self._refresh_protection_risk_switch()
+        if refresh_guard:
+            self._refresh_protection_risk_switch()
         return protected
 
     def _notify_partial_take_profit(self, position: Position, reduced_qty: float, remaining_qty: float, price: float):
@@ -809,7 +809,7 @@ class ExecutionMixin:
                 take_profit_ratios=take_profit_ratios,
                 take_profit_mode=self.config.take_profit_mode,
                 stop_trigger_buffer_pct=stop_trigger_buffer_pct,
-                defer_protection_orders=True,
+                defer_protection_orders=False,
             )
             self._record_latency_step(latency_steps, "execute_trade", step_started)
 
@@ -848,6 +848,61 @@ class ExecutionMixin:
                 side = "SELL"
 
             stop_loss_order = result.get("stop_loss_order", {})
+            protection_deferred = bool(result.get("protection_deferred", False))
+            protection_errors: list[str] = []
+            if protection_deferred:
+                protection_errors.append("protection_deferred=true")
+
+            stop_loss_order_id = int(stop_loss_order.get("order_id", 0) or 0)
+            stop_loss_status = str(stop_loss_order.get("status", "") or "").upper()
+            if stop_loss_order_id <= 0 or stop_loss_status == "ERROR":
+                protection_errors.append(f"stop_loss status={stop_loss_status or 'UNKNOWN'} id={stop_loss_order_id}")
+
+            for idx, target in enumerate(take_profit_targets, start=1):
+                tp_order_id = int(target.get("order_id", 0) or 0)
+                tp_status = str(target.get("status", "") or "").upper()
+                if tp_order_id <= 0 or tp_status == "ERROR":
+                    protection_errors.append(f"tp{idx} status={tp_status or 'UNKNOWN'} id={tp_order_id}")
+
+            if protection_errors:
+                close_side = "SELL" if direction == "LONG" else "BUY"
+                flat_result = quick_close_position(
+                    symbol=symbol,
+                    side=close_side,
+                    quantity=actual_quantity,
+                    reason="ENTRY_PROTECTION_FAILED",
+                )
+                detail = "; ".join(protection_errors)
+                logger.error(f"entry protection hard-fail {symbol}: {detail} | flat={flat_result}")
+                protection_event = build_execution_event(
+                    event="entry_protection_failed",
+                    symbol=symbol,
+                    direction=direction,
+                    session_id=session_id,
+                    metrics={
+                        "detail": detail,
+                        "flat_success": bool(flat_result.get("success")),
+                        "flat_order_id": int(flat_result.get("order_id", 0) or 0),
+                        "flat_elapsed_ms": float(flat_result.get("elapsed_ms", 0) or 0),
+                        "entry_order_id": int(result.get("order_id", 0) or 0),
+                        "entry_price": executed_entry_price,
+                        "entry_quantity": actual_quantity,
+                    },
+                )
+                logger.info(f"execution_event {message_signature(protection_event)}")
+                feature_store.append_event(protection_event)
+                send_telegram_message(
+                    format_error_msg(
+                        error_type="开仓保护单失败已回滚",
+                        message=f"{symbol} {detail}",
+                        symbol=symbol,
+                        session_id=session_id,
+                        component="entry_protection",
+                    )
+                )
+                self._emit_latency_trace("execute_entry_failed", trace_started, latency_steps, symbol=symbol)
+                return None
+
             oi_funding = signal.get("oi_funding") or {}
             position = Position(
                 symbol=symbol,
@@ -860,7 +915,7 @@ class ExecutionMixin:
                 entry_time=datetime.now(),
                 stage_at_entry=signal["stage"],
                 strategy_line=strategy_line,
-                stop_loss_order_id=stop_loss_order.get("order_id", 0),
+                stop_loss_order_id=stop_loss_order_id,
                 session_id=session_id,
                 oi_funding=oi_funding,
                 entry_score=dict(signal.get("score") or {}),
@@ -911,6 +966,20 @@ class ExecutionMixin:
             self._ensure_position_protection(position)
             self._send_protection_status(position, source="entry_confirm", force=True)
             self._record_latency_step(latency_steps, "protection_confirm", step_started)
+            protection_ok_event = build_execution_event(
+                event="entry_protection_ok",
+                symbol=symbol,
+                direction=direction,
+                session_id=session_id,
+                metrics={
+                    "stop_loss_order_id": int(position.stop_loss_order_id or 0),
+                    "take_profit_order_count": len(position.take_profit_order_ids or []),
+                    "entry_order_id": int(position.order_id or 0),
+                    "entry_price": float(position.entry_price or 0),
+                    "entry_quantity": float(position.quantity or 0),
+                },
+            )
+            feature_store.append_event(protection_ok_event)
 
             notes_parts = [
                 f"session_id={session_id}",

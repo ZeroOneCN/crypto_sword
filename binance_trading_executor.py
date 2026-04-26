@@ -173,14 +173,14 @@ def check_exchange_health() -> bool:
         # 获取系统状态（使用原生客户端）
         if get_native_binance_client and is_native_binance_configured():
             client = get_native_binance_client()
-            result = client.system_status()
+            result = client.exchange_info()
             if isinstance(result, dict):
-                status = result.get("status", 0)
-                msg = result.get("msg", "Unknown")
-                is_normal = status == 0
+                is_normal = bool(result.get("symbols"))
+                status = 0 if is_normal else 1
+                msg = "exchange_info_ok" if is_normal else "exchange_info_empty"
 
                 _exchange_health_cache = {
-                    "status": "OK" if is_normal else f"MAINTENANCE ({msg})",
+                    "status": "OK" if is_normal else f"UNHEALTHY ({msg})",
                     "last_check": now
                 }
 

@@ -425,6 +425,7 @@ def _args_to_params(args: list[str]) -> dict[str, str]:
             else:
                 params[normalized] = "true"
                 index += 1
+            continue
         index += 1
     return params
 

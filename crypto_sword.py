@@ -62,6 +62,7 @@ from core.sync_mixin import SyncMixin
 from core.confirmation_mixin import ConfirmationMixin
 from core.market_mixin import MarketMixin
 from core.bootstrap_service import BootstrapService
+from feature_store import feature_store
 
 
 class CryptoSword(ExecutionMixin, ScannerMixin, CycleMixin, SyncMixin, ConfirmationMixin, MarketMixin):
@@ -160,8 +161,21 @@ class CryptoSword(ExecutionMixin, ScannerMixin, CycleMixin, SyncMixin, Confirmat
             "best_trade": None,
             "worst_trade": None,
             "reason_counts": {},
+            "entry_protection": {
+                "attempts": 0,
+                "ok": 0,
+                "failed": 0,
+                "ok_rate": 0.0,
+                "failed_by_symbol": {},
+                "failed_by_direction": {},
+                "failed_by_detail": {},
+            },
         }
         del report  # explicitly ignore local report data
+        try:
+            api_report["entry_protection"] = feature_store.summarize_entry_protection(date_str, tz_offset_hours=8)
+        except Exception as e:
+            logger.debug(f"entry protection summary skipped [{date_str}]: {e}")
         try:
             from binance_api_client import get_native_binance_client
             from datetime import timezone, timedelta

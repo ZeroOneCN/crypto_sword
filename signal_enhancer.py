@@ -582,7 +582,9 @@ def score_market_environment() -> Dict[str, Any]:
             return cached
 
     try:
-        
+        from adapters.rest_gateway import load_market_overview
+
+        overview = load_market_overview() or {}
         fg = overview.get("fear_greed", {})
         fg_value = fg.get("value", 50)
         liquidation_risk = overview.get("liquidation_risk", "低")

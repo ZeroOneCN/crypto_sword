@@ -131,8 +131,9 @@ def build_monitor_event(
     unrealized_pnl: float,
     realized_pnl: float,
     closed_today: int,
+    entry_protection: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    return {
+    payload = {
         "ts": datetime.utcnow().isoformat(timespec="seconds") + "Z",
         "type": "monitor_snapshot",
         "open_positions": int(open_positions),
@@ -141,3 +142,11 @@ def build_monitor_event(
         "realized_pnl": round(float(realized_pnl), 2),
         "closed_today": int(closed_today),
     }
+    if isinstance(entry_protection, dict):
+        payload["entry_protection"] = {
+            "attempts": int(entry_protection.get("attempts", 0) or 0),
+            "ok": int(entry_protection.get("ok", 0) or 0),
+            "failed": int(entry_protection.get("failed", 0) or 0),
+            "ok_rate": round(float(entry_protection.get("ok_rate", 0) or 0), 2),
+        }
+    return payload

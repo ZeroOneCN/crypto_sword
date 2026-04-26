@@ -767,6 +767,44 @@ def format_daily_report_msg(report: dict[str, Any]) -> str:
         for reason, count in sorted(reason_counts.items(), key=lambda item: (-int(item[1] or 0), str(item[0]))):
             msg += f"\n•{_escape(_reason_zh(str(reason)))}  <code>{int(count or 0)}</code>"
 
+    protection = report.get("entry_protection") or {}
+    protection_attempts = int(protection.get("attempts", 0) or 0)
+    if protection_attempts > 0:
+        protection_ok = int(protection.get("ok", 0) or 0)
+        protection_failed = int(protection.get("failed", 0) or 0)
+        protection_ok_rate = float(protection.get("ok_rate", 0) or 0)
+        msg += (
+            "\n\n<b>Entry Protection</b>"
+            f"\nOK/Fail  <code>{protection_ok}</code> / <code>{protection_failed}</code>"
+            f"\nOK Rate  <code>{protection_ok_rate:.2f}%</code>"
+        )
+
+        failed_by_direction = protection.get("failed_by_direction") or {}
+        if failed_by_direction:
+            direction_text = ", ".join(
+                f"{_escape(str(direction))}:{int(count or 0)}"
+                for direction, count in failed_by_direction.items()
+            )
+            msg += f"\nFail by Side  <code>{_escape(direction_text)}</code>"
+
+        failed_by_symbol = protection.get("failed_by_symbol") or {}
+        if failed_by_symbol:
+            top_symbols = list(failed_by_symbol.items())[:3]
+            symbol_text = ", ".join(
+                f"{_escape(str(symbol))}:{int(count or 0)}"
+                for symbol, count in top_symbols
+            )
+            msg += f"\nFail by Symbol  <code>{_escape(symbol_text)}</code>"
+
+        failed_by_detail = protection.get("failed_by_detail") or {}
+        if failed_by_detail:
+            top_details = list(failed_by_detail.items())[:3]
+            detail_text = ", ".join(
+                f"{_escape(str(detail))}:{int(count or 0)}"
+                for detail, count in top_details
+            )
+            msg += f"\nFail by Detail  <code>{_escape(detail_text)}</code>"
+
     oi_stats = report.get("oi_funding_stats") or {}
     enhanced_trades = int(oi_stats.get("enhanced_trades", 0) or 0)
     if enhanced_trades > 0:

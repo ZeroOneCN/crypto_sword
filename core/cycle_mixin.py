@@ -382,12 +382,14 @@ class CycleMixin:
 
         step_started = time.perf_counter()
         summary = self._enrich_summary_with_db(self.tracker.get_summary())
+        daily_report = self._get_daily_report_snapshot()
         monitor_event = build_monitor_event(
             open_positions=summary["open_positions"],
             max_positions=self.config.max_open_positions,
             unrealized_pnl=summary["total_unrealized_pnl"],
             realized_pnl=summary["realized_pnl"],
             closed_today=summary["closed_today"],
+            entry_protection=daily_report.get("entry_protection") if isinstance(daily_report, dict) else None,
         )
         logger.info(f"monitor_event {message_signature(monitor_event)}")
         feature_store.append_event(monitor_event)
