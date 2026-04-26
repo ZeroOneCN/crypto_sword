@@ -69,6 +69,9 @@ class BootstrapService:
                 scan_top_n=self.trader.config.scan_top_n,
                 scan_interval_sec=self.trader.config.scan_interval_sec,
                 max_positions=self.trader.config.max_open_positions,
+                take_profit_mode=self.trader.config.take_profit_mode,
+                trailing_stop_pct=self.trader.config.trailing_stop_pct,
+                trailing_enabled=self.trader.config.trailing_stop_enabled,
             )
         )
         if not startup_notified:

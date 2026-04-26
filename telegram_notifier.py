@@ -9,6 +9,11 @@ This module is intentionally self-contained (no third-party deps) and focuses on
 
 from __future__ import annotations
 
+# Emoji constants for Telegram messages
+_E = "\U0001f7e2"  # green circle
+_E2 = "\U0001f534"  # red circle
+_E3 = "\U0001f6d1"  # stop sign
+
 import html
 import json
 import logging
@@ -271,7 +276,7 @@ def format_open_position_msg(
     take_profit_targets: list[dict[str, Any]] | None = None,
 ) -> str:
     """格式化开仓通知"""
-    direction_emoji = "[GREEN]" if direction == "LONG" else "[RED]"
+    direction_emoji = _E if direction == "LONG" else _E2
     direction_text = "做多 LONG" if direction == "LONG" else "做空 SHORT"
 
     sl_pct = abs(entry_price - stop_loss) / entry_price * 100 if entry_price else 0.0
@@ -340,8 +345,8 @@ def format_close_position_msg(
     price_move_pct: float = 0.0,
 ) -> str:
     """格式化平仓通知"""
-    direction_emoji = "[GREEN]" if pnl >= 0 else "[RED]"
-    pnl_emoji = "[GREEN]" if pnl >= 0 else "[RED]"
+    direction_emoji = _E if pnl >= 0 else _E2
+    pnl_emoji = _E if pnl >= 0 else _E2
     pnl_sign = "+" if pnl >= 0 else ""
     direction_text = "做多 LONG" if direction == "LONG" else "做空 SHORT"
 
@@ -399,7 +404,7 @@ def format_partial_take_profit_msg(
 <b>成交价格</b>  <code>${exit_price:,.4f}</code>
 <b>止盈数量</b>  <code>{_fmt_num(quantity)}</code>
 <b>剩余数量</b>  <code>{_fmt_num(remaining_quantity)}</code>
-<b>本次盈亏</b>  [GREEN] <b>{pnl_sign}${pnl:,.2f}</b>  ({pnl_sign}{pnl_pct:.2f}%)"""
+<b>本次盈亏</b>  {_E} <b>{pnl_sign}${pnl:,.2f}</b>  ({pnl_sign}{pnl_pct:.2f}%)"""
 
     if strategy_line:
         msg += f"\n<b>策略</b>  <code>{_escape(strategy_line)}</code>"
@@ -501,7 +506,7 @@ def format_summary_msg(
     for i, pos in enumerate(positions, 1):
         pnl = float(pos.get("unrealized_pnl", 0) or 0)
         pnl_sign = "+" if pnl >= 0 else ""
-        pnl_emoji = "[GREEN]" if pnl >= 0 else "[RED]"
+        pnl_emoji = _E if pnl >= 0 else _E2
         side = pos.get("side", "UNKNOWN")
         current_price = float(pos.get("current_price", 0) or 0)
         take_profit_display = pos.get("take_profit_targets_text") or f"${float(pos.get('take_profit', 0) or 0):,.4f}"
@@ -546,17 +551,25 @@ def format_startup_msg(
     scan_top_n: int,
     scan_interval_sec: int,
     max_positions: int,
+    take_profit_mode: str = "roi",
+    trailing_stop_pct: float = 0.0,
+    trailing_enabled: bool = False,
 ) -> str:
     """格式化启动通知"""
+    tp_mode_label = "ROI收益率" if take_profit_mode == "roi" else "标的价格"
+    trailing_text = f" | 追踪 {trailing_stop_pct}%" if trailing_enabled else ""
     return f"""🚀 <b>宙斯交易中枢 | 系统启动</b>
 
 <b>模式</b>  <code>{_escape(mode_name)}</code>
 <b>杠杆</b>  {leverage}x
 <b>单笔风险</b>  {risk_pct:.2f}%
-<b>止损 / 止盈</b>  {stop_loss_pct:.2f}% / {take_profit_pct:.2f}%
+<b>止损(基础)</b>  {stop_loss_pct:.2f}%
+<b>止盈(基础)</b>  {take_profit_pct:.2f}% ({tp_mode_label}){trailing_text}
+<b>止盈策略</b>  分批3档 (50%/100%/150% x 基础TP)
 <b>扫描范围</b>  前<code>{scan_top_n}</code> 个币种
 <b>扫描间隔</b>  <code>{scan_interval_sec}</code> 秒
-<b>最大持仓</b>  <code>{max_positions}</code> 个"""
+<b>最大持仓</b>  <code>{max_positions}</code> 个
+<b>提示</b>  实际TP/SL因策略线(突破/回踩)乘数不同而浮动"""
 
 
 def format_shutdown_msg(
@@ -566,7 +579,7 @@ def format_shutdown_msg(
     unrealized_pnl: float,
 ) -> str:
     """格式化停机通知"""
-    return f"""[STOP] <b>宙斯交易中枢 | 系统停止</b>
+    return f"""{_E3} <b>宙斯交易中枢 | 系统停止</b>
 
 <b>模式</b>  <code>{_escape(mode_name)}</code>
 <b>已平仓</b>  <code>{closed_trades}</code> 笔
@@ -705,7 +718,7 @@ def format_daily_report_msg(report: dict[str, Any]) -> str:
     avg_pnl = float(report.get("avg_pnl", 0) or 0)
     winning = int(report.get("winning_trades", 0) or 0)
     losing = int(report.get("losing_trades", 0) or 0)
-    pnl_emoji = "[GREEN]" if total_pnl >= 0 else "[RED]"
+    pnl_emoji = _E if total_pnl >= 0 else _E2
 
     msg = f"""📝 <b>宙斯交易中枢 | 每日复盘</b>
 <code>{report_date}</code>
