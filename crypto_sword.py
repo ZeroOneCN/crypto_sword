@@ -309,12 +309,11 @@ class CryptoSword(ExecutionMixin, ScannerMixin, CycleMixin, SyncMixin, Confirmat
 
 def main():
     parser = argparse.ArgumentParser(
-        description="CRYPTO SWORD 实盘交易程序",
+        description="诸神黄昏之剑 - Binance 合约实盘交易程序（仅实盘模式）",
         formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog="示例:\n  crypto-sword\n  crypto-sword --leverage 10",
+        epilog="示例:\n  python3 crypto_sword.py --leverage 5 --risk 2 --stop-loss 5 --take-profit 10",
     )
 
-    parser.add_argument("--live", action="store_true", default=True, help="实盘模式（默认开启）")
     parser.add_argument("--leverage", "-l", type=int, default=5, choices=range(1, 11),
                         metavar="1-10", help="杠杆倍数 (1-10x)")
 
@@ -360,9 +359,8 @@ def main():
     print("\n" + "=" * 50)
     print("⚠️  ⚠️  ⚠️  实盘交易警告  ⚠️  ⚠️  ⚠️")
     print("=" * 50)
-    print("\n即将使用真实资金进行交易")
-    print(f"杠杆: {args.leverage}x | 风险: {args.risk}% | 止损: {args.stop_loss}%")
-    print("\n确认继续？输入 'y' 继续，其他键取消")
+    print(f"\n即将使用真实资金交易 | 杠杆:{args.leverage}x 风险:{args.risk}% 止损:{args.stop_loss}%")
+    print("确认继续？输入 'y' 继续，其他键取消")
     if not sys.stdin.isatty():
         print("ℹ️ 后台模式，跳过确认")
         confirm = "y"

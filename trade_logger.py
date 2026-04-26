@@ -601,7 +601,7 @@ def main():
     parser.add_argument("--recent", action="store_true", help="显示最近交易")
     parser.add_argument("--export", type=str, help="导出 CSV 到指定路径")
     parser.add_argument("--days", type=int, default=7, help="统计天数 (默认：7)")
-    parser.add_argument("--mode", type=str, choices=["testnet", "live", "dry_run"], help="交易模式过滤")
+    parser.add_argument("--mode", type=str, choices=["live"], help="交易模式过滤")
     parser.add_argument("--limit", type=int, default=10, help="显示交易数量 (默认：10)")
     
     args = parser.parse_args()

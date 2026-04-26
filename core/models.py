@@ -249,12 +249,16 @@ class Position:
         if self.side == "BUY":
             if current_price <= self.current_stop:
                 return "STOP_LOSS"
-            if not self.take_profit_order_ids and current_price >= self.take_profit_price:
+            if current_price >= self.take_profit_price:
+                if self.take_profit_order_ids:
+                    return "TAKE_PROFIT_LOCAL_FALLBACK"
                 return "TAKE_PROFIT"
         else:
             if current_price >= self.current_stop:
                 return "STOP_LOSS"
-            if not self.take_profit_order_ids and current_price <= self.take_profit_price:
+            if current_price <= self.take_profit_price:
+                if self.take_profit_order_ids:
+                    return "TAKE_PROFIT_LOCAL_FALLBACK"
                 return "TAKE_PROFIT"
         return None
 

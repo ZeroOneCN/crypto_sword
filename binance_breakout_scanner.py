@@ -364,7 +364,7 @@ def fetch_open_interest(symbol: str) -> dict[str, Any]:
 def fetch_oi_statistics(symbol: str, period: str = "1h", limit: int = 24) -> list[dict[str, Any]]:
     """Fetch open interest statistics history.
     
-    Note: New coins (like volatile meme coins) may have no OI history on testnet.
+    Note: New coins (like volatile meme coins) may have no OI history.
     Returns empty list [] if no data available - caller should handle gracefully.
     """
     cache_key = ("oi_statistics", symbol, period, limit)
@@ -416,7 +416,7 @@ def fetch_klines(symbol: str, interval: str = "1h", limit: int = 24) -> list[Any
 def build_symbol_metrics(symbol: str) -> dict[str, Any] | None:
     """Build complete metrics dict for a single symbol from Binance data.
     
-    Returns None if symbol is not tradable (common on testnet for delisted symbols).
+    Returns None if symbol is not tradable (delisted or delivering).
     """
     try:
         ticker = fetch_ticker_24hr(symbol)
@@ -588,7 +588,7 @@ def scan_symbols(symbols: list[str], min_stage: str | None = None, max_workers: 
             try:
                 metrics = build_symbol_metrics(symbol)
                 if metrics is None:
-                    # Symbol not tradable (testnet delisted/unavailable)
+                    # Symbol not tradable (delisted/unavailable)
                     return None
                 
                 stage, direction, trigger, risk = classify_and_direction(metrics)

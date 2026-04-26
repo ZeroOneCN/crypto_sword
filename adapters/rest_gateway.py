@@ -11,7 +11,6 @@ from binance_breakout_scanner import (
     scan_symbols,
 )
 from binance_trading_executor import get_account_balance, is_native_binance_configured
-from surf_enhancer import get_market_overview
 
 
 def get_top_symbols_by_change_rest(limit: int, min_change: float = 0.0) -> list[str]:
@@ -31,8 +30,8 @@ def fetch_symbol_ticker_24h(symbol: str) -> dict[str, Any]:
 
 
 def load_market_overview() -> dict[str, Any]:
-    overview = get_market_overview()
-    return overview if isinstance(overview, dict) else {}
+    """Market overview stub - surf integration removed."""
+    return {}
 
 
 def load_account_balance() -> dict[str, Any]:

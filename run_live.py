@@ -17,7 +17,7 @@ from crypto_sword import CryptoSword
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Run Crypto Sword runtime (simplified entry)")
-    parser.add_argument("--mode", default="live", choices=["live", "dry_run"], help="Runtime mode")
+    parser.add_argument("--mode", default="live", help="Runtime mode (only live supported)")
     parser.add_argument("--leverage", type=int, default=5, help="Leverage multiplier")
     parser.add_argument("--risk", type=float, default=2.0, help="Risk per trade (%)")
     parser.add_argument("--stop-loss", type=float, default=8.0, help="Stop loss (%)")

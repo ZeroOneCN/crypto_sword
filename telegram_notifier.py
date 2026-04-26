@@ -606,7 +606,6 @@ def format_signal_message(signal: dict[str, Any], trade_result: dict[str, Any]) 
     action = trade.get("action", "UNKNOWN")
     action_emoji = {
         "EXECUTED": "✅",
-        "DRY_RUN": "🎮",
         "SKIPPED": "🔔",
         "FAILED": "❌",
     }.get(action, "📦")
@@ -628,7 +627,7 @@ def format_signal_message(signal: dict[str, Any], trade_result: dict[str, Any]) 
 •Funding  <code>{funding:.6f}</code>
 •L/S Ratio  <code>{ls_ratio:.2f}</code>"""
 
-    if action in {"EXECUTED", "DRY_RUN"}:
+    if action == "EXECUTED":
         msg += f"""
 
 <b>Trade Details</b>

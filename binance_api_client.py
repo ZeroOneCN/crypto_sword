@@ -21,7 +21,6 @@ from hermes_paths import hermes_config_dir
 logger = logging.getLogger(__name__)
 
 MAINNET_BASE_URL = "https://fapi.binance.com"
-TESTNET_BASE_URL = "https://testnet.binancefuture.com"
 
 
 class BinanceApiClient:
@@ -43,16 +42,10 @@ class BinanceApiClient:
     def from_environment(cls) -> "BinanceApiClient":
         """Build client from environment or Hermes config files."""
         config = _load_binance_config()
-        use_testnet = str(os.environ.get("BINANCE_USE_TESTNET", config.get("testnet", ""))).lower() in {
-            "1",
-            "true",
-            "yes",
-            "testnet",
-        }
         base_url = (
             os.environ.get("BINANCE_FAPI_BASE_URL")
             or config.get("base_url")
-            or (TESTNET_BASE_URL if use_testnet else MAINNET_BASE_URL)
+            or MAINNET_BASE_URL
         )
 
         return cls(
@@ -182,9 +175,7 @@ class BinanceApiClient:
         return data if isinstance(data, dict) else {}
 
     def websocket_base_url(self) -> str:
-        """Return the matching USD-M futures WebSocket base URL."""
-        if "testnet" in self.base_url:
-            return "wss://stream.binancefuture.com"
+        """Return the USD-M futures WebSocket base URL."""
         return "wss://fstream.binance.com"
 
     def change_leverage(self, symbol: str, leverage: int) -> dict[str, Any]:
@@ -338,7 +329,6 @@ class BinanceApiClient:
             signature = hmac.new(self.api_secret.encode("utf-8"), query.encode("utf-8"), hashlib.sha256).hexdigest()
             query = f"{query}&signature={signature}"
             headers["X-MBX-APIKEY"] = self.api_key
-        else:
             if api_key:
                 if not self.api_key:
                     raise RuntimeError("Binance API key not configured")
@@ -383,8 +373,7 @@ def _args_to_params(args: list[str]) -> dict[str, str]:
             else:
                 params[normalized] = "true"
                 index += 1
-        else:
-            index += 1
+        index += 1
     return params
 
 

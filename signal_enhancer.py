@@ -582,8 +582,6 @@ def score_market_environment() -> Dict[str, Any]:
             return cached
 
     try:
-        from surf_enhancer import get_market_overview
-        overview = get_market_overview()
         
         fg = overview.get("fear_greed", {})
         fg_value = fg.get("value", 50)
