@@ -62,7 +62,9 @@ def _ensure_symbol_leverage(symbol: str, target_leverage: int) -> int:
         get_native_binance_client().change_leverage(symbol, int(target_leverage))  # type: ignore
         current = _query_symbol_leverage(symbol)
     if current <= 0:
-        current = int(target_leverage)
+        raise RuntimeError(f"{symbol} 杠杆读取失败，拒绝下单")
+    if current != int(target_leverage):
+        raise RuntimeError(f"{symbol} 杠杆未对齐: 期望 {int(target_leverage)}x, 实际 {int(current)}x")
     _leverage_cache[symbol.upper()] = int(current)
     return int(current)
 
@@ -664,10 +666,6 @@ def place_market_order(
         applied_leverage = int(leverage)
         if not reduce_only:
             applied_leverage = _ensure_symbol_leverage(symbol, int(leverage))
-            if applied_leverage != int(leverage):
-                logger.error(
-                    f"⚠️ {symbol} 杠杆校验不一致: 期望={int(leverage)}x, 实际={applied_leverage}x"
-                )
 
         result = get_native_binance_client().new_order(  # type: ignore
             symbol=symbol,
@@ -960,6 +958,7 @@ def execute_trade(
     take_profit_ratios: Optional[list[float]] = None,
     take_profit_mode: str = "roi",
     stop_trigger_buffer_pct: float = 0.0,
+    defer_protection_orders: bool = False,
 ) -> dict[str, Any]:
     """Execute a trade based on a signal.
 
@@ -1074,29 +1073,30 @@ def execute_trade(
     take_profit_quantities = _build_take_profit_slices(signal.symbol, actual_quantity, normalized_ratios)
     take_profit_orders: list[dict[str, Any]] = []
 
-    # Place stop loss order
-    sl_result = place_stop_loss_order(
-        signal.symbol,
-        opposite_side,
-        actual_quantity,
-        stop_loss_price,
-        position_side=signal.direction,
-        trigger_buffer_pct=stop_trigger_buffer_pct,
-    )
-
     for index, trigger_price in enumerate(take_profit_prices):
         if index >= len(take_profit_quantities):
             break
         tp_quantity = take_profit_quantities[index]
         if tp_quantity <= 0:
             continue
-        tp_result = place_take_profit_order(
-            signal.symbol,
-            opposite_side,
-            tp_quantity,
-            trigger_price,
-            position_side=signal.direction,
-        )
+        if defer_protection_orders:
+            tp_result = OrderResult(
+                symbol=signal.symbol,
+                side=opposite_side,
+                quantity=tp_quantity,
+                executed_price=trigger_price,
+                order_id=0,
+                status="DEFERRED",
+                message="Take profit deferred to runtime protection step",
+            )
+        else:
+            tp_result = place_take_profit_order(
+                signal.symbol,
+                opposite_side,
+                tp_quantity,
+                trigger_price,
+                position_side=signal.direction,
+            )
         take_profit_orders.append(
             {
                 "level": index + 1,
@@ -1109,6 +1109,27 @@ def execute_trade(
                 "status": tp_result.status,
                 "message": tp_result.message,
             }
+        )
+
+    if defer_protection_orders:
+        sl_result = OrderResult(
+            symbol=signal.symbol,
+            side=opposite_side,
+            quantity=actual_quantity,
+            executed_price=stop_loss_price,
+            order_id=0,
+            status="DEFERRED",
+            message="Stop loss deferred to runtime protection step",
+        )
+    else:
+        # Place stop loss order
+        sl_result = place_stop_loss_order(
+            signal.symbol,
+            opposite_side,
+            actual_quantity,
+            stop_loss_price,
+            position_side=signal.direction,
+            trigger_buffer_pct=stop_trigger_buffer_pct,
         )
 
     return {
@@ -1127,6 +1148,7 @@ def execute_trade(
         "take_profit_price_pcts": price_move_pcts,
         "take_profit_mode": take_profit_mode,
         "leverage_applied": leverage_applied,
+        "protection_deferred": bool(defer_protection_orders),
         "risk_amount_usdt": round(account_balance * risk_per_trade_pct / 100, 2),
         "stage": signal.stage,
     }

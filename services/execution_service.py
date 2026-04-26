@@ -39,6 +39,7 @@ class ExecutionService:
         take_profit_ratios: list[float],
         take_profit_mode: str,
         stop_trigger_buffer_pct: float,
+        defer_protection_orders: bool = False,
     ) -> dict[str, Any]:
         roi_targets = take_profit_target_pcts if take_profit_mode == "roi" else None
         price_targets = take_profit_target_pcts if take_profit_mode != "roi" else None
@@ -56,6 +57,7 @@ class ExecutionService:
             take_profit_ratios=take_profit_ratios,
             take_profit_mode=take_profit_mode,
             stop_trigger_buffer_pct=stop_trigger_buffer_pct,
+            defer_protection_orders=defer_protection_orders,
         )
 
 execution_service = ExecutionService()

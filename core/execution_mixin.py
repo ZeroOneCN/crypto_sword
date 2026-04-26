@@ -698,8 +698,18 @@ class ExecutionMixin:
                 else:
                     balance_info = self._get_account_info_cached(ttl_sec=3.0)
                     balance = float(balance_info.get("availableBalance", 10000))
-            except Exception:
-                balance = 10000
+            except Exception as e:
+                logger.error(f"entry guard reject {symbol}: account balance query failed: {e}")
+                send_telegram_message(
+                    format_error_msg(
+                        error_type="账户查询失败，拒绝开仓",
+                        message=str(e),
+                        symbol=symbol,
+                        session_id=session_id,
+                        component="account_query",
+                    )
+                )
+                return None
             self._record_latency_step(latency_steps, "account_query", step_started)
 
             step_started = time.perf_counter()
@@ -799,6 +809,7 @@ class ExecutionMixin:
                 take_profit_ratios=take_profit_ratios,
                 take_profit_mode=self.config.take_profit_mode,
                 stop_trigger_buffer_pct=stop_trigger_buffer_pct,
+                defer_protection_orders=True,
             )
             self._record_latency_step(latency_steps, "execute_trade", step_started)
 
