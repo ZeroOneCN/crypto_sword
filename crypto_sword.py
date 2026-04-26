@@ -165,35 +165,43 @@ class CryptoSword(ExecutionMixin, ScannerMixin, CycleMixin, SyncMixin, Confirmat
             trades = client.get_trade_history(start_time=start_ms, end_time=end_ms, limit=500)
 
             # 按交易对聚合已实现盈亏
-            symbol_pnl: dict[str, float] = defaultdict(float)
+            order_pnl: dict[tuple[str, int], float] = defaultdict(float)
+            symbol_total_pnl: dict[str, float] = defaultdict(float)
             for trade in trades:
                 pnl = float(trade.get("realizedPnl", 0) or 0)
                 if pnl != 0:
                     symbol = trade.get("symbol", "")
-                    symbol_pnl[symbol] += pnl
+                    order_id = int(trade.get("orderId", 0) or 0)
+                    if not symbol or order_id <= 0:
+                        continue
+                    key = (symbol, order_id)
+                    order_pnl[key] += pnl
+                    symbol_total_pnl[symbol] += pnl
 
-            if symbol_pnl:
+            if order_pnl:
                 # 找出最佳交易
-                best_symbol = max(symbol_pnl, key=symbol_pnl.get)
-                best_pnl = symbol_pnl[best_symbol]
+                best_order = max(order_pnl, key=order_pnl.get)
+                best_symbol, _ = best_order
+                best_pnl = order_pnl[best_order]
                 report["best_trade"] = {
                     "symbol": best_symbol,
                     "pnl": round(best_pnl, 2),
                 }
 
                 # 找出最差交易
-                worst_symbol = min(symbol_pnl, key=symbol_pnl.get)
-                worst_pnl = symbol_pnl[worst_symbol]
+                worst_order = min(order_pnl, key=order_pnl.get)
+                worst_symbol, _ = worst_order
+                worst_pnl = order_pnl[worst_order]
                 report["worst_trade"] = {
                     "symbol": worst_symbol,
                     "pnl": round(worst_pnl, 2),
                 }
 
                 # 用 API 数据修正总盈亏和胜率
-                total_pnl_api = round(sum(symbol_pnl.values()), 2)
-                winning_count = sum(1 for pnl in symbol_pnl.values() if pnl > 0)
-                losing_count = sum(1 for pnl in symbol_pnl.values() if pnl < 0)
-                closed_count = len(symbol_pnl)
+                total_pnl_api = round(sum(order_pnl.values()), 2)
+                winning_count = sum(1 for pnl in order_pnl.values() if pnl > 0)
+                losing_count = sum(1 for pnl in order_pnl.values() if pnl < 0)
+                closed_count = len(order_pnl)
 
                 report["total_pnl"] = total_pnl_api
                 report["closed_trades"] = closed_count
@@ -202,7 +210,12 @@ class CryptoSword(ExecutionMixin, ScannerMixin, CycleMixin, SyncMixin, Confirmat
                 report["win_rate"] = round(winning_count / closed_count * 100, 2) if closed_count else 0.0
                 report["avg_pnl"] = round(total_pnl_api / closed_count, 2) if closed_count else 0.0
 
-                logger.info(f"Daily report enriched from API [{date_str}]: {closed_count} trades, PnL={total_pnl_api}, best={best_symbol}({best_pnl:+.2f}), worst={worst_symbol}({worst_pnl:+.2f})")
+                logger.info(
+                    f"Daily report enriched from API [{date_str}]: "
+                    f"orders={closed_count}, symbols={len(symbol_total_pnl)}, "
+                    f"PnL={total_pnl_api}, best={best_symbol}({best_pnl:+.2f}), "
+                    f"worst={worst_symbol}({worst_pnl:+.2f})"
+                )
         except Exception as e:
             logger.debug(f"API daily report enrichment skipped [{date_str}]: {e}")
 

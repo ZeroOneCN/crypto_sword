@@ -45,6 +45,7 @@ class BinanceApiClient:
         base_url = (
             os.environ.get("BINANCE_FAPI_BASE_URL")
             or config.get("base_url")
+            or config.get("endpoint")
             or MAINNET_BASE_URL
         )
 
@@ -107,7 +108,25 @@ class BinanceApiClient:
         return data if isinstance(data, list) else []
 
     def account_information(self) -> dict[str, Any]:
-        account = self._request("GET", "/fapi/v3/account", signed=True)
+        last_error: Exception | None = None
+        account: dict[str, Any] = {}
+        # Some Binance environments/proxies can behave differently across
+        # account versions; try v3 first and gracefully fall back to v2.
+        for path in ("/fapi/v3/account", "/fapi/v2/account"):
+            try:
+                data = self._request("GET", path, signed=True)
+                if isinstance(data, dict) and data:
+                    account = data
+                    break
+            except Exception as exc:
+                last_error = exc
+                logger.debug(f"Account endpoint failed via {path}: {exc}")
+
+        if not account:
+            if last_error:
+                raise last_error
+            raise RuntimeError("Failed to fetch Binance account information")
+
         # Keep the existing code path compatible with account-information-v2.
         if "positions" not in account:
             account["positions"] = self.position_risk()
@@ -117,8 +136,17 @@ class BinanceApiClient:
         params: dict[str, Any] = {}
         if symbol:
             params["symbol"] = symbol
-        data = self._request("GET", "/fapi/v3/positionRisk", params=params, signed=True)
-        return data if isinstance(data, list) else []
+        last_error: Exception | None = None
+        for path in ("/fapi/v3/positionRisk", "/fapi/v2/positionRisk"):
+            try:
+                data = self._request("GET", path, params=params, signed=True)
+                return data if isinstance(data, list) else []
+            except Exception as exc:
+                last_error = exc
+                logger.debug(f"Position risk endpoint failed via {path}: {exc}")
+        if last_error:
+            raise last_error
+        return []
 
     def open_orders(self, symbol: str | None = None) -> list[dict[str, Any]]:
         params: dict[str, Any] = {}
