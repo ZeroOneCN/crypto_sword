@@ -319,6 +319,7 @@ class BinanceApiClient:
     ) -> Any:
         params = {k: v for k, v in (params or {}).items() if v is not None}
         headers = {"Content-Type": "application/json"}
+        query = ""
 
         if signed:
             if not self.is_configured():
@@ -329,11 +330,12 @@ class BinanceApiClient:
             signature = hmac.new(self.api_secret.encode("utf-8"), query.encode("utf-8"), hashlib.sha256).hexdigest()
             query = f"{query}&signature={signature}"
             headers["X-MBX-APIKEY"] = self.api_key
-            if api_key:
-                if not self.api_key:
-                    raise RuntimeError("Binance API key not configured")
-                headers["X-MBX-APIKEY"] = self.api_key
-            query = urllib.parse.urlencode(params, doseq=True)
+        elif api_key:
+            if not self.api_key:
+                raise RuntimeError("Binance API key not configured")
+            headers["X-MBX-APIKEY"] = self.api_key
+            if params:
+                query = urllib.parse.urlencode(params, doseq=True)
 
         url = f"{self.base_url}{path}"
         if query:
