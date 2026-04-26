@@ -40,10 +40,7 @@ class CycleMixin:
             return
 
         report_date = (datetime.now().date() - timedelta(days=1)).isoformat()
-        report = self.db.get_daily_report(report_date=report_date, mode=self.config.mode)
-
-        # 从 Binance API 获取昨日真实交易数据，修正最佳/最差交易
-        report = self._enrich_daily_report_with_api(report, report_date)
+        report = self._enrich_daily_report_with_api({}, report_date)
 
         send_telegram_message(format_daily_report_msg(report))
         self._last_daily_report_sent_for = today

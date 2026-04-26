@@ -135,13 +135,12 @@ class CryptoSword(ExecutionMixin, ScannerMixin, CycleMixin, SyncMixin, Confirmat
 
     def _enrich_summary_with_db(self, summary: dict[str, Any]) -> dict[str, Any]:
         enriched = dict(summary)
-        report_date = datetime.now().date().isoformat()
         try:
-            daily_report = self.db.get_daily_report(report_date, mode=self.config.mode)
+            daily_report = self._get_daily_report_snapshot()
             enriched["closed_today"] = int(daily_report.get("closed_trades", 0) or 0)
             enriched["realized_pnl"] = round(float(daily_report.get("total_pnl", 0) or 0), 2)
         except Exception as e:
-            logger.debug(f"summary db enrichment skipped: {e}")
+            logger.debug(f"summary api enrichment skipped: {e}")
         return enriched
 
     def _enrich_daily_report_with_api(self, report: dict[str, Any], date_str: str) -> dict[str, Any]:
@@ -166,7 +165,8 @@ class CryptoSword(ExecutionMixin, ScannerMixin, CycleMixin, SyncMixin, Confirmat
 
             client = get_native_binance_client()
 
-            target_date = datetime.fromisoformat(date_str).replace(tzinfo=timezone.utc)
+            tz_utc8 = timezone(timedelta(hours=8))
+            target_date = datetime.fromisoformat(date_str).replace(tzinfo=tz_utc8)
             day_start_utc8 = target_date.replace(hour=0, minute=0, second=0, microsecond=0)
             day_end_utc8 = day_start_utc8 + timedelta(days=1)
             start_ms = int(day_start_utc8.timestamp() * 1000)
@@ -205,17 +205,53 @@ class CryptoSword(ExecutionMixin, ScannerMixin, CycleMixin, SyncMixin, Confirmat
             if not order_stats:
                 return api_report
 
+            symbols = sorted({str(key[0]) for key in order_stats.keys()})
+            order_meta_map: dict[tuple[str, int], dict[str, Any]] = {}
+            for symbol in symbols:
+                try:
+                    symbol_orders = client.all_orders(
+                        symbol=symbol,
+                        start_time=start_ms,
+                        end_time=end_ms,
+                        limit=1000,
+                    )
+                    for item in symbol_orders:
+                        oid = int(item.get("orderId", 0) or 0)
+                        if oid <= 0:
+                            continue
+                        order_meta_map[(symbol, oid)] = item
+                except Exception as sub_e:
+                    logger.debug(f"API all_orders skipped [{date_str}] {symbol}: {sub_e}")
+
+            reason_counts: dict[str, int] = {}
+
+            def _reason_from_order(order: dict[str, Any] | None) -> str:
+                if not order:
+                    return "FILLED"
+                status = str(order.get("status", "") or "").upper() or "FILLED"
+                order_type = str(order.get("type", "") or "").upper()
+                if order_type in {"STOP", "STOP_MARKET", "TRAILING_STOP_MARKET"}:
+                    return "STOP_LOSS"
+                if order_type in {"TAKE_PROFIT", "TAKE_PROFIT_MARKET"}:
+                    return "TAKE_PROFIT"
+                if status in {"PARTIALLY_FILLED", "FILLED", "CANCELED", "EXPIRED", "REJECTED"}:
+                    return status
+                return "UNKNOWN"
+
             order_rows: list[dict[str, float | str]] = []
-            for row in order_stats.values():
+            for key, row in order_stats.items():
                 pnl = float(row["pnl"])
                 close_notional = float(row["close_notional"])
                 pnl_pct = (pnl / close_notional * 100.0) if close_notional > 0 else 0.0
+                reason = _reason_from_order(order_meta_map.get(key))
+                reason_counts[reason] = reason_counts.get(reason, 0) + 1
                 order_rows.append(
                     {
                         "symbol": str(row["symbol"]),
                         "pnl": pnl,
                         "pnl_pct": pnl_pct,
                         "close_notional": close_notional,
+                        "reason": reason,
                     }
                 )
 
@@ -242,6 +278,7 @@ class CryptoSword(ExecutionMixin, ScannerMixin, CycleMixin, SyncMixin, Confirmat
                 "pnl": round(float(worst_trade["pnl"]), 2),
                 "pnl_pct": round(float(worst_trade["pnl_pct"]), 2),
             }
+            api_report["reason_counts"] = reason_counts
 
             logger.info(
                 f"Daily report from API [{date_str}] | orders={closed_count} "
@@ -249,7 +286,8 @@ class CryptoSword(ExecutionMixin, ScannerMixin, CycleMixin, SyncMixin, Confirmat
                 f"best={api_report['best_trade']['symbol']}({float(api_report['best_trade']['pnl']):+,.2f},"
                 f"{float(api_report['best_trade']['pnl_pct']):+,.2f}%) "
                 f"worst={api_report['worst_trade']['symbol']}({float(api_report['worst_trade']['pnl']):+,.2f},"
-                f"{float(api_report['worst_trade']['pnl_pct']):+,.2f}%)"
+                f"{float(api_report['worst_trade']['pnl_pct']):+,.2f}%) "
+                f"reasons={reason_counts}"
             )
         except Exception as e:
             logger.debug(f"API daily report build failed [{date_str}]: {e}")
