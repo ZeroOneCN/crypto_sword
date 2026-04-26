@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+﻿#!/usr/bin/env python3
 """Crypto Sword runtime orchestrator."""
 
 from __future__ import annotations
@@ -153,18 +153,18 @@ class CryptoSword(ExecutionMixin, ScannerMixin, CycleMixin, SyncMixin, Confirmat
 
             client = get_native_binance_client()
 
-            # 鐟欙絾鐎介弮銉︽埂鐎涙顑佹稉璇х礉鐠侊紕鐣荤拠銉︽） 00:00-23:59 UTC+8 閻ㄥ嫭妞傞梻瀛樺煈
+            # 閻熸瑱绲鹃悗浠嬪籍閵夛附鍩傞悗娑欘殘椤戜焦绋夌拠褏绀夐悹渚婄磿閻ｈ崵鎷犻妷锔斤級 00:00-23:59 UTC+8 闁汇劌瀚鍌炴⒒鐎涙ê鐓?
             target_date = datetime.fromisoformat(date_str).replace(tzinfo=timezone.utc)
             day_start_utc8 = target_date.replace(hour=0, minute=0, second=0, microsecond=0)
             day_end_utc8 = day_start_utc8 + timedelta(days=1)
 
-            # 鏉烆剚宕叉稉?UTC 閺冨爼妫块幋?(Binance API 娴ｈ法鏁?UTC 濮ｎ偆顫楅弮鍫曟？閹?
+            # 閺夌儐鍓氬畷鍙夌▔?UTC 闁哄啫鐖煎Λ鍧楀箣?(Binance API 濞达綀娉曢弫?UTC 婵綆鍋嗛～妤呭籍閸洘锛熼柟?
             start_ms = int(day_start_utc8.timestamp() * 1000)
             end_ms = int(day_end_utc8.timestamp() * 1000)
 
             trades = client.get_trade_history(start_time=start_ms, end_time=end_ms, limit=500)
 
-            # 閹稿姘﹂弰鎾愁嚠閼辨艾鎮庡鎻掔杽閻滄壆娉╂禍?
+            # 闁圭顦锕傚及閹炬剚鍤犻柤杈ㄨ壘閹骸顔忛幓鎺旀澖闁绘粍澹嗗▔鈺傜?
             order_pnl: dict[tuple[str, int], float] = defaultdict(float)
             symbol_total_pnl: dict[str, float] = defaultdict(float)
             for trade in trades:
@@ -179,7 +179,7 @@ class CryptoSword(ExecutionMixin, ScannerMixin, CycleMixin, SyncMixin, Confirmat
                     symbol_total_pnl[symbol] += pnl
 
             if order_pnl:
-                # 閹垫儳鍤張鈧担鍏呮唉閺?
+                # 闁瑰灚鍎抽崵顓㈠嫉閳ь剚鎷呴崗鍛攭闁?
                 best_order = max(order_pnl, key=order_pnl.get)
                 best_symbol, _ = best_order
                 best_pnl = order_pnl[best_order]
@@ -188,7 +188,7 @@ class CryptoSword(ExecutionMixin, ScannerMixin, CycleMixin, SyncMixin, Confirmat
                     "pnl": round(best_pnl, 2),
                 }
 
-                # 閹垫儳鍤張鈧顔绘唉閺?
+                # 闁瑰灚鍎抽崵顓㈠嫉閳ь剙顔忛缁樺攭闁?
                 worst_order = min(order_pnl, key=order_pnl.get)
                 worst_symbol, _ = worst_order
                 worst_pnl = order_pnl[worst_order]
@@ -197,7 +197,7 @@ class CryptoSword(ExecutionMixin, ScannerMixin, CycleMixin, SyncMixin, Confirmat
                     "pnl": round(worst_pnl, 2),
                 }
 
-                # 閻?API 閺佺増宓佹穱顔筋劀閹崵娉╂禍蹇撴嫲閼虫粎宸?
+                # 闁?API 闁轰胶澧楀畵浣圭┍椤旂瓔鍔€闁诡剝宕靛▔鈺傜韫囨挻瀚查柤铏矌瀹?
                 total_pnl_api = round(sum(order_pnl.values()), 2)
                 winning_count = sum(1 for pnl in order_pnl.values() if pnl > 0)
                 losing_count = sum(1 for pnl in order_pnl.values() if pnl < 0)
@@ -328,19 +328,19 @@ def main():
     )
 
     parser.add_argument("--leverage", "-l", type=int, default=5, choices=range(1, 11), metavar="1-10", help="Leverage (1-10x)")
-    parser.add_argument("--risk", "-r", type=float, default=2.5, help="Risk per trade (%)")
-    parser.add_argument("--stop-loss", "-s", type=float, default=8.0, help="Stop loss (%)")
-    parser.add_argument("--take-profit", "-t", type=float, default=20.0, help="Take profit (%)")
+    parser.add_argument("--risk", "-r", type=float, default=2.5, help="Risk per trade (%%)")
+    parser.add_argument("--stop-loss", "-s", type=float, default=8.0, help="Stop loss (%%)")
+    parser.add_argument("--take-profit", "-t", type=float, default=20.0, help="Take profit (%%)")
     parser.add_argument("--take-profit-mode", choices=["price", "roi"], default="roi", help="Take profit mode")
     parser.add_argument("--max-positions", "-m", type=int, default=6, help="Max open positions")
-    parser.add_argument("--max-position-pct", type=float, default=30.0, help="Max notional position size (% of balance)")
-    parser.add_argument("--max-daily-loss", type=float, default=5.0, help="Max daily loss (%)")
+    parser.add_argument("--max-position-pct", type=float, default=30.0, help="Max notional position size (%% of balance)")
+    parser.add_argument("--max-daily-loss", type=float, default=5.0, help="Max daily loss (%%)")
 
     parser.add_argument("--top", type=int, default=30, help="Top N symbols")
     parser.add_argument("--interval", "-i", type=int, default=300, help="Scan interval (seconds)")
     parser.add_argument("--scan-workers", type=int, default=6, help="Scan workers")
-    parser.add_argument("--min-change", type=float, default=1.5, help="Min 24h change (%)")
-    parser.add_argument("--min-pullback", type=float, default=1.5, help="Min pullback (%)")
+    parser.add_argument("--min-change", type=float, default=1.5, help="Min 24h change (%%)")
+    parser.add_argument("--min-pullback", type=float, default=1.5, help="Min pullback (%%)")
     parser.add_argument("--reclaim-volume", type=float, default=1.05, help="5m volume reclaim ratio")
     parser.add_argument("--by-volume", action="store_true", help="Rank by volume instead of change")
     parser.add_argument("--no-entry-confirm", action="store_true", help="Disable entry confirmation")
@@ -348,15 +348,15 @@ def main():
     parser.add_argument("--no-momentum-entry", action="store_true", help="Disable momentum entry")
     parser.add_argument("--momentum-score", type=float, default=55.0, help="Momentum entry min score")
     parser.add_argument("--accumulation-score", type=float, default=45.0, help="Accumulation entry min score")
-    parser.add_argument("--accumulation-min-oi", type=float, default=8.0, help="Accumulation entry min OI change (%)")
-    parser.add_argument("--accumulation-max-change", type=float, default=20.0, help="Accumulation entry max 24h change (%)")
+    parser.add_argument("--accumulation-min-oi", type=float, default=8.0, help="Accumulation entry min OI change (%%)")
+    parser.add_argument("--accumulation-max-change", type=float, default=20.0, help="Accumulation entry max 24h change (%%)")
     parser.add_argument("--max-abs-funding-rate", type=float, default=0.008, help="Max abs funding rate")
-    parser.add_argument("--max-range-position", type=float, default=95.0, help="Max 24h range position (%)")
-    parser.add_argument("--max-chase-change", type=float, default=45.0, help="Max chase 24h change (%)")
+    parser.add_argument("--max-range-position", type=float, default=95.0, help="Max 24h range position (%%)")
+    parser.add_argument("--max-chase-change", type=float, default=45.0, help="Max chase 24h change (%%)")
     parser.add_argument("--max-consecutive-losses", type=int, default=3, help="Max consecutive losses")
     parser.add_argument("--loss-pause-mins", type=int, default=30, help="Loss pause minutes")
     parser.add_argument("--no-daily-report", action="store_true", help="Disable daily report")
-    parser.add_argument("--trailing", type=float, default=5.0, help="Trailing stop (%)")
+    parser.add_argument("--trailing", type=float, default=5.0, help="Trailing stop (%%)")
     parser.add_argument("--no-trailing", action="store_true", help="Disable trailing stop")
 
     args = parser.parse_args()
@@ -417,3 +417,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
