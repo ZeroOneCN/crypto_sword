@@ -603,6 +603,14 @@ def format_signal_message(signal: dict[str, Any], trade_result: dict[str, Any]) 
         "exhaustion": "⚠️",
     }.get(stage, "📊")
 
+    stage_label = {
+        "pre_break": "预突破",
+        "confirmed_breakout": "确认突破",
+        "mania": "过热",
+        "exhaustion": "衰竭",
+    }.get(stage, str(stage))
+    stage = stage_label
+
     action = trade.get("action", "UNKNOWN")
     action_emoji = {
         "EXECUTED": "✅",
@@ -618,7 +626,7 @@ def format_signal_message(signal: dict[str, Any], trade_result: dict[str, Any]) 
     msg = f"""{stage_emoji}{stage_emoji} <b>BREAKOUT SIGNAL</b> {stage_emoji}{stage_emoji}
 
 {direction_emoji} <b>{_escape(symbol)}</b>  <code>{_escape(direction)}</code>
-📊 <b>Stage</b>  <code>{_escape(stage)}</code>
+📊 <b>阶段</b>  <code>{_escape(stage)}</code>
 {action_emoji} <b>Action</b>  <code>{_escape(action)}</code>
 
 <b>Market Metrics</b>
