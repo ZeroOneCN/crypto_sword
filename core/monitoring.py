@@ -70,14 +70,14 @@ def build_monitor_delta(
         delta_items.append(
             {
                 "symbol": symbol,
-                "direction": "LONG",
+                "direction": "N/A",
                 "price": 0,
                 "metrics": {},
                 "score": {"total_score": 0, "confidence": "状态变更"},
-                "entry_status_text": "失效淘汰",
+                "entry_status_text": "移出监控",
                 "entry_note": f"已移出当前{count_label}前排监控",
                 "strategy_line": "",
-                "watch_stage": "淘汰",
+                "watch_stage": "监控变更",
             }
         )
 

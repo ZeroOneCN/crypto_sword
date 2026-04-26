@@ -637,9 +637,26 @@ class ExecutionMixin:
         """执行开仓 - 奥丁的长矛"""
         symbol = signal["symbol"]
         direction = signal["direction"]
-        price = signal["price"]
+        price = float(signal.get("price", 0) or 0)
+        position: Optional[Position] = None
         trace_started = time.perf_counter()
         latency_steps: list[tuple[str, float]] = []
+        entry_status = str(signal.get("entry_status", "") or "")
+        status_text = str(signal.get("entry_status_text", "") or "")
+        watch_stage = str(signal.get("watch_stage", "") or "")
+        entry_note = str(signal.get("entry_note", "") or "")
+        score_conf = str((signal.get("score") or {}).get("confidence", "") or "")
+        guard_text = f"{status_text}|{watch_stage}|{entry_note}|{score_conf}"
+
+        if entry_status != "ready":
+            logger.warning(f"entry guard reject {symbol}: entry_status={entry_status}")
+            return None
+        if price <= 0:
+            logger.warning(f"entry guard reject {symbol}: invalid price={price}")
+            return None
+        if any(token in guard_text for token in ("失效", "淘汰", "移出监控", "状态变更")):
+            logger.warning(f"entry guard reject {symbol}: blocked by monitor state [{guard_text}]")
+            return None
 
         if self._new_entries_suspended:
             logger.warning(f"🛡️ {symbol} 新开仓暂停：存在保护单不完整的持仓")
@@ -870,7 +887,17 @@ class ExecutionMixin:
                 price_move_pct=primary_price_move_pct,
                 take_profit_targets=take_profit_targets,
             )
-            send_telegram_message(msg)
+            notify_ok = send_telegram_message(msg)
+            if not notify_ok:
+                logger.error(f"entry notify failed: {symbol} session={session_id}")
+                notify_event = build_execution_event(
+                    event="entry_notify_failed",
+                    symbol=symbol,
+                    direction=direction,
+                    session_id=session_id,
+                    metrics={"reason": "telegram_send_failed"},
+                )
+                feature_store.append_event(notify_event)
 
             notes_parts = [
                 f"session_id={session_id}",
@@ -939,6 +966,10 @@ class ExecutionMixin:
                     component="execute_entry",
                 )
             )
+            if position is not None:
+                logger.error(f"entry post-process failed but position exists: {symbol} session={position.session_id}")
+                self._emit_latency_trace("execute_entry_post_error", trace_started, latency_steps, symbol=symbol)
+                return position
             self._emit_latency_trace("execute_entry_exception", trace_started, latency_steps, symbol=symbol)
             return None
 

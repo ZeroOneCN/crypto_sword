@@ -351,6 +351,20 @@ class CycleMixin:
                     break
                 if signal.get("entry_status") != "ready":
                     continue
+                signal_price = float(signal.get("price", 0) or 0)
+                score_conf = str((signal.get("score") or {}).get("confidence", "") or "")
+                status_text = str(signal.get("entry_status_text", "") or "")
+                watch_stage = str(signal.get("watch_stage", "") or "")
+                entry_note = str(signal.get("entry_note", "") or "")
+                guard_text = f"{status_text}|{watch_stage}|{entry_note}|{score_conf}"
+                if signal_price <= 0:
+                    logger.warning(f"entry guard skip {signal.get('symbol', '')}: invalid signal price={signal_price}")
+                    continue
+                if any(token in guard_text for token in ("失效", "淘汰", "移出监控", "状态变更")):
+                    logger.warning(
+                        f"entry guard skip {signal.get('symbol', '')}: blocked by monitor state [{guard_text}]"
+                    )
+                    continue
                 if balance_hint is not None:
                     signal["_balance_hint"] = balance_hint
 

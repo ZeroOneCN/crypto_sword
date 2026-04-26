@@ -301,6 +301,14 @@ class SyncMixin:
             f"qty={live_qty:.6f} entry={position.entry_price:.8f} "
             f"old_session={old_session_id} new_session={position.session_id}"
         )
+        send_telegram_message(
+            f"⚠️ <b>宙斯交易中枢 | 外部持仓变更接管</b>\n\n"
+            f"<b>标的</b>  <code>{position.symbol}</code>\n"
+            f"<b>来源</b>  <code>{source}</code>\n"
+            f"<b>说明</b>  <code>检测到交易所持仓变化，已重建本地仓位并接管保护单</code>\n"
+            f"<b>数量</b>  <code>{live_qty:.6f}</code>\n"
+            f"<b>开仓价</b>  <code>{position.entry_price:.8f}</code>"
+        )
         return True
 
     def _audit_all_position_protection(self, source: str = "startup_audit"):
@@ -562,6 +570,14 @@ class SyncMixin:
             )
             self.tracker.add_position(restored)
             logger.warning(f"♻️ 已恢复持仓：{restored.symbol} {restored.side} session={session_id}")
+            send_telegram_message(
+                f"ℹ️ <b>宙斯交易中枢 | 启动持仓恢复</b>\n\n"
+                f"<b>标的</b>  <code>{restored.symbol}</code>\n"
+                f"<b>方向</b>  <code>{'LONG' if restored.side == 'BUY' else 'SHORT'}</code>\n"
+                f"<b>数量</b>  <code>{restored.quantity:.6f}</code>\n"
+                f"<b>开仓价</b>  <code>{restored.entry_price:.8f}</code>\n"
+                f"<b>说明</b>  <code>该仓位来自交易所现有持仓恢复，不是本轮新开仓</code>"
+            )
 
     def _run_health_checks(self) -> float:
         telegram_config = get_telegram_config()
