@@ -229,6 +229,7 @@ class CycleMixin:
         interval = self._watch_monitor_interval(watch_items)
         if now - self._last_watch_monitor_time < interval:
             return
+        force_interval = max(900, interval * 3)
         delta_items, current_snapshot = build_monitor_delta(
             watch_items,
             self._last_watch_monitor_snapshot,
@@ -240,9 +241,13 @@ class CycleMixin:
             logger.debug("watch monitor skipped: no material changes")
             return
         if not delta_items:
-            logger.debug("watch monitor skipped: delta empty")
+            if now - self._last_watch_monitor_time < force_interval:
+                logger.debug("watch monitor skipped: delta empty")
+                self._last_watch_monitor_snapshot = current_snapshot
+                return
+            logger.info("watch monitor heartbeat: send full snapshot after quiet period")
+            delta_items = watch_items[:5]
             self._last_watch_monitor_snapshot = current_snapshot
-            return
         self._last_watch_monitor_time = now
         self._last_watch_monitor_signature = signature
         self._last_watch_monitor_snapshot = current_snapshot

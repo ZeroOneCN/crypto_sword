@@ -747,11 +747,25 @@ def format_daily_report_msg(report: dict[str, Any]) -> str:
             f" / <code>{float(worst_trade.get('pnl_pct', 0) or 0):+,.2f}%</code>"
         )
 
+    def _reason_zh(reason: str) -> str:
+        key = str(reason or "").upper()
+        mapping = {
+            "TAKE_PROFIT": "止盈触发",
+            "STOP_LOSS": "止损触发",
+            "FILLED": "完全成交",
+            "PARTIALLY_FILLED": "部分成交",
+            "CANCELED": "已撤销",
+            "EXPIRED": "已过期",
+            "REJECTED": "已拒绝",
+            "UNKNOWN": "未知原因",
+        }
+        return mapping.get(key, key if key else "未知原因")
+
     reason_counts = report.get("reason_counts") or {}
     if reason_counts:
         msg += "\n\n<b>平仓原因</b>"
         for reason, count in sorted(reason_counts.items(), key=lambda item: (-int(item[1] or 0), str(item[0]))):
-            msg += f"\n•{_escape(str(reason))}  <code>{int(count or 0)}</code>"
+            msg += f"\n•{_escape(_reason_zh(str(reason)))}  <code>{int(count or 0)}</code>"
 
     oi_stats = report.get("oi_funding_stats") or {}
     enhanced_trades = int(oi_stats.get("enhanced_trades", 0) or 0)

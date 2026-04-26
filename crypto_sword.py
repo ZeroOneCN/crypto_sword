@@ -413,7 +413,8 @@ def main():
     parser.add_argument("--max-daily-loss", type=float, default=5.0, help="Max daily loss (%%)")
 
     parser.add_argument("--top", type=int, default=30, help="Top N symbols")
-    parser.add_argument("--interval", "-i", type=int, default=300, help="Scan interval (seconds)")
+    parser.add_argument("--interval", "-i", type=int, default=180, help="Deep scan interval (seconds)")
+    parser.add_argument("--fast-interval", type=int, default=60, help="Fast scan interval (seconds)")
     parser.add_argument("--scan-workers", type=int, default=6, help="Scan workers")
     parser.add_argument("--min-change", type=float, default=1.5, help="Min 24h change (%%)")
     parser.add_argument("--min-pullback", type=float, default=1.5, help="Min pullback (%%)")
@@ -466,6 +467,7 @@ def main():
         trailing_stop_enabled=not args.no_trailing,
         scan_top_n=args.top,
         scan_interval_sec=args.interval,
+        fast_scan_interval_sec=max(10, args.fast_interval),
         scan_workers=max(1, args.scan_workers),
         min_stage="pre_break",
         scan_by_change=not args.by_volume,
