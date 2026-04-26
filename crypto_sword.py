@@ -145,100 +145,120 @@ class CryptoSword(ExecutionMixin, ScannerMixin, CycleMixin, SyncMixin, Confirmat
         return enriched
 
     def _enrich_daily_report_with_api(self, report: dict[str, Any], date_str: str) -> dict[str, Any]:
-        """Enrich daily report with Binance API trade aggregates."""
+        """Build daily report strictly from Binance API userTrades (no local DB metrics)."""
+        api_report: dict[str, Any] = {
+            "date": date_str,
+            "mode": self.config.mode,
+            "closed_trades": 0,
+            "winning_trades": 0,
+            "losing_trades": 0,
+            "win_rate": 0.0,
+            "total_pnl": 0.0,
+            "avg_pnl": 0.0,
+            "best_trade": None,
+            "worst_trade": None,
+            "reason_counts": {},
+        }
+        del report  # explicitly ignore local report data
         try:
             from binance_api_client import get_native_binance_client
-            from collections import defaultdict
             from datetime import timezone, timedelta
 
             client = get_native_binance_client()
 
-            # 閻熸瑱绲鹃悗浠嬪籍閵夛附鍩傞悗娑欘殘椤戜焦绋夌拠褏绀夐悹渚婄磿閻ｈ崵鎷犻妷锔斤級 00:00-23:59 UTC+8 闁汇劌瀚鍌炴⒒鐎涙ê鐓?
             target_date = datetime.fromisoformat(date_str).replace(tzinfo=timezone.utc)
             day_start_utc8 = target_date.replace(hour=0, minute=0, second=0, microsecond=0)
             day_end_utc8 = day_start_utc8 + timedelta(days=1)
-
-            # 閺夌儐鍓氬畷鍙夌▔?UTC 闁哄啫鐖煎Λ鍧楀箣?(Binance API 濞达綀娉曢弫?UTC 婵綆鍋嗛～妤呭籍閸洘锛熼柟?
             start_ms = int(day_start_utc8.timestamp() * 1000)
             end_ms = int(day_end_utc8.timestamp() * 1000)
 
-            trades = client.get_trade_history(start_time=start_ms, end_time=end_ms, limit=500)
+            trades = client.get_trade_history(start_time=start_ms, end_time=end_ms, limit=1000)
+            order_stats: dict[tuple[str, int], dict[str, float | str]] = {}
 
-            # 闁圭顦锕傚及閹炬剚鍤犻柤杈ㄨ壘閹骸顔忛幓鎺旀澖闁绘粍澹嗗▔鈺傜?
-            order_pnl: dict[tuple[str, int], float] = defaultdict(float)
-            symbol_total_pnl: dict[str, float] = defaultdict(float)
             for trade in trades:
                 pnl = float(trade.get("realizedPnl", 0) or 0)
-                if pnl != 0:
-                    symbol = trade.get("symbol", "")
-                    order_id = int(trade.get("orderId", 0) or 0)
-                    if not symbol or order_id <= 0:
-                        continue
-                    key = (symbol, order_id)
-                    order_pnl[key] += pnl
-                    symbol_total_pnl[symbol] += pnl
+                if abs(pnl) <= 1e-12:
+                    continue
 
-            if order_pnl:
-                # 闁瑰灚鍎抽崵顓㈠嫉閳ь剚鎷呴崗鍛攭闁?
-                best_order = max(order_pnl, key=order_pnl.get)
-                best_symbol, _ = best_order
-                best_pnl = order_pnl[best_order]
-                report["best_trade"] = {
-                    "symbol": best_symbol,
-                    "pnl": round(best_pnl, 2),
-                }
+                symbol = str(trade.get("symbol", "") or "")
+                order_id = int(trade.get("orderId", 0) or 0)
+                if not symbol or order_id <= 0:
+                    continue
 
-                # 闁瑰灚鍎抽崵顓㈠嫉閳ь剙顔忛缁樺攭闁?
-                worst_order = min(order_pnl, key=order_pnl.get)
-                worst_symbol, _ = worst_order
-                worst_pnl = order_pnl[worst_order]
-                report["worst_trade"] = {
-                    "symbol": worst_symbol,
-                    "pnl": round(worst_pnl, 2),
-                }
+                price = float(trade.get("price", 0) or 0)
+                qty = abs(float(trade.get("qty", 0) or 0))
+                quote_qty = abs(float(trade.get("quoteQty", 0) or 0))
+                notional = quote_qty if quote_qty > 0 else abs(price * qty)
 
-                # 闁?API 闁轰胶澧楀畵浣圭┍椤旂瓔鍔€闁诡剝宕靛▔鈺傜韫囨挻瀚查柤铏矌瀹?
-                total_pnl_api = round(sum(order_pnl.values()), 2)
-                winning_count = sum(1 for pnl in order_pnl.values() if pnl > 0)
-                losing_count = sum(1 for pnl in order_pnl.values() if pnl < 0)
-                closed_count = len(order_pnl)
-
-                report["total_pnl"] = total_pnl_api
-                report["closed_trades"] = closed_count
-                report["winning_trades"] = winning_count
-                report["losing_trades"] = losing_count
-                report["win_rate"] = round(winning_count / closed_count * 100, 2) if closed_count else 0.0
-                report["avg_pnl"] = round(total_pnl_api / closed_count, 2) if closed_count else 0.0
-
-                logger.info(
-                    f"Daily report enriched from API [{date_str}]: "
-                    f"orders={closed_count}, symbols={len(symbol_total_pnl)}, "
-                    f"PnL={total_pnl_api}, best={best_symbol}({best_pnl:+.2f}), "
-                    f"worst={worst_symbol}({worst_pnl:+.2f})"
+                key = (symbol, order_id)
+                bucket = order_stats.setdefault(
+                    key,
+                    {
+                        "symbol": symbol,
+                        "pnl": 0.0,
+                        "close_notional": 0.0,
+                    },
                 )
-        except Exception as e:
-            logger.debug(f"API daily report enrichment skipped [{date_str}]: {e}")
+                bucket["pnl"] = float(bucket["pnl"]) + pnl
+                bucket["close_notional"] = float(bucket["close_notional"]) + notional
 
-        return report
+            if not order_stats:
+                return api_report
+
+            order_rows: list[dict[str, float | str]] = []
+            for row in order_stats.values():
+                pnl = float(row["pnl"])
+                close_notional = float(row["close_notional"])
+                pnl_pct = (pnl / close_notional * 100.0) if close_notional > 0 else 0.0
+                order_rows.append(
+                    {
+                        "symbol": str(row["symbol"]),
+                        "pnl": pnl,
+                        "pnl_pct": pnl_pct,
+                        "close_notional": close_notional,
+                    }
+                )
+
+            total_pnl = sum(float(item["pnl"]) for item in order_rows)
+            closed_count = len(order_rows)
+            winning_count = sum(1 for item in order_rows if float(item["pnl"]) > 0)
+            losing_count = sum(1 for item in order_rows if float(item["pnl"]) < 0)
+            best_trade = max(order_rows, key=lambda item: float(item["pnl"]))
+            worst_trade = min(order_rows, key=lambda item: float(item["pnl"]))
+
+            api_report["closed_trades"] = closed_count
+            api_report["winning_trades"] = winning_count
+            api_report["losing_trades"] = losing_count
+            api_report["total_pnl"] = round(total_pnl, 2)
+            api_report["win_rate"] = round(winning_count / closed_count * 100, 2) if closed_count else 0.0
+            api_report["avg_pnl"] = round(total_pnl / closed_count, 2) if closed_count else 0.0
+            api_report["best_trade"] = {
+                "symbol": str(best_trade["symbol"]),
+                "pnl": round(float(best_trade["pnl"]), 2),
+                "pnl_pct": round(float(best_trade["pnl_pct"]), 2),
+            }
+            api_report["worst_trade"] = {
+                "symbol": str(worst_trade["symbol"]),
+                "pnl": round(float(worst_trade["pnl"]), 2),
+                "pnl_pct": round(float(worst_trade["pnl_pct"]), 2),
+            }
+
+            logger.info(
+                f"Daily report from API [{date_str}] | orders={closed_count} "
+                f"pnl={float(api_report['total_pnl']):+,.2f} "
+                f"best={api_report['best_trade']['symbol']}({float(api_report['best_trade']['pnl']):+,.2f},"
+                f"{float(api_report['best_trade']['pnl_pct']):+,.2f}%) "
+                f"worst={api_report['worst_trade']['symbol']}({float(api_report['worst_trade']['pnl']):+,.2f},"
+                f"{float(api_report['worst_trade']['pnl_pct']):+,.2f}%)"
+            )
+        except Exception as e:
+            logger.debug(f"API daily report build failed [{date_str}]: {e}")
+
+        return api_report
 
     def _get_daily_report_snapshot(self) -> dict[str, Any]:
         report_date = datetime.now().date().isoformat()
-        try:
-            report = self.db.get_daily_report(report_date, mode=self.config.mode)
-        except Exception as e:
-            logger.debug(f"daily report snapshot skipped: {e}")
-            report = {
-                "closed_trades": 0,
-                "winning_trades": 0,
-                "losing_trades": 0,
-                "win_rate": 0.0,
-                "total_pnl": 0.0,
-                "avg_pnl": 0.0,
-                "best_trade": None,
-                "worst_trade": None,
-            }
-
-        return self._enrich_daily_report_with_api(report, report_date)
+        return self._enrich_daily_report_with_api({}, report_date)
 
     def _get_account_info_cached(self, ttl_sec: float = 3.0, force: bool = False) -> dict[str, Any]:
         now = time.time()
