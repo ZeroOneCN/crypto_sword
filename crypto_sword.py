@@ -126,6 +126,9 @@ class CryptoSword(ExecutionMixin, ScannerMixin, CycleMixin, SyncMixin, Confirmat
         self._account_info_cache: Optional[dict[str, Any]] = None
         self._account_info_cache_at: float = 0.0
         self._market_style_trade_marker: tuple[int, str] = (0, "")
+        self._daily_report_cache: Optional[dict[str, Any]] = None
+        self._daily_report_cache_date: str = ""
+        self._daily_report_cache_at: float = 0.0
 
     def _new_session_id(self, symbol: str) -> str:
         return f"{symbol}-{datetime.now().strftime('%Y%m%d%H%M%S')}-{uuid4().hex[:8]}"
@@ -294,9 +297,24 @@ class CryptoSword(ExecutionMixin, ScannerMixin, CycleMixin, SyncMixin, Confirmat
 
         return api_report
 
-    def _get_daily_report_snapshot(self) -> dict[str, Any]:
+    def _get_daily_report_snapshot(self, ttl_sec: float = 60.0, force: bool = False) -> dict[str, Any]:
         report_date = datetime.now().date().isoformat()
-        return self._enrich_daily_report_with_api({}, report_date)
+        now = time.time()
+        if (
+            not force
+            and self._daily_report_cache is not None
+            and self._daily_report_cache_date == report_date
+            and now - self._daily_report_cache_at < max(0.0, ttl_sec)
+        ):
+            return self._daily_report_cache
+
+        snapshot = self._enrich_daily_report_with_api({}, report_date)
+        if isinstance(snapshot, dict):
+            self._daily_report_cache = snapshot
+            self._daily_report_cache_date = report_date
+            self._daily_report_cache_at = now
+            return snapshot
+        return {}
 
     def _get_account_info_cached(self, ttl_sec: float = 3.0, force: bool = False) -> dict[str, Any]:
         now = time.time()

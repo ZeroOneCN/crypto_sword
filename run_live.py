@@ -2,7 +2,7 @@
 """Lightweight runtime entry for Crypto Sword.
 
 For full parameter control, use crypto_sword.py directly:
-  python3 crypto_sword.py --live --leverage 5 --risk 2 --stop-loss 5 --take-profit 10 ...
+  python3 crypto_sword.py --leverage 5 --risk 2 --stop-loss 5 --take-profit 10 ...
 
 This entry provides sensible defaults for quick launch.
 """
