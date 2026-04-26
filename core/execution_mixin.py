@@ -247,19 +247,35 @@ class ExecutionMixin:
         )
 
     def _refresh_protection_risk_switch(self):
+        """Auto-repair incomplete protection orders instead of blocking all entries."""
         naked = []
+        repaired = []
+        failed = []
+        
         for position in self.tracker.positions.values():
             status = self._position_protection_status(position)
             if not status["protected"]:
                 naked.append(position.symbol)
+                # Try to auto-repair
+                try:
+                    protected = self._ensure_position_protection(position)
+                    if protected:
+                        repaired.append(position.symbol)
+                        logger.info(f"🛡️ {position.symbol} 保护单已自动修复")
+                    else:
+                        failed.append(position.symbol)
+                        logger.warning(f"🛡️ {position.symbol} 保护单修复失败")
+                except Exception as e:
+                    failed.append(position.symbol)
+                    logger.warning(f"🛡️ {position.symbol} 保护单修复异常: {e}")
 
-        if naked:
+        if failed:
             self._new_entries_suspended = True
             if not self._new_entries_suspended_alert_sent:
                 send_telegram_message(
                     format_error_msg(
-                        error_type="裸仓保护失败，暂停新开仓",
-                        message=f"以下持仓保护单不完整：{', '.join(naked)}。系统会继续管理已有持仓，但暂停新开仓。",
+                        error_type="保护单修复失败，暂停新开仓",
+                        message=f"以下持仓保护单修复失败：{', '.join(failed)}。系统会继续管理已有持仓，但暂停新开仓。",
                         component="protection_guard",
                     )
                 )
@@ -269,6 +285,9 @@ class ExecutionMixin:
                 logger.warning("🛡️ 所有持仓保护单已恢复，新开仓限制解除")
             self._new_entries_suspended = False
             self._new_entries_suspended_alert_sent = False
+        
+        if repaired:
+            logger.info(f"🛡️ 保护单自动修复成功：{', '.join(repaired)}")
 
     def _ensure_position_protection(self, position: Position):
         """Place missing exchange-side SL/TP orders for tracked or restored positions."""
