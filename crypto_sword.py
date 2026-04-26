@@ -145,7 +145,7 @@ class CryptoSword(ExecutionMixin, ScannerMixin, CycleMixin, SyncMixin, Confirmat
         return enriched
 
     def _enrich_daily_report_with_api(self, report: dict[str, Any], date_str: str) -> dict[str, Any]:
-        """从 Binance API 获取指定日期的真实交易数据，修正最佳/最差交易和统计。"""
+        """Enrich daily report with Binance API trade aggregates."""
         try:
             from binance_api_client import get_native_binance_client
             from collections import defaultdict
@@ -153,18 +153,18 @@ class CryptoSword(ExecutionMixin, ScannerMixin, CycleMixin, SyncMixin, Confirmat
 
             client = get_native_binance_client()
 
-            # 解析日期字符串，计算该日 00:00-23:59 UTC+8 的时间戳
+            # 鐟欙絾鐎介弮銉︽埂鐎涙顑佹稉璇х礉鐠侊紕鐣荤拠銉︽） 00:00-23:59 UTC+8 閻ㄥ嫭妞傞梻瀛樺煈
             target_date = datetime.fromisoformat(date_str).replace(tzinfo=timezone.utc)
             day_start_utc8 = target_date.replace(hour=0, minute=0, second=0, microsecond=0)
             day_end_utc8 = day_start_utc8 + timedelta(days=1)
 
-            # 转换为 UTC 时间戳 (Binance API 使用 UTC 毫秒时间戳)
+            # 鏉烆剚宕叉稉?UTC 閺冨爼妫块幋?(Binance API 娴ｈ法鏁?UTC 濮ｎ偆顫楅弮鍫曟？閹?
             start_ms = int(day_start_utc8.timestamp() * 1000)
             end_ms = int(day_end_utc8.timestamp() * 1000)
 
             trades = client.get_trade_history(start_time=start_ms, end_time=end_ms, limit=500)
 
-            # 按交易对聚合已实现盈亏
+            # 閹稿姘﹂弰鎾愁嚠閼辨艾鎮庡鎻掔杽閻滄壆娉╂禍?
             order_pnl: dict[tuple[str, int], float] = defaultdict(float)
             symbol_total_pnl: dict[str, float] = defaultdict(float)
             for trade in trades:
@@ -179,7 +179,7 @@ class CryptoSword(ExecutionMixin, ScannerMixin, CycleMixin, SyncMixin, Confirmat
                     symbol_total_pnl[symbol] += pnl
 
             if order_pnl:
-                # 找出最佳交易
+                # 閹垫儳鍤張鈧担鍏呮唉閺?
                 best_order = max(order_pnl, key=order_pnl.get)
                 best_symbol, _ = best_order
                 best_pnl = order_pnl[best_order]
@@ -188,7 +188,7 @@ class CryptoSword(ExecutionMixin, ScannerMixin, CycleMixin, SyncMixin, Confirmat
                     "pnl": round(best_pnl, 2),
                 }
 
-                # 找出最差交易
+                # 閹垫儳鍤張鈧顔绘唉閺?
                 worst_order = min(order_pnl, key=order_pnl.get)
                 worst_symbol, _ = worst_order
                 worst_pnl = order_pnl[worst_order]
@@ -197,7 +197,7 @@ class CryptoSword(ExecutionMixin, ScannerMixin, CycleMixin, SyncMixin, Confirmat
                     "pnl": round(worst_pnl, 2),
                 }
 
-                # 用 API 数据修正总盈亏和胜率
+                # 閻?API 閺佺増宓佹穱顔筋劀閹崵娉╂禍蹇撴嫲閼虫粎宸?
                 total_pnl_api = round(sum(order_pnl.values()), 2)
                 winning_count = sum(1 for pnl in order_pnl.values() if pnl > 0)
                 losing_count = sum(1 for pnl in order_pnl.values() if pnl < 0)
@@ -322,68 +322,60 @@ class CryptoSword(ExecutionMixin, ScannerMixin, CycleMixin, SyncMixin, Confirmat
 
 def main():
     parser = argparse.ArgumentParser(
-        description="诸神黄昏之剑 - Binance 合约实盘交易程序（仅实盘模式）",
+        description="Crypto Sword - Binance futures live trading runtime",
         formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog="示例:\n  python3 crypto_sword.py --leverage 5 --risk 2 --stop-loss 5 --take-profit 10",
+        epilog="Example:\n  python3 crypto_sword.py --leverage 5 --risk 2.5 --stop-loss 8 --take-profit 20",
     )
 
-    parser.add_argument("--leverage", "-l", type=int, default=5, choices=range(1, 11),
-                        metavar="1-10", help="杠杆倍数 (1-10x)")
+    parser.add_argument("--leverage", "-l", type=int, default=5, choices=range(1, 11), metavar="1-10", help="Leverage (1-10x)")
+    parser.add_argument("--risk", "-r", type=float, default=2.5, help="Risk per trade (%)")
+    parser.add_argument("--stop-loss", "-s", type=float, default=8.0, help="Stop loss (%)")
+    parser.add_argument("--take-profit", "-t", type=float, default=20.0, help="Take profit (%)")
+    parser.add_argument("--take-profit-mode", choices=["price", "roi"], default="roi", help="Take profit mode")
+    parser.add_argument("--max-positions", "-m", type=int, default=6, help="Max open positions")
+    parser.add_argument("--max-position-pct", type=float, default=30.0, help="Max notional position size (% of balance)")
+    parser.add_argument("--max-daily-loss", type=float, default=5.0, help="Max daily loss (%)")
 
-    parser.add_argument("--risk", "-r", type=float, default=2.0, help="每笔风险百分比")
-    parser.add_argument("--stop-loss", "-s", type=float, default=8.0, help="止损百分比")
-    parser.add_argument("--take-profit", "-t", type=float, default=20.0, help="止盈百分比")
-    parser.add_argument(
-        "--take-profit-mode",
-        choices=["price", "roi"],
-        default="roi",
-        help="止盈口径：roi=杠杆后收益率，price=标的价格涨跌幅",
-    )
-    parser.add_argument("--max-positions", "-m", type=int, default=5, help="最大持仓数")
-    parser.add_argument("--max-daily-loss", type=float, default=5.0, help="每日最大亏损百分比")
-
-    parser.add_argument("--top", type=int, default=30, help="扫描前 N 个币种")
-    parser.add_argument("--interval", "-i", type=int, default=300, help="扫描间隔秒数")
-    parser.add_argument("--scan-workers", type=int, default=6, help="深度扫描并发数")
-    parser.add_argument("--min-change", type=float, default=2.0, help="最小涨跌幅百分比")
-    parser.add_argument("--min-pullback", type=float, default=2.0, help="最小回踩百分比")
-    parser.add_argument("--reclaim-volume", type=float, default=1.05, help="回踩后 5m 量能回归倍数")
-    parser.add_argument("--by-volume", action="store_true", help="按成交量排序（默认按涨幅）")
-    parser.add_argument("--no-entry-confirm", action="store_true", help="禁用回踩确认入场")
-    parser.add_argument("--entry-confirm-timeout", type=int, default=1800, help="候选观察超时秒数")
-    parser.add_argument("--no-momentum-entry", action="store_true", help="禁用强趋势动量入场")
-    parser.add_argument("--momentum-score", type=float, default=60.0, help="动量入场最低评分 (默认：60)")
-    parser.add_argument("--accumulation-score", type=float, default=50.0, help="暗流最低评分 (默认：50)")
-    parser.add_argument("--accumulation-min-oi", type=float, default=10.0, help="暗流最小OI变化% (默认：10)")
-    parser.add_argument("--accumulation-max-change", type=float, default=15.0, help="暗流最大涨跌幅% (默认：15)")
-    parser.add_argument("--max-abs-funding-rate", type=float, default=0.005, help="最大绝对资金费率 (默认：0.5%%)")
-    parser.add_argument("--max-range-position", type=float, default=92.0, help="最大24h区间位置%% (默认：92)")
-    parser.add_argument("--max-chase-change", type=float, default=35.0, help="最大追涨24h涨幅%% (默认：35)")
-    parser.add_argument("--max-consecutive-losses", type=int, default=3, help="连续亏损熔断笔数")
-    parser.add_argument("--loss-pause-mins", type=int, default=30, help="连续亏损后暂停分钟")
-    parser.add_argument("--no-daily-report", action="store_true", help="禁用每日复盘通知")
-
-    parser.add_argument("--trailing", type=float, default=5.0, help="追踪止损百分比")
-    parser.add_argument("--no-trailing", action="store_true", help="禁用追踪止损")
+    parser.add_argument("--top", type=int, default=30, help="Top N symbols")
+    parser.add_argument("--interval", "-i", type=int, default=300, help="Scan interval (seconds)")
+    parser.add_argument("--scan-workers", type=int, default=6, help="Scan workers")
+    parser.add_argument("--min-change", type=float, default=1.5, help="Min 24h change (%)")
+    parser.add_argument("--min-pullback", type=float, default=1.5, help="Min pullback (%)")
+    parser.add_argument("--reclaim-volume", type=float, default=1.05, help="5m volume reclaim ratio")
+    parser.add_argument("--by-volume", action="store_true", help="Rank by volume instead of change")
+    parser.add_argument("--no-entry-confirm", action="store_true", help="Disable entry confirmation")
+    parser.add_argument("--entry-confirm-timeout", type=int, default=1800, help="Entry confirmation timeout (seconds)")
+    parser.add_argument("--no-momentum-entry", action="store_true", help="Disable momentum entry")
+    parser.add_argument("--momentum-score", type=float, default=55.0, help="Momentum entry min score")
+    parser.add_argument("--accumulation-score", type=float, default=45.0, help="Accumulation entry min score")
+    parser.add_argument("--accumulation-min-oi", type=float, default=8.0, help="Accumulation entry min OI change (%)")
+    parser.add_argument("--accumulation-max-change", type=float, default=20.0, help="Accumulation entry max 24h change (%)")
+    parser.add_argument("--max-abs-funding-rate", type=float, default=0.008, help="Max abs funding rate")
+    parser.add_argument("--max-range-position", type=float, default=95.0, help="Max 24h range position (%)")
+    parser.add_argument("--max-chase-change", type=float, default=45.0, help="Max chase 24h change (%)")
+    parser.add_argument("--max-consecutive-losses", type=int, default=3, help="Max consecutive losses")
+    parser.add_argument("--loss-pause-mins", type=int, default=30, help="Loss pause minutes")
+    parser.add_argument("--no-daily-report", action="store_true", help="Disable daily report")
+    parser.add_argument("--trailing", type=float, default=5.0, help="Trailing stop (%)")
+    parser.add_argument("--no-trailing", action="store_true", help="Disable trailing stop")
 
     args = parser.parse_args()
 
     mode = "live"
     print("\n" + "=" * 50)
-    print("⚠️  ⚠️  ⚠️  实盘交易警告  ⚠️  ⚠️  ⚠️")
+    print("WARNING: LIVE TRADING MODE")
     print("=" * 50)
-    print(f"\n即将使用真实资金交易 | 杠杆:{args.leverage}x 风险:{args.risk}% 止损:{args.stop_loss}%")
-    print("确认继续？输入 'y' 继续，其他键取消")
+    print(f"\nAbout to trade real funds | leverage={args.leverage}x risk={args.risk}% stop_loss={args.stop_loss}%")
+    print("Confirm? type 'y' to continue")
     if not sys.stdin.isatty():
-        print("ℹ️ 后台模式，跳过确认")
+        print("Non-interactive mode, auto-confirm")
         confirm = "y"
     else:
         confirm = input("> ").strip().lower()
     if confirm != "y":
-        print("❌ 已取消")
+        print("Canceled")
         sys.exit(0)
 
-    # 创建配置
     config = TradingConfig(
         mode=mode,
         leverage=args.leverage,
@@ -391,7 +383,7 @@ def main():
         stop_loss_pct=args.stop_loss,
         take_profit_pct=args.take_profit,
         take_profit_mode=args.take_profit_mode,
-        max_position_pct=20.0,
+        max_position_pct=max(5.0, args.max_position_pct),
         max_daily_loss_pct=args.max_daily_loss,
         max_open_positions=args.max_positions,
         trailing_stop_pct=args.trailing,
@@ -419,7 +411,6 @@ def main():
         daily_report_enabled=not args.no_daily_report,
     )
 
-    # 启动交易引擎
     trader = CryptoSword(config)
     trader.run()
 
