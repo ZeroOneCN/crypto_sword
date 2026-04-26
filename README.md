@@ -23,7 +23,7 @@ python3 crypto_sword.py \
   --max-positions 6 \
   --max-position-pct 30 \
   --top 30 \
-  --interval 300
+  --interval 180
 ```
 
 后台运行示例：

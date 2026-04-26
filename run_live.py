@@ -26,7 +26,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--max-positions", type=int, default=6, help="Max open positions")
     parser.add_argument("--max-position-pct", type=float, default=30.0, help="Max notional position size (%% of balance)")
     parser.add_argument("--scan-top-n", type=int, default=30, help="Top N symbols per deep scan")
-    parser.add_argument("--scan-interval", type=int, default=300, help="Deep scan interval seconds")
+    parser.add_argument("--scan-interval", type=int, default=180, help="Deep scan interval seconds")
     parser.add_argument("--fast-interval", type=int, default=60, help="Fast scan interval seconds")
     parser.add_argument("--disable-oi-funding", action="store_true", help="Disable OI/Funding scoring bonus")
     return parser
