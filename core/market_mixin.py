@@ -1,4 +1,4 @@
-"""Market profile and all-market websocket mixin."""
+﻿"""Market profile and all-market websocket mixin."""
 
 from __future__ import annotations
 
@@ -6,7 +6,6 @@ import logging
 import time
 from typing import Any
 
-from adapters.rest_gateway import load_market_overview
 from adapters.ws_gateway import get_all_market_ticker_client_class
 
 logger = logging.getLogger(__name__)
@@ -20,9 +19,9 @@ class MarketMixin:
     def _refresh_market_profile(self):
         """Update market-aware scan interval and TP multiplier."""
         try:
-            self._market_overview = load_market_overview()
+            self._market_overview = {}
         except Exception as e:
-            logger.warning(f"🌪 市场环境刷新失败：{e}")
+            logger.warning(f"馃尓 甯傚満鐜鍒锋柊澶辫触锛歿e}")
             return
 
         fear_greed = self._market_overview.get("fear_greed", {})
@@ -51,8 +50,8 @@ class MarketMixin:
         self.config.scan_interval_sec = int(interval)
         self._tp_multiplier = tp_multiplier
         logger.info(
-            f"🌪 动态参数：扫描间隔={self._current_scan_interval}s, TP倍率={self._tp_multiplier:.2f}, "
-            f"情绪={sentiment}, 恐贪={fear_greed_value}, 清算={liquidation_risk}"
+            f"馃尓 鍔ㄦ€佸弬鏁帮細鎵弿闂撮殧={self._current_scan_interval}s, TP鍊嶇巼={self._tp_multiplier:.2f}, "
+            f"鎯呯华={sentiment}, 鎭愯椽={fear_greed_value}, 娓呯畻={liquidation_risk}"
         )
 
     def _refresh_market_style(self, force: bool = False):
@@ -65,7 +64,7 @@ class MarketMixin:
         try:
             recent_closed = self.db.get_closed_trades(days=30, mode=self.config.mode)[: self.config.market_style_lookback_trades]
         except Exception as e:
-            logger.warning(f"市场风格刷新失败：{e}")
+            logger.warning(f"甯傚満椋庢牸鍒锋柊澶辫触锛歿e}")
             return
 
         marker = (
@@ -106,7 +105,7 @@ class MarketMixin:
             "alt_win": alt_win,
         }
         logger.info(
-            f"📫 市场风格切换：mode={style_mode} | "
+            f"馃摣 甯傚満椋庢牸鍒囨崲锛歮ode={style_mode} | "
             f"major={len(major_trades)} avg={major_avg:+.2f}% | "
             f"alt={len(alt_trades)} avg={alt_avg:+.2f}%"
         )
@@ -139,12 +138,12 @@ class MarketMixin:
             )
             if symbols:
                 logger.info(
-                    f"📋 WS异动榜命中 {len(symbols)} 个币种 "
-                    f"(缓存新鲜币种 {self._market_ws_client.size()}): {symbols[:5]}..."
+                    f"馃搵 WS寮傚姩姒滃懡涓?{len(symbols)} 涓竵绉?"
+                    f"(缂撳瓨鏂伴矞甯佺 {self._market_ws_client.size()}): {symbols[:5]}..."
                 )
             return symbols
         except Exception as e:
-            logger.debug(f"WS异动榜不可用，回退REST：{e}")
+            logger.debug(f"WS寮傚姩姒滀笉鍙敤锛屽洖閫€REST锛歿e}")
             return []
 
     def _fast_scan_candidates(self) -> list[str]:
@@ -164,8 +163,9 @@ class MarketMixin:
         if candidates:
             self._fast_candidates = candidates
             self._last_fast_scan_time = now
-            logger.info(f"⚡ Fast scan candidates: {len(candidates)} symbols | {candidates[:5]}...")
+            logger.info(f"鈿?Fast scan candidates: {len(candidates)} symbols | {candidates[:5]}...")
         elif self._fast_candidates:
-            logger.info(f"⚡ Fast scan keeps previous candidates: {self._fast_candidates[:5]}...")
+            logger.info(f"鈿?Fast scan keeps previous candidates: {self._fast_candidates[:5]}...")
 
         return self._fast_candidates
+

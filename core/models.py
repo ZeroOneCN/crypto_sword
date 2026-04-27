@@ -11,18 +11,20 @@ logger = logging.getLogger(__name__)
 
 class TradingConfig:
     """Runtime trading configuration."""
+    DEFAULT_RISK_PER_TRADE_PCT = 2.5
+    DEFAULT_MAX_OPEN_POSITIONS = 6
 
     def __init__(
         self,
         mode: str = "live",
         leverage: int = 5,
-        risk_per_trade_pct: float = 2.5,
+        risk_per_trade_pct: float = DEFAULT_RISK_PER_TRADE_PCT,
         stop_loss_pct: float = 8.0,
         take_profit_pct: float = 20.0,
         take_profit_mode: str = "roi",
         max_position_pct: float = 30.0,
         max_daily_loss_pct: float = 5.0,
-        max_open_positions: int = 6,
+        max_open_positions: int = DEFAULT_MAX_OPEN_POSITIONS,
         trailing_stop_pct: float = 5.0,
         trailing_stop_enabled: bool = True,
         scan_top_n: int = 30,

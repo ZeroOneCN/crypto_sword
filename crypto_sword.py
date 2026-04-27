@@ -22,7 +22,7 @@ if str(_SCRIPTS_DIR) and str(_SCRIPTS_DIR) not in sys.path:
     sys.path.insert(0, str(_SCRIPTS_DIR))
 
 try:
-    from adapters.rest_gateway import load_account_balance
+    from binance_trading_executor import get_account_balance
     from telegram_notifier import (
         format_error_msg,
         format_shutdown_msg,
@@ -339,7 +339,7 @@ class CryptoSword(ExecutionMixin, ScannerMixin, CycleMixin, SyncMixin, Confirmat
         ):
             return self._account_info_cache
 
-        account_info = load_account_balance()
+        account_info = get_account_balance()
         if isinstance(account_info, dict):
             self._account_info_cache = account_info
             self._account_info_cache_at = now
@@ -414,15 +414,25 @@ def main():
     parser = argparse.ArgumentParser(
         description="Crypto Sword - Binance futures live trading runtime",
         formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog="Example:\n  python3 crypto_sword.py --leverage 5 --risk 2.5 --stop-loss 8 --take-profit 20",
+        epilog=(
+            "Example:\n"
+            f"  python3 crypto_sword.py --leverage 5 --risk {TradingConfig.DEFAULT_RISK_PER_TRADE_PCT} "
+            "--stop-loss 8 --take-profit 20"
+        ),
     )
 
     parser.add_argument("--leverage", "-l", type=int, default=5, choices=range(1, 11), metavar="1-10", help="Leverage (1-10x)")
-    parser.add_argument("--risk", "-r", type=float, default=2.5, help="Risk per trade (%%)")
+    parser.add_argument("--risk", "-r", type=float, default=TradingConfig.DEFAULT_RISK_PER_TRADE_PCT, help="Risk per trade (%%)")
     parser.add_argument("--stop-loss", "-s", type=float, default=8.0, help="Stop loss (%%)")
     parser.add_argument("--take-profit", "-t", type=float, default=20.0, help="Take profit (%%)")
     parser.add_argument("--take-profit-mode", choices=["price", "roi"], default="roi", help="Take profit mode")
-    parser.add_argument("--max-positions", "-m", type=int, default=6, help="Max open positions")
+    parser.add_argument(
+        "--max-positions",
+        "-m",
+        type=int,
+        default=TradingConfig.DEFAULT_MAX_OPEN_POSITIONS,
+        help="Max open positions",
+    )
     parser.add_argument("--max-position-pct", type=float, default=30.0, help="Max notional position size (%% of balance)")
     parser.add_argument("--max-daily-loss", type=float, default=5.0, help="Max daily loss (%%)")
 
@@ -509,4 +519,5 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 

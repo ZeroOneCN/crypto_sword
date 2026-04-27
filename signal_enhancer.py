@@ -1,12 +1,12 @@
-#!/usr/bin/env python3
+﻿#!/usr/bin/env python3
 """
-╔═══════════════════════════════════════════════════════════════╗
-║                                                               ║
-║         🎯 SIGNAL ENHANCER - 神圣信号增强系统 🎯              ║
-║                                                               ║
-║    多时间框架确认 + 成交量验证 + 信号评分                      ║
-║                                                               ║
-╚═══════════════════════════════════════════════════════════════╝
+鈺斺晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺?
+鈺?                                                              鈺?
+鈺?        馃幆 SIGNAL ENHANCER - 绁炲湥淇″彿澧炲己绯荤粺 馃幆              鈺?
+鈺?                                                              鈺?
+鈺?   澶氭椂闂存鏋剁‘璁?+ 鎴愪氦閲忛獙璇?+ 淇″彿璇勫垎                      鈺?
+鈺?                                                              鈺?
+鈺氣晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺?
 """
 
 import logging
@@ -21,16 +21,16 @@ from binance_compat import run_native_binance_compat
 logger = logging.getLogger(__name__)
 
 
-# ═══════════════════════════════════════════════════════════════
-# TTLCache - 统一缓存机制（替代全局字典，防止内存泄漏）
-# ═══════════════════════════════════════════════════════════════
+# 鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺?
+# TTLCache - 缁熶竴缂撳瓨鏈哄埗锛堟浛浠ｅ叏灞€瀛楀吀锛岄槻姝㈠唴瀛樻硠婕忥級
+# 鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺?
 
 class TTLCache:
-    """带 TTL 和 LRU 清理的缓存类
+    """甯?TTL 鍜?LRU 娓呯悊鐨勭紦瀛樼被
     
     Args:
-        ttl_sec: 缓存过期时间（秒）
-        max_size: 最大缓存条目数（超过时清理最旧的条目）
+        ttl_sec: 缂撳瓨杩囨湡鏃堕棿锛堢锛?
+        max_size: 鏈€澶х紦瀛樻潯鐩暟锛堣秴杩囨椂娓呯悊鏈€鏃х殑鏉＄洰锛?
     """
     def __init__(self, ttl_sec: float = 30, max_size: int = 100):
         self._cache: Dict[str, Tuple[Any, float]] = {}
@@ -38,7 +38,7 @@ class TTLCache:
         self._max_size = max_size
     
     def get(self, key: str) -> Any:
-        """获取缓存，过期则返回 None"""
+        """鑾峰彇缂撳瓨锛岃繃鏈熷垯杩斿洖 None"""
         if key in self._cache:
             value, expires_at = self._cache[key]
             if time.time() < expires_at:
@@ -47,69 +47,69 @@ class TTLCache:
         return None
     
     def set(self, key: str, value: Any):
-        """设置缓存，超过 max_size 时清理最旧的条目"""
+        """璁剧疆缂撳瓨锛岃秴杩?max_size 鏃舵竻鐞嗘渶鏃х殑鏉＄洰"""
         if len(self._cache) >= self._max_size:
-            # 清理最旧的条目
+            # 娓呯悊鏈€鏃х殑鏉＄洰
             oldest_key = min(self._cache, key=lambda k: self._cache[k][1])
             del self._cache[oldest_key]
         self._cache[key] = (value, time.time() + self._ttl)
     
     def clear(self):
-        """清空缓存"""
+        """娓呯┖缂撳瓨"""
         self._cache.clear()
     
     def __len__(self) -> int:
         return len(self._cache)
 
 
-# ═══════════════════════════════════════════════════════════════
-# K 线缓存 - 减少 API 调用
-# ═══════════════════════════════════════════════════════════════
+# 鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺?
+# K 绾跨紦瀛?- 鍑忓皯 API 璋冪敤
+# 鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺?
 
-_klines_cache = TTLCache(ttl_sec=30, max_size=200)  # 30 秒 TTL，最多 200 个条目
+_klines_cache = TTLCache(ttl_sec=30, max_size=200)  # 30 绉?TTL锛屾渶澶?200 涓潯鐩?
 
 def _get_cached_klines(symbol: str, interval: str) -> Optional[List]:
-    """获取缓存的 K 线数据"""
+    """鑾峰彇缂撳瓨鐨?K 绾挎暟鎹?""
     key = f"{symbol}_{interval}"
     return _klines_cache.get(key)
 
 def _set_cached_klines(symbol: str, interval: str, data: List):
-    """缓存 K 线数据"""
+    """缂撳瓨 K 绾挎暟鎹?""
     key = f"{symbol}_{interval}"
     _klines_cache.set(key, data)
 
 
-# ═══════════════════════════════════════════════════════════════
-# 数据结构 - 阿尔忒弥斯的神箭
-# ═══════════════════════════════════════════════════════════════
+# 鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺?
+# 鏁版嵁缁撴瀯 - 闃垮皵蹇掑讥鏂殑绁炵
+# 鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺?
 
 @dataclass
 class SignalScore:
-    """信号评分 - 综合质量评估"""
+    """淇″彿璇勫垎 - 缁煎悎璐ㄩ噺璇勪及"""
     symbol: str
     stage: str
     direction: str
 
-    # 各项评分 (0-100)
-    trend_score: float = 0.0      # 趋势强度
-    volume_score: float = 0.0     # 成交量确认
-    momentum_score: float = 0.0   # 动量强度
-    breakout_score: float = 0.0   # 突破质量
-    market_score: float = 0.0     # 市场环境
+    # 鍚勯」璇勫垎 (0-100)
+    trend_score: float = 0.0      # 瓒嬪娍寮哄害
+    volume_score: float = 0.0     # 鎴愪氦閲忕‘璁?
+    momentum_score: float = 0.0   # 鍔ㄩ噺寮哄害
+    breakout_score: float = 0.0   # 绐佺牬璐ㄩ噺
+    market_score: float = 0.0     # 甯傚満鐜
 
-    # 🏦 庄家雷达评分（新增）
-    chase_score: float = 0.0      # 🔥 追多策略评分
-    composite_score: float = 0.0  # 📊 综合策略评分
-    ambush_score: float = 0.0     # 🎯 埯伏策略评分
-    dark_flow_score: float = 0.0  # 暗流信号评分
-    sideways_days: int = 0        # 横盘天数
-    market_cap_usd: float = 0.0   # 流通市值
+    # 馃彟 搴勫闆疯揪璇勫垎锛堟柊澧烇級
+    chase_score: float = 0.0      # 馃敟 杩藉绛栫暐璇勫垎
+    composite_score: float = 0.0  # 馃搳 缁煎悎绛栫暐璇勫垎
+    ambush_score: float = 0.0     # 馃幆 鍩紡绛栫暐璇勫垎
+    dark_flow_score: float = 0.0  # 鏆楁祦淇″彿璇勫垎
+    sideways_days: int = 0        # 妯洏澶╂暟
+    market_cap_usd: float = 0.0   # 娴侀€氬競鍊?
 
-    # 综合评分
+    # 缁煎悎璇勫垎
     total_score: float = 0.0
-    confidence: str = "中"  # 低 / 中 / 高 / 极高
+    confidence: str = "涓?  # 浣?/ 涓?/ 楂?/ 鏋侀珮
 
-    # 否决项
+    # 鍚﹀喅椤?
     veto_signals: List[str] = None
 
     def __post_init__(self):
@@ -118,29 +118,29 @@ class SignalScore:
         self._calculate_total()
 
     def _calculate_total(self):
-        """计算综合评分（支持环境变量配置权重）"""
-        # 默认权重
+        """璁＄畻缁煎悎璇勫垎锛堟敮鎸佺幆澧冨彉閲忛厤缃潈閲嶏級"""
+        # 榛樿鏉冮噸
         default_weights = {
             'trend': 0.20,
             'volume': 0.20,
             'momentum': 0.15,
             'breakout': 0.15,
             'market': 0.10,
-            'composite': 0.20,  # 🏦 新增庄家雷达权重
+            'composite': 0.20,  # 馃彟 鏂板搴勫闆疯揪鏉冮噸
         }
         
-        # 从环境变量读取权重（JSON 格式）
+        # 浠庣幆澧冨彉閲忚鍙栨潈閲嶏紙JSON 鏍煎紡锛?
         weights = default_weights
         try:
             env_weights = os.environ.get("HERMES_SCORE_WEIGHTS")
             if env_weights:
                 import json
                 weights = json.loads(env_weights)
-                logger.debug(f"🎯 使用环境变量配置的评分权重: {weights}")
+                logger.debug(f"馃幆 浣跨敤鐜鍙橀噺閰嶇疆鐨勮瘎鍒嗘潈閲? {weights}")
         except Exception as e:
-            logger.debug(f"读取评分权重配置失败，使用默认值: {e}")
+            logger.debug(f"璇诲彇璇勫垎鏉冮噸閰嶇疆澶辫触锛屼娇鐢ㄩ粯璁ゅ€? {e}")
         
-        # 基础评分
+        # 鍩虹璇勫垎
         base_score = (
             self.trend_score * weights.get('trend', default_weights['trend']) +
             self.volume_score * weights.get('volume', default_weights['volume']) +
@@ -149,26 +149,26 @@ class SignalScore:
             self.market_score * weights.get('market', default_weights['market'])
         )
 
-        # 🏦 庄家雷达评分加成（如果可用）
+        # 馃彟 搴勫闆疯揪璇勫垎鍔犳垚锛堝鏋滃彲鐢級
         radar_bonus = 0
         if self.composite_score > 0:
             radar_bonus = self.composite_score * weights.get('composite', default_weights['composite'])
 
-        # 暗流信号额外加分（最高+15分）
+        # 鏆楁祦淇″彿棰濆鍔犲垎锛堟渶楂?15鍒嗭級
         if self.dark_flow_score > 0:
             radar_bonus += min(self.dark_flow_score / 100 * 15, 15)
 
         self.total_score = base_score + radar_bonus
 
-        # 确定置信度（降低阈值，更容易交易）
+        # 纭畾缃俊搴︼紙闄嶄綆闃堝€硷紝鏇村鏄撲氦鏄擄級
         if self.total_score >= 70:
-            self.confidence = "极高"
+            self.confidence = "鏋侀珮"
         elif self.total_score >= 50:
-            self.confidence = "高"
+            self.confidence = "楂?
         elif self.total_score >= 30:
-            self.confidence = "中"
+            self.confidence = "涓?
         else:
-            self.confidence = "低"
+            self.confidence = "浣?
 
     def to_dict(self) -> dict:
         return {
@@ -197,17 +197,17 @@ class SignalScore:
 _MARKET_ENV_CACHE: Tuple[Dict[str, Any], float] | None = None
 _MARKET_ENV_CACHE_TTL = float(os.getenv("HERMES_MARKET_ENV_CACHE_TTL_SEC", "300"))
 
-# ═══════════════════════════════════════════════════════════════
-# 多时间框架分析 - 克罗诺斯的时间之轮
-# ═══════════════════════════════════════════════════════════════
+# 鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺?
+# 澶氭椂闂存鏋跺垎鏋?- 鍏嬬綏璇烘柉鐨勬椂闂翠箣杞?
+# 鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺?
 
 def get_klines(symbol: str, interval: str = "1h", limit: int = 50, use_cache: bool = True) -> Optional[List[Dict]]:
     """
-    获取 K 线数据（带缓存）
+    鑾峰彇 K 绾挎暟鎹紙甯︾紦瀛橈級
     
     Intervals: 1m, 3m, 5m, 15m, 30m, 1h, 2h, 4h, 6h, 12h, 1d
     """
-    # 尝试从缓存获取
+    # 灏濊瘯浠庣紦瀛樿幏鍙?
     if use_cache:
         cached = _get_cached_klines(symbol, interval)
         if cached is not None:
@@ -223,7 +223,7 @@ def get_klines(symbol: str, interval: str = "1h", limit: int = 50, use_cache: bo
     if not data or not isinstance(data, list):
         return None
     
-    # 标准化 K 线数据
+    # 鏍囧噯鍖?K 绾挎暟鎹?
     klines = []
     for k in data:
         klines.append({
@@ -238,7 +238,7 @@ def get_klines(symbol: str, interval: str = "1h", limit: int = 50, use_cache: bo
             "trades": k[8],
         })
     
-    # 缓存结果
+    # 缂撳瓨缁撴灉
     if use_cache:
         _set_cached_klines(symbol, interval, klines)
     
@@ -247,7 +247,7 @@ def get_klines(symbol: str, interval: str = "1h", limit: int = 50, use_cache: bo
 
 def analyze_trend(klines: List[Dict]) -> Dict[str, Any]:
     """
-    分析趋势强度
+    鍒嗘瀽瓒嬪娍寮哄害
     
     Returns:
         {
@@ -265,12 +265,12 @@ def analyze_trend(klines: List[Dict]) -> Dict[str, Any]:
     highs = [k["high"] for k in klines]
     lows = [k["low"] for k in klines]
     
-    # 计算均线
+    # 璁＄畻鍧囩嚎
     ma5 = sum(closes[-5:]) / 5
     ma10 = sum(closes[-10:]) / 10
     ma20 = sum(closes[-20:]) / 20
     
-    # 判断趋势方向
+    # 鍒ゆ柇瓒嬪娍鏂瑰悜
     if ma5 > ma10 > ma20:
         direction = "UP"
         base_strength = 70
@@ -281,20 +281,20 @@ def analyze_trend(klines: List[Dict]) -> Dict[str, Any]:
         direction = "SIDEWAYS"
         base_strength = 30
     
-    # 检查高低点
+    # 妫€鏌ラ珮浣庣偣
     recent_highs = highs[-10:]
     recent_lows = lows[-10:]
     
     higher_highs = recent_highs[-1] > recent_highs[0] if len(recent_highs) > 1 else False
     higher_lows = recent_lows[-1] > recent_lows[0] if len(recent_lows) > 1 else False
     
-    # 调整强度
+    # 璋冩暣寮哄害
     if direction == "UP" and higher_highs and higher_lows:
         base_strength = min(100, base_strength + 20)
     elif direction == "DOWN" and not higher_highs and not higher_lows:
         base_strength = min(100, base_strength + 20)
     
-    # 均线发散程度
+    # 鍧囩嚎鍙戞暎绋嬪害
     ma_spread = (ma5 - ma20) / ma20 * 100
     if abs(ma_spread) > 5:
         base_strength = min(100, base_strength + 10)
@@ -313,7 +313,7 @@ def analyze_trend(klines: List[Dict]) -> Dict[str, Any]:
 
 def multi_timeframe_analysis(symbol: str, klines_1h: Optional[List[Dict]] = None) -> Dict[str, Any]:
     """
-    多时间框架分析（优化：只使用 1h 减少 API 调用）
+    澶氭椂闂存鏋跺垎鏋愶紙浼樺寲锛氬彧浣跨敤 1h 鍑忓皯 API 璋冪敤锛?
     
     Returns:
         {
@@ -322,14 +322,14 @@ def multi_timeframe_analysis(symbol: str, klines_1h: Optional[List[Dict]] = None
             "score": 0-100,
         }
     """
-    # 只使用 1h 时间框架（减少 66% API 调用）
+    # 鍙娇鐢?1h 鏃堕棿妗嗘灦锛堝噺灏?66% API 璋冪敤锛?
     klines = klines_1h or get_klines(symbol, interval="1h", limit=50)
     if klines:
         trend = analyze_trend(klines)
         direction = trend.get("direction", "UNKNOWN")
         strength = trend.get("strength", 50)
         
-        # 基于 1h 趋势判断
+        # 鍩轰簬 1h 瓒嬪娍鍒ゆ柇
         if direction == "UP":
             alignment = "BULLISH"
         elif direction == "DOWN":
@@ -350,13 +350,13 @@ def multi_timeframe_analysis(symbol: str, klines_1h: Optional[List[Dict]] = None
         }
 
 
-# ═══════════════════════════════════════════════════════════════
-# 成交量分析 - 赫菲斯托斯的熔炉
-# ═══════════════════════════════════════════════════════════════
+# 鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺?
+# 鎴愪氦閲忓垎鏋?- 璧彶鏂墭鏂殑鐔旂倝
+# 鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺?
 
 def analyze_volume(klines: List[Dict], lookback: int = 20) -> Dict[str, Any]:
     """
-    分析成交量
+    鍒嗘瀽鎴愪氦閲?
     
     Returns:
         {
@@ -373,17 +373,17 @@ def analyze_volume(klines: List[Dict], lookback: int = 20) -> Dict[str, Any]:
     volumes = [k["volume"] for k in klines]
     quote_volumes = [k["quote_volume"] for k in klines]
     
-    # 计算平均成交量
+    # 璁＄畻骞冲潎鎴愪氦閲?
     avg_volume = sum(volumes[-lookback:-1]) / (lookback - 1)
     current_volume = volumes[-1]
     
     avg_quote = sum(quote_volumes[-lookback:-1]) / (lookback - 1)
     current_quote = quote_volumes[-1]
     
-    # 成交量比率
+    # 鎴愪氦閲忔瘮鐜?
     volume_ratio = current_volume / avg_volume if avg_volume > 0 else 1
     
-    # 成交量趋势
+    # 鎴愪氦閲忚秼鍔?
     recent_avg = sum(volumes[-5:]) / 5
     older_avg = sum(volumes[-15:-10]) / 5 if len(volumes) >= 15 else recent_avg
     
@@ -394,17 +394,17 @@ def analyze_volume(klines: List[Dict], lookback: int = 20) -> Dict[str, Any]:
     else:
         volume_trend = "FLAT"
     
-    # 评分
+    # 璇勫垎
     if volume_ratio >= 3.0:
-        score = 100  # 巨量
+        score = 100  # 宸ㄩ噺
     elif volume_ratio >= 2.0:
-        score = 80   # 放量
+        score = 80   # 鏀鹃噺
     elif volume_ratio >= 1.5:
-        score = 60   # 温和放量
+        score = 60   # 娓╁拰鏀鹃噺
     elif volume_ratio >= 0.8:
-        score = 40   # 正常
+        score = 40   # 姝ｅ父
     else:
-        score = 20   # 缩量
+        score = 20   # 缂╅噺
     
     return {
         "avg_volume": round(avg_volume, 2),
@@ -417,13 +417,13 @@ def analyze_volume(klines: List[Dict], lookback: int = 20) -> Dict[str, Any]:
     }
 
 
-# ═══════════════════════════════════════════════════════════════
-# 动量分析 - 赫尔墨斯的速度
-# ═══════════════════════════════════════════════════════════════
+# 鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺?
+# 鍔ㄩ噺鍒嗘瀽 - 璧皵澧ㄦ柉鐨勯€熷害
+# 鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺?
 
 def analyze_momentum(klines: List[Dict]) -> Dict[str, Any]:
     """
-    分析动量（RSI 等指标）
+    鍒嗘瀽鍔ㄩ噺锛圧SI 绛夋寚鏍囷級
     
     Returns:
         {
@@ -437,7 +437,7 @@ def analyze_momentum(klines: List[Dict]) -> Dict[str, Any]:
     
     closes = [k["close"] for k in klines]
     
-    # 计算 RSI
+    # 璁＄畻 RSI
     gains = []
     losses = []
     
@@ -459,7 +459,7 @@ def analyze_momentum(klines: List[Dict]) -> Dict[str, Any]:
         rs = avg_gain / avg_loss
         rsi = 100 - (100 / (1 + rs))
     
-    # RSI 信号
+    # RSI 淇″彿
     if rsi >= 70:
         rsi_signal = "OVERBOUGHT"
     elif rsi <= 30:
@@ -467,15 +467,15 @@ def analyze_momentum(klines: List[Dict]) -> Dict[str, Any]:
     else:
         rsi_signal = "NEUTRAL"
     
-    # 动量评分（适中最好）
+    # 鍔ㄩ噺璇勫垎锛堥€備腑鏈€濂斤級
     if 40 <= rsi <= 60:
-        momentum_score = 70  # 中性，有空间
+        momentum_score = 70  # 涓€э紝鏈夌┖闂?
     elif (30 <= rsi < 40) or (60 < rsi <= 70):
-        momentum_score = 60  # 温和
+        momentum_score = 60  # 娓╁拰
     elif rsi < 30:
-        momentum_score = 80  # 超卖，可能反弹
+        momentum_score = 80  # 瓒呭崠锛屽彲鑳藉弽寮?
     elif rsi > 70:
-        momentum_score = 40  # 超买，风险高
+        momentum_score = 40  # 瓒呬拱锛岄闄╅珮
     else:
         momentum_score = 50
     
@@ -486,13 +486,13 @@ def analyze_momentum(klines: List[Dict]) -> Dict[str, Any]:
     }
 
 
-# ═══════════════════════════════════════════════════════════════
-# 突破质量分析 - 阿瑞斯的战锤
-# ═══════════════════════════════════════════════════════════════
+# 鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺?
+# 绐佺牬璐ㄩ噺鍒嗘瀽 - 闃跨憺鏂殑鎴橀敜
+# 鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺?
 
 def analyze_breakout(symbol: str, stage: str, metrics: Dict) -> Dict[str, Any]:
     """
-    分析突破质量
+    鍒嗘瀽绐佺牬璐ㄩ噺
     
     Returns:
         {
@@ -503,12 +503,12 @@ def analyze_breakout(symbol: str, stage: str, metrics: Dict) -> Dict[str, Any]:
         }
     """
     veto_signals = []
-    strength = 50  # 基础分数
+    strength = 50  # 鍩虹鍒嗘暟
     
-    # 24h 涨幅检查
+    # 24h 娑ㄥ箙妫€鏌?
     change_24h = metrics.get("change_24h_pct", 0)
     if change_24h > 100:
-        veto_signals.append("24h 涨幅过大 (>100%)，警惕回调")
+        veto_signals.append("24h 娑ㄥ箙杩囧ぇ (>100%)锛岃鎯曞洖璋?)
         strength -= 30
     elif change_24h > 50:
         strength -= 15
@@ -517,34 +517,34 @@ def analyze_breakout(symbol: str, stage: str, metrics: Dict) -> Dict[str, Any]:
     elif change_24h > 10:
         strength += 20
     
-    # 成交量检查
+    # 鎴愪氦閲忔鏌?
     volume_mult = metrics.get("volume_24h_mult", 1)
     if volume_mult >= 5:
-        strength += 25  # 巨量确认
+        strength += 25  # 宸ㄩ噺纭
     elif volume_mult >= 3:
         strength += 15
     elif volume_mult >= 2:
         strength += 5
     else:
-        veto_signals.append("成交量未放大，突破存疑")
+        veto_signals.append("鎴愪氦閲忔湭鏀惧ぇ锛岀獊鐮村瓨鐤?)
         strength -= 20
     
-    # OI 检查
+    # OI 妫€鏌?
     oi_change = metrics.get("oi_24h_pct", 0)
     if oi_change >= 50:
-        strength += 20  # OI 大幅增加
+        strength += 20  # OI 澶у箙澧炲姞
     elif oi_change >= 20:
         strength += 10
     elif oi_change < 0:
-        veto_signals.append("OI 下降，可能是假突破")
+        veto_signals.append("OI 涓嬮檷锛屽彲鑳芥槸鍋囩獊鐮?)
         strength -= 15
     
-    # 阶段检查
+    # 闃舵妫€鏌?
     stage_scores = {
         "pre_break": 60,
         "confirmed_breakout": 90,
-        "mania": 40,  # 狂热阶段风险高
-        "exhaustion": 20,  # 衰竭阶段
+        "mania": 40,  # 鐙傜儹闃舵椋庨櫓楂?
+        "exhaustion": 20,  # 琛扮闃舵
         "neutral": 50,
     }
     stage_base = stage_scores.get(stage, 50)
@@ -559,13 +559,13 @@ def analyze_breakout(symbol: str, stage: str, metrics: Dict) -> Dict[str, Any]:
     }
 
 
-# ═══════════════════════════════════════════════════════════════
-# 市场环境评分 - 雅典娜的智慧
-# ═══════════════════════════════════════════════════════════════
+# 鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺?
+# 甯傚満鐜璇勫垎 - 闆呭吀濞滅殑鏅烘収
+# 鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺?
 
 def score_market_environment() -> Dict[str, Any]:
     """
-    评分当前市场环境
+    璇勫垎褰撳墠甯傚満鐜
     
     Returns:
         {
@@ -582,31 +582,29 @@ def score_market_environment() -> Dict[str, Any]:
             return cached
 
     try:
-        from adapters.rest_gateway import load_market_overview
-
-        overview = load_market_overview() or {}
+        overview = {}
         fg = overview.get("fear_greed", {})
         fg_value = fg.get("value", 50)
-        liquidation_risk = overview.get("liquidation_risk", "低")
+        liquidation_risk = overview.get("liquidation_risk", "浣?)
         
-        # 恐惧贪婪评分
+        # 鎭愭儳璐┆璇勫垎
         if fg_value >= 75:
-            fg_score = 40  # 过度贪婪，风险高
-            sentiment = "贪婪"
+            fg_score = 40  # 杩囧害璐┆锛岄闄╅珮
+            sentiment = "璐┆"
         elif fg_value >= 50:
             fg_score = 70
-            sentiment = "看涨"
+            sentiment = "鐪嬫定"
         elif fg_value >= 25:
             fg_score = 60
-            sentiment = "看跌"
+            sentiment = "鐪嬭穼"
         else:
-            fg_score = 80  # 极度恐惧，可能是机会
-            sentiment = "恐惧"
+            fg_score = 80  # 鏋佸害鎭愭儳锛屽彲鑳芥槸鏈轰細
+            sentiment = "鎭愭儳"
         
-        # 清算风险调整
-        if liquidation_risk == "高":
+        # 娓呯畻椋庨櫓璋冩暣
+        if liquidation_risk == "楂?:
             fg_score -= 20
-        elif liquidation_risk == "中":
+        elif liquidation_risk == "涓?:
             fg_score -= 10
         
         result = {
@@ -619,20 +617,20 @@ def score_market_environment() -> Dict[str, Any]:
         return result
         
     except Exception as e:
-        logger.warning(f"获取市场环境失败：{e}")
+        logger.warning(f"鑾峰彇甯傚満鐜澶辫触锛歿e}")
         result = {
-            "sentiment": "中性",
+            "sentiment": "涓€?,
             "score": 50,
             "fear_greed": {},
-            "liquidation_risk": "未知",
+            "liquidation_risk": "鏈煡",
         }
         _MARKET_ENV_CACHE = (result, now)
         return result
 
 
-# ═══════════════════════════════════════════════════════════════
-# 综合信号评分 - 众神的裁决
-# ═══════════════════════════════════════════════════════════════
+# 鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺?
+# 缁煎悎淇″彿璇勫垎 - 浼楃鐨勮鍐?
+# 鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺?
 
 def score_signal(
     symbol: str,
@@ -642,16 +640,16 @@ def score_signal(
     klines_1h: Optional[List[Dict[str, Any]]] = None,
 ) -> SignalScore:
     """
-    综合评分信号质量
+    缁煎悎璇勫垎淇″彿璐ㄩ噺
     
     Args:
-        symbol: 币种符号
-        stage: 突破阶段
-        direction: 方向 (LONG/SHORT)
-        metrics: 指标数据
+        symbol: 甯佺绗﹀彿
+        stage: 绐佺牬闃舵
+        direction: 鏂瑰悜 (LONG/SHORT)
+        metrics: 鎸囨爣鏁版嵁
     
     Returns:
-        SignalScore 对象
+        SignalScore 瀵硅薄
     """
     score = SignalScore(
         symbol=symbol,
@@ -664,17 +662,17 @@ def score_signal(
         if isinstance(cached_klines, list) and cached_klines:
             klines = cached_klines
     
-    # 1. 多时间框架分析
+    # 1. 澶氭椂闂存鏋跺垎鏋?
     try:
         mtf = multi_timeframe_analysis(symbol, klines_1h=klines)
         trend_alignment = mtf.get("alignment", "MIXED")
         
-        # 趋势评分（不添加否决信号，只影响分数）
+        # 瓒嬪娍璇勫垎锛堜笉娣诲姞鍚﹀喅淇″彿锛屽彧褰卞搷鍒嗘暟锛?
         if direction == "LONG":
             if trend_alignment == "BULLISH":
                 score.trend_score = 90
             elif trend_alignment == "MIXED":
-                score.trend_score = 60  # 中性也给较高分数
+                score.trend_score = 60  # 涓€т篃缁欒緝楂樺垎鏁?
             else:
                 score.trend_score = 40
         else:  # SHORT
@@ -685,59 +683,59 @@ def score_signal(
             else:
                 score.trend_score = 40
     except Exception as e:
-        logger.warning(f"多时间框架分析失败：{e}")
-        score.trend_score = 60  # 数据不足时给中性分数
+        logger.warning(f"澶氭椂闂存鏋跺垎鏋愬け璐ワ細{e}")
+        score.trend_score = 60  # 鏁版嵁涓嶈冻鏃剁粰涓€у垎鏁?
     
-    # 2. 成交量分析
+    # 2. 鎴愪氦閲忓垎鏋?
     try:
         if not klines:
             klines = get_klines(symbol, interval="1h", limit=50)
         if klines:
             vol_analysis = analyze_volume(klines)
             score.volume_score = vol_analysis.get("score", 50)
-            # 不再因成交量不足添加否决信号
+            # 涓嶅啀鍥犳垚浜ら噺涓嶈冻娣诲姞鍚﹀喅淇″彿
         else:
             score.volume_score = 50
     except Exception as e:
-        logger.warning(f"成交量分析失败：{e}")
+        logger.warning(f"鎴愪氦閲忓垎鏋愬け璐ワ細{e}")
         score.volume_score = 50
     
-    # 3. 动量分析
+    # 3. 鍔ㄩ噺鍒嗘瀽
     try:
         if klines:
             momentum = analyze_momentum(klines)
             score.momentum_score = momentum.get("momentum_score", 50)
-            # 不再因 RSI 超买/超卖添加否决信号（妖币可以持续超买）
+            # 涓嶅啀鍥?RSI 瓒呬拱/瓒呭崠娣诲姞鍚﹀喅淇″彿锛堝甯佸彲浠ユ寔缁秴涔帮級
     except Exception as e:
-        logger.warning(f"动量分析失败：{e}")
+        logger.warning(f"鍔ㄩ噺鍒嗘瀽澶辫触锛歿e}")
         score.momentum_score = 50
     
-    # 4. 突破质量分析
+    # 4. 绐佺牬璐ㄩ噺鍒嗘瀽
     try:
         breakout = analyze_breakout(symbol, stage, metrics)
         score.breakout_score = breakout.get("breakout_strength", 50)
-        # 不再因突破无效添加否决信号
+        # 涓嶅啀鍥犵獊鐮存棤鏁堟坊鍔犲惁鍐充俊鍙?
     except Exception as e:
-        logger.warning(f"突破分析失败：{e}")
+        logger.warning(f"绐佺牬鍒嗘瀽澶辫触锛歿e}")
         score.breakout_score = 50
     
-    # 5. 市场环境评分
+    # 5. 甯傚満鐜璇勫垎
     try:
         market = score_market_environment()
         score.market_score = market.get("score", 50)
     except Exception as e:
-        logger.warning(f"市场环境评分失败：{e}")
+        logger.warning(f"甯傚満鐜璇勫垎澶辫触锛歿e}")
         score.market_score = 50
     
-    # 重新计算总分（会自动调用 _calculate_total）
+    # 閲嶆柊璁＄畻鎬诲垎锛堜細鑷姩璋冪敤 _calculate_total锛?
     score._calculate_total()
     
     return score
 
 
-# ═══════════════════════════════════════════════════════════════
-# 🏦 庄家雷达评分集成
-# ═══════════════════════════════════════════════════════════════
+# 鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺?
+# 馃彟 搴勫闆疯揪璇勫垎闆嗘垚
+# 鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺?
 
 def enhance_with_radar_score(score: SignalScore, metrics: Dict[str, Any]) -> SignalScore:
     """Compatibility no-op: radar module entry has been removed."""
@@ -745,25 +743,25 @@ def enhance_with_radar_score(score: SignalScore, metrics: Dict[str, Any]) -> Sig
     return score
 
 
-# ═══════════════════════════════════════════════════════════════
-# CLI 测试入口
-# ═══════════════════════════════════════════════════════════════
+# 鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺?
+# CLI 娴嬭瘯鍏ュ彛
+# 鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺?
 
 def main():
     import argparse
     
-    parser = argparse.ArgumentParser(description="🎯 神圣信号增强系统")
-    parser.add_argument("--symbol", type=str, required=True, help="币种符号")
-    parser.add_argument("--stage", type=str, default="pre_break", help="突破阶段")
-    parser.add_argument("--direction", type=str, default="LONG", choices=["LONG", "SHORT"], help="方向")
+    parser = argparse.ArgumentParser(description="馃幆 绁炲湥淇″彿澧炲己绯荤粺")
+    parser.add_argument("--symbol", type=str, required=True, help="甯佺绗﹀彿")
+    parser.add_argument("--stage", type=str, default="pre_break", help="绐佺牬闃舵")
+    parser.add_argument("--direction", type=str, default="LONG", choices=["LONG", "SHORT"], help="鏂瑰悜")
     
     args = parser.parse_args()
     
-    print("\n" + "═" * 70)
-    print(f"🎯 信号质量评分 - {args.symbol}")
-    print("═" * 70)
+    print("\n" + "鈺? * 70)
+    print(f"馃幆 淇″彿璐ㄩ噺璇勫垎 - {args.symbol}")
+    print("鈺? * 70)
     
-    # 模拟指标数据
+    # 妯℃嫙鎸囨爣鏁版嵁
     metrics = {
         "change_24h_pct": 25.0,
         "volume_24h_mult": 3.5,
@@ -774,26 +772,27 @@ def main():
     
     result = score.to_dict()
     
-    print(f"\n方向：{result['direction']}")
-    print(f"阶段：{result['stage']}")
-    print(f"\n各项评分:")
-    print(f"  趋势强度：{result['scores']['trend']:.1f}/100")
-    print(f"  成交量确认：{result['scores']['volume']:.1f}/100")
-    print(f"  动量强度：{result['scores']['momentum']:.1f}/100")
-    print(f"  突破质量：{result['scores']['breakout']:.1f}/100")
-    print(f"  市场环境：{result['scores']['market']:.1f}/100")
-    print(f"\n综合评分：{result['total_score']:.1f}/100")
-    print(f"置信度：{result['confidence']}")
+    print(f"\n鏂瑰悜锛歿result['direction']}")
+    print(f"闃舵锛歿result['stage']}")
+    print(f"\n鍚勯」璇勫垎:")
+    print(f"  瓒嬪娍寮哄害锛歿result['scores']['trend']:.1f}/100")
+    print(f"  鎴愪氦閲忕‘璁わ細{result['scores']['volume']:.1f}/100")
+    print(f"  鍔ㄩ噺寮哄害锛歿result['scores']['momentum']:.1f}/100")
+    print(f"  绐佺牬璐ㄩ噺锛歿result['scores']['breakout']:.1f}/100")
+    print(f"  甯傚満鐜锛歿result['scores']['market']:.1f}/100")
+    print(f"\n缁煎悎璇勫垎锛歿result['total_score']:.1f}/100")
+    print(f"缃俊搴︼細{result['confidence']}")
     
     if result['veto_signals']:
-        print(f"\n⚠️  否决信号:")
+        print(f"\n鈿狅笍  鍚﹀喅淇″彿:")
         for v in result['veto_signals']:
             print(f"  - {v}")
     else:
-        print(f"\n✅ 无否决信号")
+        print(f"\n鉁?鏃犲惁鍐充俊鍙?)
     
-    print("\n" + "═" * 70 + "\n")
+    print("\n" + "鈺? * 70 + "\n")
 
 
 if __name__ == "__main__":
     main()
+

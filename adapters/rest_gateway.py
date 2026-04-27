@@ -1,4 +1,8 @@
-"""REST-style adapters for exchange and market data dependencies."""
+"""Deprecated REST compatibility adapters.
+
+Keep for external compatibility during migration. New runtime code should
+import concrete implementations directly.
+"""
 
 from __future__ import annotations
 
@@ -30,8 +34,7 @@ def fetch_symbol_ticker_24h(symbol: str) -> dict[str, Any]:
 
 
 def load_market_overview() -> dict[str, Any]:
-    """Market overview stub - surf integration removed."""
-    return {}
+    raise NotImplementedError("load_market_overview has been removed; no market-overview backend is configured")
 
 
 def load_account_balance() -> dict[str, Any]:
