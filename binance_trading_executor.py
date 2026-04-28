@@ -57,16 +57,41 @@ def _ensure_symbol_leverage(symbol: str, target_leverage: int) -> int:
     """Force symbol leverage to target value and return applied leverage."""
     if not get_native_binance_client:
         raise RuntimeError("原生 Binance API 客户端不可用")
-    current = _query_symbol_leverage(symbol)
-    if current != int(target_leverage):
-        get_native_binance_client().change_leverage(symbol, int(target_leverage))  # type: ignore
+    symbol_key = symbol.upper()
+    target = int(target_leverage)
+    current = 0
+    try:
         current = _query_symbol_leverage(symbol)
-    if current <= 0:
-        raise RuntimeError(f"{symbol} 杠杆读取失败，拒绝下单")
-    if current != int(target_leverage):
-        raise RuntimeError(f"{symbol} 杠杆未对齐: 期望 {int(target_leverage)}x, 实际 {int(current)}x")
-    _leverage_cache[symbol.upper()] = int(current)
-    return int(current)
+    except Exception as exc:
+        logger.warning(f"{symbol} 杠杆读取失败，尝试直接设置 {target}x：{exc}")
+
+    if current == target:
+        _leverage_cache[symbol_key] = target
+        return target
+
+    try:
+        get_native_binance_client().change_leverage(symbol, target)  # type: ignore
+        _leverage_cache[symbol_key] = target
+    except Exception as exc:
+        cached = int(_leverage_cache.get(symbol_key, 0) or 0)
+        if cached == target:
+            logger.warning(f"{symbol} 杠杆设置接口失败，但缓存显示已是 {target}x，继续下单：{exc}")
+            return target
+        raise RuntimeError(f"{symbol} 杠杆设置失败，拒绝下单：{exc}") from exc
+
+    try:
+        verified = _query_symbol_leverage(symbol)
+    except Exception as exc:
+        logger.warning(f"{symbol} 杠杆设置后复查失败，按设置成功结果继续：{exc}")
+        return target
+
+    if verified <= 0:
+        logger.warning(f"{symbol} 杠杆复查为空，按设置成功结果继续：{target}x")
+        return target
+    if verified != target:
+        raise RuntimeError(f"{symbol} 杠杆未对齐: 期望 {target}x, 实际 {int(verified)}x")
+    _leverage_cache[symbol_key] = int(verified)
+    return int(verified)
 
 
 @dataclass
