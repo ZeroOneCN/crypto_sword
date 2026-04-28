@@ -11,7 +11,7 @@ import logging
 import time
 from dataclasses import dataclass, field
 from decimal import Decimal, ROUND_CEILING
-from typing import Any, List, Optional
+from typing import Any, Optional
 
 try:
     from binance_api_client import get_native_binance_client, is_native_binance_configured
@@ -947,9 +947,9 @@ def fetch_open_algo_orders(symbol: Optional[str] = None) -> list[dict[str, Any]]
 def execute_trade(
     signal: TradingSignal,
     account_balance: float,
-    risk_per_trade_pct: float = 2.0,
-    stop_loss_pct: float = 5.0,
-    max_position_pct: float = 20.0,
+    risk_per_trade_pct: float = 1.5,
+    stop_loss_pct: float = 7.0,
+    max_position_pct: float = 35.0,
     leverage: int = 5,
     quantity: float = None,  # 可选：使用外部计算的仓位
     stop_loss_price: float = None,  # 可选：使用外部计算的止损
@@ -965,9 +965,9 @@ def execute_trade(
     Args:
         signal: Trading signal from scanner
         account_balance: Account balance in USDT
-        risk_per_trade_pct: Risk per trade (default 2%)
-        stop_loss_pct: Stop loss percentage (default 5%)
-        max_position_pct: Maximum position size (default 20%)
+        risk_per_trade_pct: Risk per trade percentage.
+        stop_loss_pct: Stop loss percentage.
+        max_position_pct: Maximum position size.
         leverage: Leverage (default 5x)
         quantity: Optional pre-calculated quantity (overrides internal calculation)
         stop_loss_price: Optional pre-calculated stop loss price (overrides internal calculation)

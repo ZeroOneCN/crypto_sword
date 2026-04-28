@@ -10,11 +10,8 @@
 """
 
 import logging
-import time
-from typing import Dict, Any, Optional, List, Tuple
-from pathlib import Path
+from typing import Dict, Any, Optional, List
 from dataclasses import dataclass, field
-import math
 
 from binance_compat import run_native_binance_compat
 
@@ -29,9 +26,9 @@ logger = logging.getLogger(__name__)
 class RiskConfig:
     """风控配置"""
     # 基础风控
-    risk_per_trade_pct: float = 2.0       # 每笔风险百分比
-    base_stop_loss_pct: float = 8.0       # 基础止损百分比
-    base_take_profit_pct: float = 20.0    # 基础止盈百分比
+    risk_per_trade_pct: float = 1.5       # 每笔风险百分比
+    base_stop_loss_pct: float = 7.0       # 基础止损百分比
+    base_take_profit_pct: float = 18.0    # 基础止盈百分比
     
     # ATR 动态调整
     atr_multiplier: float = 2.0           # ATR 倍数

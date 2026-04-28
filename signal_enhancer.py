@@ -13,7 +13,6 @@ import logging
 import os
 import time
 from typing import Dict, Any, Optional, List, Tuple
-from pathlib import Path
 from dataclasses import dataclass
 
 from binance_compat import run_native_binance_compat
