@@ -814,7 +814,20 @@ class ExecutionMixin:
             self._record_latency_step(latency_steps, "execute_trade", step_started)
 
             if result.get("action") != "EXECUTED":
-                logger.warning(f"❌ {symbol} 开仓失败：{result.get('reason', 'Unknown')}")
+                failure_reason = str(result.get("reason", "Unknown") or "Unknown")
+                logger.warning(f"❌ {symbol} 开仓失败：{failure_reason}")
+                send_telegram_message(
+                    format_error_msg(
+                        error_type="开仓下单失败",
+                        message=(
+                            f"{failure_reason}\n"
+                            f"方向={direction} 数量={quantity} 杠杆={self.config.leverage}x 策略={strategy_line}"
+                        ),
+                        symbol=symbol,
+                        session_id=session_id,
+                        component="execute_entry_trade",
+                    )
+                )
                 self._emit_latency_trace("execute_entry_failed", trace_started, latency_steps, symbol=symbol)
                 return None
 
@@ -830,6 +843,15 @@ class ExecutionMixin:
                 logger.warning(f"⚠️ {symbol} 部分成交！请求数量：{quantity}，实际成交：{actual_quantity}")
                 if actual_quantity < quantity * 0.5:
                     logger.error(f"❌ {symbol} 部分成交比例过低，放弃持仓")
+                    send_telegram_message(
+                        format_error_msg(
+                            error_type="开仓部分成交异常",
+                            message=f"部分成交比例过低：请求数量={quantity}，实际成交={actual_quantity}",
+                            symbol=symbol,
+                            session_id=session_id,
+                            component="execute_entry",
+                        )
+                    )
                     self._emit_latency_trace("execute_entry_failed", trace_started, latency_steps, symbol=symbol)
                     return None
 
