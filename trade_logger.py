@@ -130,6 +130,33 @@ class TradeDatabase:
         cursor.execute("""
             CREATE INDEX IF NOT EXISTS idx_mode ON trades(mode)
         """)
+
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS trade_reviews (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                trade_id INTEGER,
+                session_id TEXT,
+                symbol TEXT NOT NULL,
+                mode TEXT NOT NULL DEFAULT 'live',
+                outcome TEXT NOT NULL,
+                pnl REAL DEFAULT 0.0,
+                pnl_pct REAL DEFAULT 0.0,
+                review_json TEXT NOT NULL,
+                created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(trade_id),
+                FOREIGN KEY(trade_id) REFERENCES trades(id)
+            )
+        """)
+        cursor.execute("""
+            CREATE INDEX IF NOT EXISTS idx_trade_reviews_symbol ON trade_reviews(symbol)
+        """)
+        cursor.execute("""
+            CREATE INDEX IF NOT EXISTS idx_trade_reviews_outcome ON trade_reviews(outcome)
+        """)
+        cursor.execute("""
+            CREATE INDEX IF NOT EXISTS idx_trade_reviews_session ON trade_reviews(session_id)
+        """)
         
         conn.commit()
         conn.close()
@@ -183,6 +210,168 @@ class TradeDatabase:
         
         conn.commit()
         conn.close()
+
+    @staticmethod
+    def _parse_notes(notes: str) -> Dict[str, str]:
+        result: Dict[str, str] = {}
+        for item in str(notes or "").split(";"):
+            if "=" not in item:
+                continue
+            key, value = item.split("=", 1)
+            result[key.strip()] = value.strip()
+        return result
+
+    @staticmethod
+    def _safe_float(value: Any) -> float:
+        try:
+            return float(value or 0.0)
+        except Exception:
+            return 0.0
+
+    @staticmethod
+    def _trade_hold_hours(trade: TradeRecord) -> float:
+        try:
+            if not trade.entry_time or not trade.exit_time:
+                return 0.0
+            start = datetime.fromisoformat(str(trade.entry_time).replace("Z", "+00:00"))
+            end = datetime.fromisoformat(str(trade.exit_time).replace("Z", "+00:00"))
+            return max(0.0, (end - start).total_seconds() / 3600.0)
+        except Exception:
+            return 0.0
+
+    def _build_review_for_trade(self, trade: TradeRecord) -> Dict[str, Any]:
+        from feature_store import build_trade_review
+
+        notes = self._parse_notes(trade.notes or "")
+        snapshot = trade.market_snapshot or {}
+        oi_funding = snapshot.get("_oi_funding") if isinstance(snapshot, dict) else {}
+        if not isinstance(oi_funding, dict):
+            oi_funding = {}
+        score = snapshot.get("_entry_score") if isinstance(snapshot, dict) else {}
+        if not isinstance(score, dict):
+            score = {}
+        return build_trade_review(
+            symbol=trade.symbol,
+            session_id=notes.get("session_id", ""),
+            direction=trade.side,
+            stage=trade.stage,
+            strategy_line=notes.get("strategy_line", ""),
+            entry_price=trade.entry_price,
+            exit_price=float(trade.exit_price or 0.0),
+            pnl=float(trade.pnl or 0.0),
+            pnl_pct=float(trade.pnl_pct or 0.0),
+            exit_reason=trade.exit_reason or "",
+            hold_hours=self._trade_hold_hours(trade),
+            score=score,
+            metrics=snapshot,
+            oi_funding=oi_funding,
+        )
+
+    def save_trade_review(
+        self,
+        review: Dict[str, Any],
+        *,
+        trade_id: int = None,
+        session_id: str = "",
+        symbol: str = "",
+        mode: str = "live",
+    ) -> int:
+        """Upsert structured post-trade review JSON for training/replay."""
+        body = dict(review or {})
+        symbol = (symbol or body.get("symbol") or "").upper()
+        session_id = session_id or str(body.get("session_id", "") or "")
+        why_out = body.get("why_out") if isinstance(body.get("why_out"), dict) else {}
+        outcome = str(body.get("outcome", "") or "")
+        pnl = self._safe_float(why_out.get("pnl"))
+        pnl_pct = self._safe_float(why_out.get("pnl_pct"))
+        if not outcome:
+            outcome = "profit" if pnl > 0 else "loss" if pnl < 0 else "flat"
+
+        conn = self._get_connection()
+        cursor = conn.cursor()
+        if trade_id is None and session_id:
+            cursor.execute(
+                "SELECT id FROM trades WHERE symbol = ? AND notes LIKE ? ORDER BY entry_time DESC LIMIT 1",
+                (symbol, f"%session_id={session_id}%"),
+            )
+            row = cursor.fetchone()
+            trade_id = int(row["id"]) if row else None
+
+        cursor.execute(
+            """
+            INSERT INTO trade_reviews (
+                trade_id, session_id, symbol, mode, outcome, pnl, pnl_pct, review_json, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(trade_id) DO UPDATE SET
+                session_id = excluded.session_id,
+                symbol = excluded.symbol,
+                mode = excluded.mode,
+                outcome = excluded.outcome,
+                pnl = excluded.pnl,
+                pnl_pct = excluded.pnl_pct,
+                review_json = excluded.review_json,
+                updated_at = excluded.updated_at
+            """,
+            (
+                trade_id,
+                session_id,
+                symbol,
+                mode,
+                outcome,
+                pnl,
+                pnl_pct,
+                json.dumps(body, ensure_ascii=False, sort_keys=True, default=str),
+                datetime.now().isoformat(),
+            ),
+        )
+        review_id = int(cursor.lastrowid or 0)
+        conn.commit()
+        conn.close()
+        return review_id
+
+    def backfill_trade_reviews(self, days: int = 3650, mode: str = None) -> int:
+        """Generate reviews for closed historical trades that are missing review rows."""
+        trades = self.get_closed_trades(days=days, mode=mode)
+        written = 0
+        for trade in trades:
+            if not trade.id:
+                continue
+            review = self._build_review_for_trade(trade)
+            self.save_trade_review(
+                review,
+                trade_id=trade.id,
+                session_id=str(review.get("session_id", "") or ""),
+                symbol=trade.symbol,
+                mode=trade.mode,
+            )
+            written += 1
+        return written
+
+    def export_reviews_jsonl(self, output_path: Path, days: int = 3650, mode: str = None) -> int:
+        """Export structured trade reviews as JSONL for model training."""
+        conn = self._get_connection()
+        cursor = conn.cursor()
+        sql = """
+            SELECT tr.review_json
+            FROM trade_reviews tr
+            LEFT JOIN trades t ON t.id = tr.trade_id
+            WHERE datetime(COALESCE(t.exit_time, tr.updated_at)) >= datetime('now', '-' || ? || ' days')
+        """
+        params: list[Any] = [days]
+        if mode:
+            sql += " AND tr.mode = ?"
+            params.append(mode)
+        sql += " ORDER BY COALESCE(t.exit_time, tr.updated_at) DESC"
+        cursor.execute(sql, params)
+        rows = cursor.fetchall()
+        conn.close()
+
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        with output_path.open("w", encoding="utf-8") as f:
+            for row in rows:
+                f.write(str(row["review_json"] or "{}"))
+                f.write("\n")
+        return len(rows)
     
     def get_trade(self, trade_id: int) -> Optional[TradeRecord]:
         """获取单笔交易"""
@@ -600,6 +789,8 @@ def main():
     parser.add_argument("--stats", action="store_true", help="显示交易统计")
     parser.add_argument("--recent", action="store_true", help="显示最近交易")
     parser.add_argument("--export", type=str, help="导出 CSV 到指定路径")
+    parser.add_argument("--backfill-reviews", action="store_true", help="Backfill structured reviews for closed trades")
+    parser.add_argument("--export-reviews", type=str, help="Export structured reviews JSONL")
     parser.add_argument("--days", type=int, default=7, help="统计天数 (默认：7)")
     parser.add_argument("--mode", type=str, choices=["live"], help="交易模式过滤")
     parser.add_argument("--limit", type=int, default=10, help="显示交易数量 (默认：10)")
@@ -610,6 +801,12 @@ def main():
     
     if args.stats:
         print_statistics(db, days=args.days, mode=args.mode)
+    elif args.backfill_reviews:
+        count = db.backfill_trade_reviews(days=args.days, mode=args.mode)
+        print(f"backfilled_reviews={count}")
+    elif args.export_reviews:
+        count = db.export_reviews_jsonl(Path(args.export_reviews), days=args.days, mode=args.mode)
+        print(f"exported_reviews={count} path={args.export_reviews}")
     elif args.export:
         db.export_to_csv(Path(args.export), days=args.days)
         print(f"✅ 已导出到：{args.export}")

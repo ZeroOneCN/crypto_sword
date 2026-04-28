@@ -1013,6 +1013,7 @@ class ExecutionMixin:
                 market_snapshot={
                     **(signal.get("metrics", {}) or {}),
                     "_oi_funding": oi_funding,
+                    "_entry_score": signal.get("score", {}) or {},
                     "_leverage_applied": leverage_applied,
                 },
                 notes=";".join(notes_parts),
@@ -1189,6 +1190,15 @@ class ExecutionMixin:
                     oi_funding=getattr(position, "oi_funding", {}) or {},
                 )
                 feature_store.append_review(review)
+                try:
+                    self.db.save_trade_review(
+                        review,
+                        session_id=position.session_id,
+                        symbol=symbol,
+                        mode=self.config.mode,
+                    )
+                except Exception as e:
+                    logger.warning(f"trade review db save failed {symbol}: {e}")
                 logger.info(f"trade_review {message_signature(review)}")
                 self._emit_latency_trace("execute_exit", trace_started, latency_steps, symbol=symbol)
                 return True
