@@ -82,6 +82,27 @@ class ConfirmationMixin:
             and abs(funding) < self.config.max_abs_funding_rate
         )
 
+    def _early_trend_alignment_ok(
+        self,
+        direction: str,
+        higher_alignment: str,
+        *,
+        score_total: float,
+        change_24h: float,
+        oi_change: float = 0.0,
+    ) -> bool:
+        """Let elite setups enter before the 1h MA fully flips, but never against it."""
+        higher_alignment = str(higher_alignment or "NEUTRAL").upper()
+        strong_hotspot = score_total >= 78.0 and abs(change_24h) >= 6.0
+        strong_flow = score_total >= 72.0 and abs(oi_change) >= 12.0 and abs(change_24h) >= 5.0
+        if direction == "LONG":
+            if strong_hotspot or strong_flow:
+                return higher_alignment != "BEARISH"
+            return higher_alignment == "BULLISH"
+        if strong_hotspot or strong_flow:
+            return higher_alignment != "BULLISH"
+        return higher_alignment == "BEARISH"
+
     def _is_accumulation_candidate(self, metrics: dict[str, Any], score_total: float) -> bool:
         """Detect early accumulation before a full breakout extension prints."""
         if not self.config.accumulation_entry_enabled:
@@ -209,6 +230,7 @@ class ConfirmationMixin:
         metrics = signal.get("metrics", {}) or {}
         score_total = float((signal.get("score") or {}).get("total_score", 0) or 0)
         change_24h = float(metrics.get("change_24h_pct", 0) or 0)
+        oi_change = float(metrics.get("oi_24h_pct", 0) or 0)
         funding = abs(float(metrics.get("funding_rate", 0) or 0))
         if score_total < 54 or abs(change_24h) < 8.0 or funding >= self.config.max_abs_funding_rate * 0.95:
             return False, ""
@@ -219,9 +241,33 @@ class ConfirmationMixin:
         ma_alignment_1h = str(trend_1h.get("ma_alignment", "NEUTRAL") or "NEUTRAL")
         short_tf_ok = self._short_tf_breakout_ready(trend, direction, current_price)
         if direction == "LONG":
-            ready = change_24h > 0 and ma_alignment_1h == "BULLISH" and ma_alignment_15m == "BULLISH" and current_price >= ma5_15m > 0 and short_tf_ok
+            ready = (
+                change_24h > 0
+                and self._early_trend_alignment_ok(
+                    direction,
+                    ma_alignment_1h,
+                    score_total=score_total,
+                    change_24h=change_24h,
+                    oi_change=oi_change,
+                )
+                and ma_alignment_15m == "BULLISH"
+                and current_price >= ma5_15m > 0
+                and short_tf_ok
+            )
         else:
-            ready = change_24h < 0 and ma_alignment_1h == "BEARISH" and ma_alignment_15m == "BEARISH" and 0 < current_price <= ma5_15m and short_tf_ok
+            ready = (
+                change_24h < 0
+                and self._early_trend_alignment_ok(
+                    direction,
+                    ma_alignment_1h,
+                    score_total=score_total,
+                    change_24h=change_24h,
+                    oi_change=oi_change,
+                )
+                and ma_alignment_15m == "BEARISH"
+                and 0 < current_price <= ma5_15m
+                and short_tf_ok
+            )
         if not ready:
             return False, ""
         return True, f"热点延续确认：评分 {score_total:.1f}，24h {change_24h:+.1f}%"
@@ -242,9 +288,33 @@ class ConfirmationMixin:
         if score_total < 60 or oi_change < 18:
             return False, ""
         if direction == "LONG":
-            ready = funding <= self.config.max_abs_funding_rate and ma_alignment_1h == "BULLISH" and current_price >= ma5_5m > 0 and short_tf_ok and pullback_pct >= max(1.2, self.config.min_pullback_pct * 0.5)
+            ready = (
+                funding <= self.config.max_abs_funding_rate
+                and self._early_trend_alignment_ok(
+                    direction,
+                    ma_alignment_1h,
+                    score_total=score_total,
+                    change_24h=float(metrics.get("change_24h_pct", 0) or 0),
+                    oi_change=oi_change,
+                )
+                and current_price >= ma5_5m > 0
+                and short_tf_ok
+                and pullback_pct >= max(0.6, self.config.min_pullback_pct * 0.5)
+            )
         else:
-            ready = funding >= -self.config.max_abs_funding_rate and ma_alignment_1h == "BEARISH" and 0 < current_price <= ma5_5m and short_tf_ok and pullback_pct >= max(1.2, self.config.min_pullback_pct * 0.5)
+            ready = (
+                funding >= -self.config.max_abs_funding_rate
+                and self._early_trend_alignment_ok(
+                    direction,
+                    ma_alignment_1h,
+                    score_total=score_total,
+                    change_24h=float(metrics.get("change_24h_pct", 0) or 0),
+                    oi_change=oi_change,
+                )
+                and 0 < current_price <= ma5_5m
+                and short_tf_ok
+                and pullback_pct >= max(0.6, self.config.min_pullback_pct * 0.5)
+            )
         if not ready:
             return False, ""
         funding_text = f"{funding:+.4%}" if abs(funding) < 1 else f"{funding:+.2f}"
@@ -262,14 +332,36 @@ class ConfirmationMixin:
         ma_alignment_1h = str(trend_1h.get("ma_alignment", "NEUTRAL") or "NEUTRAL")
         ma_alignment_15m = str(trend_15m.get("ma_alignment", "NEUTRAL") or "NEUTRAL")
         short_tf_ok = self._short_tf_breakout_ready(trend, direction, current_price)
-        if direction == "LONG":
-            ready = ma_alignment_1h == "BULLISH" and ma_alignment_15m == "BULLISH" and current_price >= ma5_15m > 0 and short_tf_ok
-        else:
-            ready = ma_alignment_1h == "BEARISH" and ma_alignment_15m == "BEARISH" and 0 < current_price <= ma5_15m and short_tf_ok
-        if not ready:
-            return False, ""
         oi_change = float(metrics.get("oi_24h_pct", 0) or 0)
         change_24h = float(metrics.get("change_24h_pct", 0) or 0)
+        if direction == "LONG":
+            ready = (
+                self._early_trend_alignment_ok(
+                    direction,
+                    ma_alignment_1h,
+                    score_total=score_total,
+                    change_24h=change_24h,
+                    oi_change=oi_change,
+                )
+                and ma_alignment_15m == "BULLISH"
+                and current_price >= ma5_15m > 0
+                and short_tf_ok
+            )
+        else:
+            ready = (
+                self._early_trend_alignment_ok(
+                    direction,
+                    ma_alignment_1h,
+                    score_total=score_total,
+                    change_24h=change_24h,
+                    oi_change=oi_change,
+                )
+                and ma_alignment_15m == "BEARISH"
+                and 0 < current_price <= ma5_15m
+                and short_tf_ok
+            )
+        if not ready:
+            return False, ""
         return True, f"吸筹暗流确认：评分 {score_total:.1f}，24h {change_24h:+.1f}%，OI {oi_change:+.1f}%"
 
     # Keep the original confirmation state-machine body unchanged for behavior stability.
@@ -350,4 +442,3 @@ class ConfirmationMixin:
             signal["entry_status"] = "watch"; signal["entry_status_text"] = "观察中"; signal["strategy_line"] = watch.get("strategy_line", "回踩确认线"); signal["watch_stage"] = "量能回归"; signal["entry_note"] = f"已回踩，等待 5m 量能回归 ≥ {self.config.reclaim_volume_ratio:.2f}"; return signal
         signal["entry_status"] = "ready"; signal["entry_status_text"] = "确认入场"; signal["strategy_line"] = watch.get("strategy_line", "回踩确认线"); signal["watch_stage"] = "触发入场"; signal["entry_note"] = f"回踩 {pullback_pct:.2f}% 后重站 15m 均线"; signal["confirmation_trend"] = trend
         return signal
-
