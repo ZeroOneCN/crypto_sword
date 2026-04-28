@@ -241,19 +241,33 @@ def _format_oi_funding_brief(oi_funding: dict[str, Any] | None) -> str:
 
     tags: list[str] = []
     if turned_negative:
-        tags.append("funding_turn")
+        tags.append("费率转负")
     if oi_signal:
-        tags.append("oi_expand")
+        tags.append("OI扩张")
     if not tags and bonus > 0:
-        tags.append("score_boost")
-    tag_text = " / ".join(tags) if tags else "none"
+        tags.append("评分加成")
+    tag_text = " / ".join(tags) if tags else "无"
 
     return (
         f"<b>OI/Funding</b>  <code>{_escape(tag_text)}</code> | "
-        f"Bonus <code>+{bonus:.1f}</code> | "
+        f"加分 <code>+{bonus:.1f}</code> | "
         f"OI <code>{oi_change:+.1f}%</code> | "
         f"Funding <code>{funding_current:+.4%}</code>"
     )
+
+
+def _format_source_label(source: str) -> str:
+    """Translate internal event sources into concise user-facing Chinese labels."""
+    source_map = {
+        "entry_confirm": "开仓后确认",
+        "startup_audit": "启动巡检",
+        "audit": "保护巡检",
+        "protection_reconcile": "保护单补挂",
+        "ws_account_update": "WS账户同步",
+        "rest_sync": "REST持仓同步",
+        "manual": "手动触发",
+    }
+    return source_map.get(source, source)
 
 
 def format_open_position_msg(
@@ -437,7 +451,7 @@ def format_protection_status_msg(
 <b>状态</b>  <code>{_escape(status_text)}</code>
 <b>止损单</b>  <code>{_escape(sl_text)}</code>
 <b>止盈单</b>  <code>{_escape(tp_text)}</code>
-<b>来源</b>  <code>{_escape(source)}</code>"""
+<b>来源</b>  <code>{_escape(_format_source_label(source))}</code>"""
 
     if message:
         msg += f"\n<b>说明</b>  <code>{_escape(message)}</code>"
