@@ -1,4 +1,4 @@
-﻿"""Execution and protection logic mixin for the trading engine."""
+"""Execution and protection logic mixin for the trading engine."""
 
 from __future__ import annotations
 
@@ -10,19 +10,8 @@ from typing import Any, Optional
 
 from binance_trading_executor import (
     OrderResult,
-    TradingSignal,
-    cancel_protective_order,
-    cancel_stop_loss_order,
-    execute_trade,
-    fetch_open_algo_orders,
-    fetch_open_orders,
-    place_market_order,
-    place_stop_loss_order,
-    place_take_profit_order,
-    should_trade,
 )
 from feature_store import build_trade_review, feature_store
-from risk_manager import RiskConfig, assess_trade_risk
 from speed_executor import quick_close_position
 from telegram_notifier import (
     format_close_position_msg,
@@ -32,6 +21,10 @@ from telegram_notifier import (
     send_telegram_message,
 )
 from trade_logger import TradeRecord
+from services.execution_service import execution_service
+from services.order_service import order_service
+from services.risk_service import risk_service
+
 from .monitoring import build_execution_event, message_signature
 from .models import Position
 
@@ -42,7 +35,7 @@ class ExecutionMixin:
     """Open/close execution and protective order lifecycle."""
 
     def _strategy_profile(self, strategy_line: str) -> dict[str, float]:
-        if strategy_line == "瓒嬪娍绐佺牬绾?:
+        if strategy_line == "趋势突破线":
             return {
                 "tp_multiplier": self.config.breakout_tp_multiplier,
                 "stop_multiplier": self.config.breakout_stop_multiplier,
@@ -53,7 +46,7 @@ class ExecutionMixin:
         }
 
     def _strategy_take_profit_ratios(self, strategy_line: str, levels_count: int) -> list[float]:
-        if strategy_line == "瓒嬪娍绐佺牬绾?:
+        if strategy_line == "趋势突破线":
             base_ratios = [0.40, 0.35, 0.25]
         else:
             base_ratios = [0.55, 0.30, 0.15]
@@ -82,9 +75,9 @@ class ExecutionMixin:
         return max(0.5, float(self.config.stop_loss_pct) * profile["stop_multiplier"])
 
     def _strategy_stop_trigger_buffer_pct(self, strategy_line: str = "") -> float:
-        if strategy_line == "瓒嬪娍绐佺牬绾?:
+        if strategy_line == "趋势突破线":
             return max(0.0, float(self.config.breakout_stop_trigger_buffer_pct))
-        if strategy_line == "鍥炶俯纭绾?:
+        if strategy_line == "回踩确认线":
             return max(0.0, float(self.config.pullback_stop_trigger_buffer_pct))
         return max(0.0, float(self.config.stop_trigger_buffer_pct))
 
@@ -99,13 +92,13 @@ class ExecutionMixin:
 
     def _cancel_position_protection(self, position: Position):
         if position.stop_loss_order_id:
-            if cancel_stop_loss_order(position.symbol, position.stop_loss_order_id):
-                logger.info(f"馃敃 宸叉挙閿€ {position.symbol} 淇濇姢姝㈡崯鍗曪細{position.stop_loss_order_id}")
+            if order_service.cancel_stop_loss(position.symbol, position.stop_loss_order_id):
+                logger.info(f"🔕 已撤销 {position.symbol} 保护止损单：{position.stop_loss_order_id}")
             else:
-                logger.warning(f"鈿狅笍 {position.symbol} 淇濇姢姝㈡崯鍗曟挙閿€澶辫触锛歿position.stop_loss_order_id}")
+                logger.warning(f"⚠️ {position.symbol} 保护止损单撤销失败：{position.stop_loss_order_id}")
                 send_telegram_message(
                     format_error_msg(
-                        error_type="姝㈡崯鍗曟挙閿€澶辫触",
+                        error_type="止损单撤销失败",
                         message=f"order_id={position.stop_loss_order_id}",
                         symbol=position.symbol,
                         session_id=position.session_id,
@@ -116,10 +109,10 @@ class ExecutionMixin:
         for order_id in position.take_profit_order_ids:
             if not order_id:
                 continue
-            if cancel_protective_order(position.symbol, order_id):
-                logger.info(f"馃敃 宸叉挙閿€ {position.symbol} 姝㈢泩濮旀墭锛歿order_id}")
+            if order_service.cancel_protective(position.symbol, order_id):
+                logger.info(f"🔕 已撤销 {position.symbol} 止盈委托：{order_id}")
             else:
-                logger.warning(f"鈿狅笍 {position.symbol} 姝㈢泩濮旀墭鎾ら攢澶辫触锛歿order_id}")
+                logger.warning(f"⚠️ {position.symbol} 止盈委托撤销失败：{order_id}")
 
     def _record_closed_trade_result(self, position: Position, pnl: float):
         """Update cooldown and consecutive-loss guards from a closed trade."""
@@ -131,21 +124,21 @@ class ExecutionMixin:
             self._consecutive_losses += 1
             self._symbol_cooldowns[position.symbol] = now + self.config.symbol_cooldown_sec
             logger.warning(
-                f"馃 {position.symbol} 浜忔崯鍐峰嵈 {int(self.config.symbol_cooldown_sec / 60)} 鍒嗛挓 | "
-                f"杩炵画浜忔崯={self._consecutive_losses}"
+                f"🧊 {position.symbol} 亏损冷却 {int(self.config.symbol_cooldown_sec / 60)} 分钟 | "
+                f"连续亏损={self._consecutive_losses}"
             )
             if severe_loss and self._consecutive_losses >= self.config.max_consecutive_losses:
                 self._loss_pause_until = now + self.config.loss_pause_sec
                 logger.warning(
-                    f"馃洃 杩炵画浜忔崯杈惧埌 {self._consecutive_losses} 绗旓紝鏆傚仠鏂板紑浠?"
-                    f"{int(self.config.loss_pause_sec / 60)} 鍒嗛挓"
+                    f"🛑 连续亏损达到 {self._consecutive_losses} 笔，暂停新开仓 "
+                    f"{int(self.config.loss_pause_sec / 60)} 分钟"
                 )
                 send_telegram_message(
                     format_error_msg(
-                        error_type="杩炵画浜忔崯鐔旀柇",
+                        error_type="连续亏损熔断",
                         message=(
-                            f"杩炵画浜忔崯 {self._consecutive_losses} 绗旓紝鏆傚仠鏂板紑浠?"
-                            f"{int(self.config.loss_pause_sec / 60)} 鍒嗛挓"
+                            f"连续亏损 {self._consecutive_losses} 笔，暂停新开仓 "
+                            f"{int(self.config.loss_pause_sec / 60)} 分钟"
                         ),
                         symbol=position.symbol,
                         session_id=position.session_id,
@@ -161,7 +154,7 @@ class ExecutionMixin:
         """Lock profits faster after TP, with tighter rules for breakout entries."""
         base_offset = max(float(self.config.breakeven_offset_pct), 0.05)
         tp_count = max(int(position.partial_tp_count), 1)
-        if position.strategy_line == "瓒嬪娍绐佺牬绾?:
+        if position.strategy_line == "趋势突破线":
             if tp_count <= 1:
                 return 0.0
             return base_offset + 0.12 + 0.10 * (tp_count - 2)
@@ -173,7 +166,7 @@ class ExecutionMixin:
             return False
 
         offset_pct = self._breakeven_offset_for_position(position)
-        if position.strategy_line == "瓒嬪娍绐佺牬绾? and position.partial_tp_count < 2:
+        if position.strategy_line == "趋势突破线" and position.partial_tp_count < 2:
             logger.info(f"{position.symbol} breakout TP1 hit; keep original stop until TP2 to let trend run")
             return False
         if position.side == "BUY":
@@ -190,11 +183,11 @@ class ExecutionMixin:
                 return True
 
         old_order_id = position.stop_loss_order_id
-        if old_order_id and not cancel_stop_loss_order(position.symbol, old_order_id):
-            logger.warning(f"鈿狅笍 {position.symbol} 淇濇湰姝㈡崯绉诲姩澶辫触锛氭棫姝㈡崯鎾ら攢澶辫触 {old_order_id}")
+        if old_order_id and not order_service.cancel_stop_loss(position.symbol, old_order_id):
+            logger.warning(f"⚠️ {position.symbol} 保本止损移动失败：旧止损撤销失败 {old_order_id}")
             return False
 
-        sl_result = place_stop_loss_order(
+        sl_result = order_service.place_stop_loss(
             position.symbol,
             close_side,
             remaining_qty,
@@ -206,7 +199,7 @@ class ExecutionMixin:
             position.stop_loss_order_id = sl_result.order_id
             position.stop_loss_price = breakeven_price
             position.current_stop = breakeven_price
-            logger.warning(f"馃洝锔?{position.symbol} TP鍚庢鎹熷凡绉诲姩鍒颁繚鏈細{sl_result.order_id} @ {breakeven_price:.8f}")
+            logger.warning(f"🛡️ {position.symbol} TP后止损已移动到保本：{sl_result.order_id} @ {breakeven_price:.8f}")
             return True
 
         position.stop_loss_order_id = 0
@@ -214,7 +207,7 @@ class ExecutionMixin:
         position.last_protection_error = sl_result.message
         send_telegram_message(
             format_error_msg(
-                error_type="淇濇湰姝㈡崯绉诲姩澶辫触",
+                error_type="保本止损移动失败",
                 message=sl_result.message,
                 symbol=position.symbol,
                 session_id=position.session_id,
@@ -268,33 +261,33 @@ class ExecutionMixin:
                     protected = self._ensure_position_protection(position, refresh_guard=False)
                     if protected:
                         repaired.append(position.symbol)
-                        logger.info(f"馃洝锔?{position.symbol} 淇濇姢鍗曞凡鑷姩淇")
+                        logger.info(f"🛡️ {position.symbol} 保护单已自动修复")
                     else:
                         failed.append(position.symbol)
-                        logger.warning(f"馃洝锔?{position.symbol} 淇濇姢鍗曚慨澶嶅け璐?)
+                        logger.warning(f"🛡️ {position.symbol} 保护单修复失败")
                 except Exception as e:
                     failed.append(position.symbol)
-                    logger.warning(f"馃洝锔?{position.symbol} 淇濇姢鍗曚慨澶嶅紓甯? {e}")
+                    logger.warning(f"🛡️ {position.symbol} 保护单修复异常: {e}")
 
         if failed:
             self._new_entries_suspended = True
             if not self._new_entries_suspended_alert_sent:
                 send_telegram_message(
                     format_error_msg(
-                        error_type="淇濇姢鍗曚慨澶嶅け璐ワ紝鏆傚仠鏂板紑浠?,
-                        message=f"浠ヤ笅鎸佷粨淇濇姢鍗曚慨澶嶅け璐ワ細{', '.join(failed)}銆傜郴缁熶細缁х画绠＄悊宸叉湁鎸佷粨锛屼絾鏆傚仠鏂板紑浠撱€?,
+                        error_type="保护单修复失败，暂停新开仓",
+                        message=f"以下持仓保护单修复失败：{', '.join(failed)}。系统会继续管理已有持仓，但暂停新开仓。",
                         component="protection_guard",
                     )
                 )
                 self._new_entries_suspended_alert_sent = True
         else:
             if self._new_entries_suspended:
-                logger.warning("馃洝锔?鎵€鏈夋寔浠撲繚鎶ゅ崟宸叉仮澶嶏紝鏂板紑浠撻檺鍒惰В闄?)
+                logger.warning("🛡️ 所有持仓保护单已恢复，新开仓限制解除")
             self._new_entries_suspended = False
             self._new_entries_suspended_alert_sent = False
         
         if repaired:
-            logger.info(f"馃洝锔?淇濇姢鍗曡嚜鍔ㄤ慨澶嶆垚鍔燂細{', '.join(repaired)}")
+            logger.info(f"🛡️ 保护单自动修复成功：{', '.join(repaired)}")
 
     def _ensure_position_protection(self, position: Position, refresh_guard: bool = True):
         """Place missing exchange-side SL/TP orders for tracked or restored positions."""
@@ -302,7 +295,7 @@ class ExecutionMixin:
         position_side = "LONG" if position.side == "BUY" else "SHORT"
 
         if not position.stop_loss_order_id:
-            sl_result = place_stop_loss_order(
+            sl_result = order_service.place_stop_loss(
                 position.symbol,
                 close_side,
                 position.quantity,
@@ -312,13 +305,13 @@ class ExecutionMixin:
             )
             if sl_result.status != "ERROR" and sl_result.order_id:
                 position.stop_loss_order_id = sl_result.order_id
-                logger.warning(f"馃洝锔?{position.symbol} 宸茶ˉ鎸備氦鏄撴墍姝㈡崯鍗曪細{sl_result.order_id}")
+                logger.warning(f"🛡️ {position.symbol} 已补挂交易所止损单：{sl_result.order_id}")
             else:
                 position.protection_failures += 1
                 position.last_protection_error = sl_result.message
                 send_telegram_message(
                     format_error_msg(
-                        error_type="淇濇姢姝㈡崯琛ユ寕澶辫触",
+                        error_type="保护止损补挂失败",
                         message=sl_result.message,
                         symbol=position.symbol,
                         session_id=position.session_id,
@@ -357,7 +350,7 @@ class ExecutionMixin:
             if tp_quantity <= 0 or tp_price <= 0:
                 continue
             target["quantity"] = tp_quantity
-            tp_result = place_take_profit_order(
+            tp_result = order_service.place_take_profit(
                 position.symbol,
                 close_side,
                 tp_quantity,
@@ -370,13 +363,13 @@ class ExecutionMixin:
             target["order_id"] = tp_result.order_id
             if tp_result.status != "ERROR" and tp_result.order_id:
                 new_tp_order_ids.append(tp_result.order_id)
-                logger.warning(f"馃幆 {position.symbol} 宸茶ˉ鎸備氦鏄撴墍姝㈢泩鍗曪細{tp_result.order_id} @ {tp_price}")
+                logger.warning(f"🎯 {position.symbol} 已补挂交易所止盈单：{tp_result.order_id} @ {tp_price}")
             else:
                 position.protection_failures += 1
                 position.last_protection_error = tp_result.message
                 send_telegram_message(
                     format_error_msg(
-                        error_type="淇濇姢姝㈢泩琛ユ寕澶辫触",
+                        error_type="保护止盈补挂失败",
                         message=tp_result.message,
                         symbol=position.symbol,
                         session_id=position.session_id,
@@ -482,12 +475,12 @@ class ExecutionMixin:
         """Persist close result to DB while preventing cross-session contamination."""
         trade, matched_by = self._find_open_trade_for_session(symbol, session_id)
         if not trade:
-            logger.warning(f"鈿狅笍 鏈壘鍒板彲鏇存柊鐨勫紑浠撹褰曪細{symbol} session={session_id}")
+            logger.warning(f"⚠️ 未找到可更新的开仓记录：{symbol} session={session_id}")
             return False
 
         if session_id and matched_by != "session_id":
             logger.warning(
-                f"鈿狅笍 璺宠繃DB骞充粨鏇存柊锛堜細璇濅笉鍖归厤锛夛細{symbol} "
+                f"⚠️ 跳过DB平仓更新（会话不匹配）：{symbol} "
                 f"expected_session={session_id} fallback_trade_id={trade.id}"
             )
             return False
@@ -500,7 +493,7 @@ class ExecutionMixin:
             pnl_pct=pnl_pct,
             realized_pnl=realized_pnl,
         )
-        logger.info(f"馃摐 浜ゆ槗宸叉洿鏂?(ID: {trade.id}, matched_by={matched_by})")
+        logger.info(f"📜 交易已更新 (ID: {trade.id}, matched_by={matched_by})")
         return True
 
     def _estimate_exchange_take_profit_close(self, position: Position) -> Optional[tuple[float, float, float, float]]:
@@ -552,10 +545,10 @@ class ExecutionMixin:
     def _sync_protective_order_snapshot(self, position: Position):
         """Best-effort order snapshot check without blocking trading."""
         try:
-            normal_orders = fetch_open_orders(position.symbol)
-            algo_orders = fetch_open_algo_orders(position.symbol)
+            normal_orders = order_service.fetch_open(position.symbol)
+            algo_orders = order_service.fetch_open_algo(position.symbol)
         except Exception as e:
-            logger.debug(f"{position.symbol} 濮旀墭蹇収鍚屾璺宠繃锛歿e}")
+            logger.debug(f"{position.symbol} 委托快照同步跳过：{e}")
             return
 
         open_ids = set()
@@ -576,7 +569,7 @@ class ExecutionMixin:
 
         missing_ids = sorted(order_id for order_id in expected_ids if order_id and order_id not in open_ids)
         if missing_ids:
-            logger.warning(f"鈿狅笍 {position.symbol} 淇濇姢濮旀墭鍙兘宸叉垚浜?澶辨晥锛歿missing_ids}")
+            logger.warning(f"⚠️ {position.symbol} 保护委托可能已成交/失效：{missing_ids}")
             position.last_protection_error = f"missing_order_ids={missing_ids}"
             if position.stop_loss_order_id in missing_ids:
                 position.stop_loss_order_id = 0
@@ -599,123 +592,49 @@ class ExecutionMixin:
 
         if self._is_loss_pause_active():
             remaining_min = max(1, int((self._loss_pause_until - now) / 60))
-            return f"杩炵画浜忔崯鏆傚仠涓紝鍓╀綑 {remaining_min} 鍒嗛挓"
+            return f"连续亏损暂停中，剩余 {remaining_min} 分钟"
         cooldown_until = self._symbol_cooldowns.get(symbol, 0.0)
         if cooldown_until > now:
             remaining_min = max(1, int((cooldown_until - now) / 60))
-            return f"浜忔崯鍐峰嵈涓紝鍓╀綑 {remaining_min} 鍒嗛挓"
+            return f"亏损冷却中，剩余 {remaining_min} 分钟"
 
         if abs(funding) >= self.config.max_abs_funding_rate:
-            return f"璧勯噾璐圭巼杩囩儹 {funding * 100:.3f}%"
+            return f"资金费率过热 {funding * 100:.3f}%"
         if oi_change >= self.config.max_oi_change_pct:
-            return f"OI杩囩儹 {oi_change:.1f}%"
+            return f"OI过热 {oi_change:.1f}%"
 
         if direction == "LONG":
             if change_24h <= (-15 if is_major_symbol else -12):
-                return f"澶ц穼涓笉鎺ュ {change_24h:.1f}%"
+                return f"大跌中不接多 {change_24h:.1f}%"
             if change_24h >= (
                 self.config.max_chase_change_pct + 10 if is_major_symbol else self.config.max_chase_change_pct
             ):
-                return f"24h娑ㄥ箙杩囧ぇ {change_24h:.1f}%"
+                return f"24h涨幅过大 {change_24h:.1f}%"
             if (
                 (not is_major_symbol)
                 and change_24h >= 12
                 and drawdown < required_pullback
                 and oi_change < self.config.momentum_entry_min_oi_pct
             ):
-                return f"鏈洖韪╋紝璺?4h楂樼偣浠呭洖钀?{drawdown:.1f}%"
+                return f"未回踩，距24h高点仅回落 {drawdown:.1f}%"
             if change_24h >= 8 and range_position >= (96.0 if is_major_symbol else self.config.max_range_position_pct):
-                return f"浠锋牸澶勪簬24h鍖洪棿楂樹綅 {range_position:.1f}%"
+                return f"价格处于24h区间高位 {range_position:.1f}%"
         elif direction == "SHORT":
             if change_24h >= (15 if is_major_symbol else 12):
-                return f"澶ф定涓笉杩界┖ {change_24h:.1f}%"
+                return f"大涨中不追空 {change_24h:.1f}%"
             if change_24h <= (
                 -(self.config.max_chase_change_pct + 10) if is_major_symbol else -self.config.max_chase_change_pct
             ):
-                return f"24h璺屽箙杩囧ぇ {change_24h:.1f}%"
+                return f"24h跌幅过大 {change_24h:.1f}%"
             if change_24h <= -12 and range_position <= (4.0 if is_major_symbol else 100 - self.config.max_range_position_pct):
-                return f"浠锋牸澶勪簬24h鍖洪棿浣庝綅 {range_position:.1f}%"
+                return f"价格处于24h区间低位 {range_position:.1f}%"
 
         if volume_mult < (0.6 if is_major_symbol else 0.8) and abs(change_24h) >= 10:
-            return f"閲忚兘涓嶈冻 volume_mult={volume_mult:.2f}"
+            return f"量能不足 volume_mult={volume_mult:.2f}"
         return ""
 
-    def _collect_entry_protection_errors(
-        self,
-        result: dict[str, Any],
-        take_profit_targets: list[dict[str, Any]],
-    ) -> tuple[int, list[str]]:
-        stop_loss_order = result.get("stop_loss_order", {}) or {}
-        protection_deferred = bool(result.get("protection_deferred", False))
-        protection_errors: list[str] = []
-        if protection_deferred:
-            protection_errors.append("protection_deferred=true")
-
-        stop_loss_order_id = int(stop_loss_order.get("order_id", 0) or 0)
-        stop_loss_status = str(stop_loss_order.get("status", "") or "").upper()
-        if stop_loss_order_id <= 0 or stop_loss_status == "ERROR":
-            protection_errors.append(f"stop_loss status={stop_loss_status or 'UNKNOWN'} id={stop_loss_order_id}")
-
-        for idx, target in enumerate(take_profit_targets, start=1):
-            tp_order_id = int(target.get("order_id", 0) or 0)
-            tp_status = str(target.get("status", "") or "").upper()
-            if tp_order_id <= 0 or tp_status == "ERROR":
-                protection_errors.append(f"tp{idx} status={tp_status or 'UNKNOWN'} id={tp_order_id}")
-
-        return stop_loss_order_id, protection_errors
-
-    def _abort_entry_on_protection_failure(
-        self,
-        *,
-        symbol: str,
-        direction: str,
-        session_id: str,
-        result: dict[str, Any],
-        protection_errors: list[str],
-        executed_entry_price: float,
-        actual_quantity: float,
-        trace_started: float,
-        latency_steps: list[tuple[str, float]],
-    ) -> None:
-        close_side = "SELL" if direction == "LONG" else "BUY"
-        flat_result = quick_close_position(
-            symbol=symbol,
-            side=close_side,
-            quantity=actual_quantity,
-            reason="ENTRY_PROTECTION_FAILED",
-        )
-        detail = "; ".join(protection_errors)
-        logger.error(f"entry protection hard-fail {symbol}: {detail} | flat={flat_result}")
-        protection_event = build_execution_event(
-            event="entry_protection_failed",
-            symbol=symbol,
-            direction=direction,
-            session_id=session_id,
-            metrics={
-                "detail": detail,
-                "flat_success": bool(flat_result.get("success")),
-                "flat_order_id": int(flat_result.get("order_id", 0) or 0),
-                "flat_elapsed_ms": float(flat_result.get("elapsed_ms", 0) or 0),
-                "entry_order_id": int(result.get("order_id", 0) or 0),
-                "entry_price": executed_entry_price,
-                "entry_quantity": actual_quantity,
-            },
-        )
-        logger.info(f"execution_event {message_signature(protection_event)}")
-        feature_store.append_event(protection_event)
-        send_telegram_message(
-            format_error_msg(
-                error_type="寮€浠撲繚鎶ゅ崟澶辫触宸插洖婊?,
-                message=f"{symbol} {detail}",
-                symbol=symbol,
-                session_id=session_id,
-                component="entry_protection",
-            )
-        )
-        self._emit_latency_trace("execute_entry_failed", trace_started, latency_steps, symbol=symbol)
-
     def execute_entry(self, signal: dict) -> Optional[Position]:
-        """鎵ц寮€浠?- 濂ヤ竵鐨勯暱鐭?""
+        """执行开仓 - 奥丁的长矛"""
         symbol = signal["symbol"]
         direction = signal["direction"]
         price = float(signal.get("price", 0) or 0)
@@ -735,17 +654,17 @@ class ExecutionMixin:
         if price <= 0:
             logger.warning(f"entry guard reject {symbol}: invalid price={price}")
             return None
-        if any(token in guard_text for token in ("澶辨晥", "娣樻卑", "绉诲嚭鐩戞帶", "鐘舵€佸彉鏇?)):
+        if any(token in guard_text for token in ("失效", "淘汰", "移出监控", "状态变更")):
             logger.warning(f"entry guard reject {symbol}: blocked by monitor state [{guard_text}]")
             return None
 
         if self._new_entries_suspended:
-            logger.warning(f"馃洝锔?{symbol} 鏂板紑浠撴殏鍋滐細瀛樺湪淇濇姢鍗曚笉瀹屾暣鐨勬寔浠?)
+            logger.warning(f"🛡️ {symbol} 新开仓暂停：存在保护单不完整的持仓")
             if not self._new_entries_suspended_alert_sent:
                 send_telegram_message(
                     format_error_msg(
-                        error_type="鏂板紑浠撳凡鏆傚仠",
-                        message="瀛樺湪鏈畬鏁村彈淇濇姢鐨勬寔浠擄紝璇峰厛纭姝㈡崯/姝㈢泩淇濇姢鍗曘€?,
+                        error_type="新开仓已暂停",
+                        message="存在未完整受保护的持仓，请先确认止损/止盈保护单。",
                         symbol=symbol,
                         component="protection_guard",
                     )
@@ -754,7 +673,7 @@ class ExecutionMixin:
             return None
 
         try:
-            trading_signal = TradingSignal(
+            trading_signal = execution_service.build_trading_signal(
                 symbol=symbol,
                 stage=signal["stage"],
                 direction=direction,
@@ -763,12 +682,12 @@ class ExecutionMixin:
             )
             session_id = self._new_session_id(symbol)
             risk_level = "UNKNOWN"
-            strategy_line = str(signal.get("strategy_line", "鍥炶俯纭绾?) or "鍥炶俯纭绾?)
+            strategy_line = str(signal.get("strategy_line", "回踩确认线") or "回踩确认线")
             strategy_profile = self._strategy_profile(strategy_line)
             stop_loss_pct = self._strategy_stop_loss_pct(strategy_line)
             stop_trigger_buffer_pct = self._strategy_stop_trigger_buffer_pct(strategy_line)
 
-            if not should_trade(trading_signal):
+            if not execution_service.should_trade(trading_signal):
                 return None
 
             step_started = time.perf_counter()
@@ -783,7 +702,7 @@ class ExecutionMixin:
                 logger.error(f"entry guard reject {symbol}: account balance query failed: {e}")
                 send_telegram_message(
                     format_error_msg(
-                        error_type="璐︽埛鏌ヨ澶辫触锛屾嫆缁濆紑浠?,
+                        error_type="账户查询失败，拒绝开仓",
                         message=str(e),
                         symbol=symbol,
                         session_id=session_id,
@@ -802,7 +721,7 @@ class ExecutionMixin:
                     slippage_pct = (price - latest_price) / price * 100.0
                 if slippage_pct > self.config.max_entry_slippage_pct:
                     logger.warning(
-                        f"馃 {symbol} 涓嬪崟鍓嶄环鏍煎亸绉昏繃澶э紝鏀惧純寮€浠? signal={price:.8f}, latest={latest_price:.8f}, "
+                        f"🧊 {symbol} 下单前价格偏移过大，放弃开仓: signal={price:.8f}, latest={latest_price:.8f}, "
                         f"slippage={slippage_pct:.2f}%"
                     )
                     return None
@@ -826,7 +745,7 @@ class ExecutionMixin:
                         }
                     )
 
-                risk_config = RiskConfig(
+                risk_config = risk_service.build_config(
                     risk_per_trade_pct=self.config.risk_per_trade_pct,
                     base_stop_loss_pct=stop_loss_pct,
                     base_take_profit_pct=self.config.take_profit_pct * strategy_profile["tp_multiplier"],
@@ -835,7 +754,7 @@ class ExecutionMixin:
                     max_correlated_positions=3,
                 )
 
-                risk_result = assess_trade_risk(
+                risk_result = risk_service.assess(
                     symbol=symbol,
                     side="LONG" if direction == "LONG" else "SHORT",
                     entry_price=price,
@@ -845,11 +764,11 @@ class ExecutionMixin:
                 )
 
                 if not risk_result.get("can_open", False):
-                    logger.warning(f"馃洝锔?{symbol} 椋庢帶鎷掔粷锛歿risk_result.get('warnings', [])}")
+                    logger.warning(f"🛡️ {symbol} 风控拒绝：{risk_result.get('warnings', [])}")
                     return None
 
                 logger.info(
-                    f"馃洝锔?{symbol} 椋庢帶璇勫垎锛歿risk_result.get('risk_score', 0)}/100 ({risk_result.get('risk_level', 'UNKNOWN')})"
+                    f"🛡️ {symbol} 风控评分：{risk_result.get('risk_score', 0)}/100 ({risk_result.get('risk_level', 'UNKNOWN')})"
                 )
                 risk_level = risk_result.get("risk_level", "UNKNOWN")
 
@@ -859,25 +778,25 @@ class ExecutionMixin:
                 position_value = float(position_size.get("position_value", 0) or 0)
 
                 if quantity is not None and quantity <= 0:
-                    logger.warning(f"馃洝锔?{symbol} 浠撲綅璁＄畻澶辫触")
+                    logger.warning(f"🛡️ {symbol} 仓位计算失败")
                     return None
 
                 if position_value > 0 and not self._passes_liquidity_filter(symbol, position_value):
                     return None
 
                 logger.info(
-                    f"馃攳 {symbol} 椋庢帶鍙傛暟: 浣欓=${balance:.2f}, 鏉犳潌={self.config.leverage}x, "
-                    f"鍚嶄箟浠撲綅=${position_size.get('position_value', 0):.2f}, "
-                    f"鏁伴噺={quantity}, 姝㈡崯=${(stop_loss or 0):.4f}"
+                    f"🔍 {symbol} 风控参数: 余额=${balance:.2f}, 杠杆={self.config.leverage}x, "
+                    f"名义仓位=${position_size.get('position_value', 0):.2f}, "
+                    f"数量={quantity}, 止损=${(stop_loss or 0):.4f}"
                 )
 
             except Exception as e:
-                logger.warning(f"馃洝锔?椋庢帶璇勪及澶辫触 {symbol}: {e}锛屽洖閫€鍒版墽琛屽櫒榛樿璁＄畻")
+                logger.warning(f"🛡️ 风控评估失败 {symbol}: {e}，回退到执行器默认计算")
             self._record_latency_step(latency_steps, "risk_assessment", step_started)
 
             take_profit_target_pcts, take_profit_ratios = self._build_take_profit_plan(strategy_line)
             step_started = time.perf_counter()
-            result = execute_trade(
+            result = execution_service.execute_entry_trade(
                 signal=trading_signal,
                 account_balance=balance,
                 risk_per_trade_pct=self.config.risk_per_trade_pct,
@@ -895,7 +814,7 @@ class ExecutionMixin:
             self._record_latency_step(latency_steps, "execute_trade", step_started)
 
             if result.get("action") != "EXECUTED":
-                logger.warning(f"鉂?{symbol} 寮€浠撳け璐ワ細{result.get('reason', 'Unknown')}")
+                logger.warning(f"❌ {symbol} 开仓失败：{result.get('reason', 'Unknown')}")
                 self._emit_latency_trace("execute_entry_failed", trace_started, latency_steps, symbol=symbol)
                 return None
 
@@ -908,9 +827,9 @@ class ExecutionMixin:
                 quantity = actual_quantity if actual_quantity > 0 else 0
 
             if order_status == "PARTIALLY_FILLED":
-                logger.warning(f"鈿狅笍 {symbol} 閮ㄥ垎鎴愪氦锛佽姹傛暟閲忥細{quantity}锛屽疄闄呮垚浜わ細{actual_quantity}")
+                logger.warning(f"⚠️ {symbol} 部分成交！请求数量：{quantity}，实际成交：{actual_quantity}")
                 if actual_quantity < quantity * 0.5:
-                    logger.error(f"鉂?{symbol} 閮ㄥ垎鎴愪氦姣斾緥杩囦綆锛屾斁寮冩寔浠?)
+                    logger.error(f"❌ {symbol} 部分成交比例过低，放弃持仓")
                     self._emit_latency_trace("execute_entry_failed", trace_started, latency_steps, symbol=symbol)
                     return None
 
@@ -928,23 +847,60 @@ class ExecutionMixin:
             else:
                 side = "SELL"
 
-            stop_loss_order_id, protection_errors = self._collect_entry_protection_errors(
-                result=result,
-                take_profit_targets=take_profit_targets,
-            )
+            stop_loss_order = result.get("stop_loss_order", {})
+            protection_deferred = bool(result.get("protection_deferred", False))
+            protection_errors: list[str] = []
+            if protection_deferred:
+                protection_errors.append("protection_deferred=true")
+
+            stop_loss_order_id = int(stop_loss_order.get("order_id", 0) or 0)
+            stop_loss_status = str(stop_loss_order.get("status", "") or "").upper()
+            if stop_loss_order_id <= 0 or stop_loss_status == "ERROR":
+                protection_errors.append(f"stop_loss status={stop_loss_status or 'UNKNOWN'} id={stop_loss_order_id}")
+
+            for idx, target in enumerate(take_profit_targets, start=1):
+                tp_order_id = int(target.get("order_id", 0) or 0)
+                tp_status = str(target.get("status", "") or "").upper()
+                if tp_order_id <= 0 or tp_status == "ERROR":
+                    protection_errors.append(f"tp{idx} status={tp_status or 'UNKNOWN'} id={tp_order_id}")
 
             if protection_errors:
-                self._abort_entry_on_protection_failure(
+                close_side = "SELL" if direction == "LONG" else "BUY"
+                flat_result = quick_close_position(
+                    symbol=symbol,
+                    side=close_side,
+                    quantity=actual_quantity,
+                    reason="ENTRY_PROTECTION_FAILED",
+                )
+                detail = "; ".join(protection_errors)
+                logger.error(f"entry protection hard-fail {symbol}: {detail} | flat={flat_result}")
+                protection_event = build_execution_event(
+                    event="entry_protection_failed",
                     symbol=symbol,
                     direction=direction,
                     session_id=session_id,
-                    result=result,
-                    protection_errors=protection_errors,
-                    executed_entry_price=executed_entry_price,
-                    actual_quantity=actual_quantity,
-                    trace_started=trace_started,
-                    latency_steps=latency_steps,
+                    metrics={
+                        "detail": detail,
+                        "flat_success": bool(flat_result.get("success")),
+                        "flat_order_id": int(flat_result.get("order_id", 0) or 0),
+                        "flat_elapsed_ms": float(flat_result.get("elapsed_ms", 0) or 0),
+                        "entry_order_id": int(result.get("order_id", 0) or 0),
+                        "entry_price": executed_entry_price,
+                        "entry_quantity": actual_quantity,
+                    },
                 )
+                logger.info(f"execution_event {message_signature(protection_event)}")
+                feature_store.append_event(protection_event)
+                send_telegram_message(
+                    format_error_msg(
+                        error_type="开仓保护单失败已回滚",
+                        message=f"{symbol} {detail}",
+                        symbol=symbol,
+                        session_id=session_id,
+                        component="entry_protection",
+                    )
+                )
+                self._emit_latency_trace("execute_entry_failed", trace_started, latency_steps, symbol=symbol)
                 return None
 
             oi_funding = signal.get("oi_funding") or {}
@@ -1063,7 +1019,7 @@ class ExecutionMixin:
             )
             step_started = time.perf_counter()
             trade_id = self.db.add_trade(trade)
-            logger.info(f"浜ゆ槗宸茶褰?(ID: {trade_id})")
+            logger.info(f"交易已记录 (ID: {trade_id})")
             entry_event = build_execution_event(
                 event="entry_opened",
                 symbol=symbol,
@@ -1084,10 +1040,10 @@ class ExecutionMixin:
             return position
 
         except Exception as e:
-            logger.error(f"鉂?{symbol} 寮€浠撴祦绋嬪紓甯革細{e}", exc_info=True)
+            logger.error(f"❌ {symbol} 开仓流程异常：{e}", exc_info=True)
             send_telegram_message(
                 format_error_msg(
-                    error_type="寮€浠撴祦绋嬪紓甯?,
+                    error_type="开仓流程异常",
                     message=str(e),
                     symbol=symbol,
                     session_id=session_id if "session_id" in locals() else "",
@@ -1102,7 +1058,7 @@ class ExecutionMixin:
             return None
 
     def execute_exit(self, symbol: str, reason: str) -> bool:
-        """鎵ц骞充粨 - 鎵樺皵鐨勯浄闇?""
+        """执行平仓 - 托尔的雷霆"""
         position = self.tracker.get_position(symbol)
         if not position:
             return False
@@ -1122,7 +1078,7 @@ class ExecutionMixin:
 
         try:
             step_started = time.perf_counter()
-            result = place_market_order(
+            result = order_service.place_market(
                 symbol,
                 close_side,
                 position.quantity,
@@ -1238,10 +1194,10 @@ class ExecutionMixin:
                 return True
 
         except Exception as e:
-            logger.error(f"骞充粨澶辫触 {symbol}: {e}")
+            logger.error(f"平仓失败 {symbol}: {e}")
             send_telegram_message(
                 format_error_msg(
-                    error_type="骞充粨澶辫触",
+                    error_type="平仓失败",
                     message=str(e),
                     symbol=symbol,
                     session_id=position.session_id,
@@ -1250,8 +1206,5 @@ class ExecutionMixin:
             )
             self._emit_latency_trace("execute_exit_exception", trace_started, latency_steps, symbol=symbol)
             return False
-
-
-
 
 

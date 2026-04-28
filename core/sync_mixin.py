@@ -1,4 +1,4 @@
-﻿"""Exchange sync and restoration mixin for the trading engine."""
+"""Exchange sync and restoration mixin for the trading engine."""
 
 from __future__ import annotations
 
@@ -9,7 +9,7 @@ import time
 from datetime import datetime
 from typing import Any, Dict, List
 
-from binance_api_client import is_native_binance_configured`r`nfrom binance_breakout_scanner import fetch_ticker_24hr
+from adapters.rest_gateway import fetch_symbol_ticker_24h, is_exchange_ready
 from adapters.ws_gateway import get_market_price_client_class, get_user_data_client_class
 from hermes_paths import hermes_logs_dir
 from telegram_notifier import format_close_position_msg, format_error_msg, get_telegram_config, send_telegram_message
@@ -53,10 +53,10 @@ class SyncMixin:
                 stream_types=["mark_price"],
             )
             self._ws_client.start()
-            logger.info(f"馃摗 WebSocket 瀹炴椂浠锋牸鐩戝惉宸插惎鍔細{', '.join(sorted(symbol_set))}")
+            logger.info(f"📡 WebSocket 实时价格监听已启动：{', '.join(sorted(symbol_set))}")
         except Exception as e:
             self._ws_client = None
-            logger.warning(f"馃摗 WebSocket 鍚姩澶辫触锛岀户缁娇鐢?REST 浠锋牸锛歿e}")
+            logger.warning(f"📡 WebSocket 启动失败，继续使用 REST 价格：{e}")
 
     def _get_ws_price(self, symbol: str) -> float:
         if not self._ws_client:
@@ -297,17 +297,17 @@ class SyncMixin:
 
         position.session_id = self._new_session_id(position.symbol)
         logger.warning(
-            f"鈾伙笍 {position.symbol} 妫€娴嬪埌浜ゆ槗鎵€鎸佷粨閲嶅熀鍑?source={source} "
+            f"♻️ {position.symbol} 检测到交易所持仓重基准 source={source} "
             f"qty={live_qty:.6f} entry={position.entry_price:.8f} "
             f"old_session={old_session_id} new_session={position.session_id}"
         )
         send_telegram_message(
-            f"鈿狅笍 <b>瀹欐柉浜ゆ槗涓灑 | 澶栭儴鎸佷粨鍙樻洿鎺ョ</b>\n\n"
-            f"<b>鏍囩殑</b>  <code>{position.symbol}</code>\n"
-            f"<b>鏉ユ簮</b>  <code>{source}</code>\n"
-            f"<b>璇存槑</b>  <code>妫€娴嬪埌浜ゆ槗鎵€鎸佷粨鍙樺寲锛屽凡閲嶅缓鏈湴浠撲綅骞舵帴绠′繚鎶ゅ崟</code>\n"
-            f"<b>鏁伴噺</b>  <code>{live_qty:.6f}</code>\n"
-            f"<b>寮€浠撲环</b>  <code>{position.entry_price:.8f}</code>"
+            f"⚠️ <b>宙斯交易中枢 | 外部持仓变更接管</b>\n\n"
+            f"<b>标的</b>  <code>{position.symbol}</code>\n"
+            f"<b>来源</b>  <code>{source}</code>\n"
+            f"<b>说明</b>  <code>检测到交易所持仓变化，已重建本地仓位并接管保护单</code>\n"
+            f"<b>数量</b>  <code>{live_qty:.6f}</code>\n"
+            f"<b>开仓价</b>  <code>{position.entry_price:.8f}</code>"
         )
         return True
 
@@ -331,11 +331,11 @@ class SyncMixin:
 
         def worker():
             try:
-                logger.info("馃洝锔?鍚庡彴淇濇姢鍗曞璁″惎鍔?)
+                logger.info("🛡️ 后台保护单审计启动")
                 self._audit_all_position_protection(source=source)
-                logger.info("馃洝锔?鍚庡彴淇濇姢鍗曞璁″畬鎴?)
+                logger.info("🛡️ 后台保护单审计完成")
             except Exception as e:
-                logger.warning(f"鍚庡彴淇濇姢鍗曞璁″け璐ワ細{e}")
+                logger.warning(f"后台保护单审计失败：{e}")
 
         threading.Thread(target=worker, daemon=True).start()
 
@@ -347,7 +347,7 @@ class SyncMixin:
         try:
             account_info = self._get_account_info_cached(ttl_sec=2.5)
         except Exception as e:
-            logger.warning(f"鍚屾浜ゆ槗鎵€鎸佷粨澶辫触锛歿e}")
+            logger.warning(f"同步交易所持仓失败：{e}")
             return
 
         live_positions = {
@@ -360,7 +360,7 @@ class SyncMixin:
             live_pos = live_positions.get((symbol, side_key))
 
             if not live_pos:
-                logger.warning(f"鈾伙笍 {symbol} 鏈湴鏈変粨浣嶄絾浜ゆ槗鎵€宸叉棤鎸佷粨锛屾寜浜ゆ槗鎵€鐘舵€佺Щ闄?)
+                logger.warning(f"♻️ {symbol} 本地有仓位但交易所已无持仓，按交易所状态移除")
                 close_summary = self._estimate_exchange_take_profit_close(position)
                 if close_summary:
                     exit_price, pnl, pnl_pct, remaining_pnl = close_summary
@@ -435,7 +435,7 @@ class SyncMixin:
 
             if live_qty + 1e-9 < position.quantity:
                 reduced_qty = position.quantity - live_qty
-                logger.info(f"馃攩 {symbol} 浜ゆ槗鎵€宸查儴鍒嗘鐩堬細鍑忓皯 {reduced_qty:.6f}锛屽墿浣?{live_qty:.6f}")
+                logger.info(f"🔆 {symbol} 交易所已部分止盈：减少 {reduced_qty:.6f}，剩余 {live_qty:.6f}")
                 current_price = self.get_current_prices([symbol]).get(symbol, position.take_profit_price)
                 self._notify_partial_take_profit(position, reduced_qty, live_qty, current_price)
                 self._move_stop_to_breakeven(position, live_qty)
@@ -448,7 +448,7 @@ class SyncMixin:
 
     def _passes_liquidity_filter(self, symbol: str, desired_position_value: float) -> bool:
         try:
-            ticker = fetch_ticker_24hr(symbol)
+            ticker = fetch_symbol_ticker_24h(symbol)
             quote_volume = float(ticker.get("quoteVolume", 0) or 0)
             is_major = symbol.upper() in self.config.major_symbols
             min_quote_volume = (
@@ -569,31 +569,31 @@ class SyncMixin:
                 take_profit_order_ids=take_profit_order_ids,
             )
             self.tracker.add_position(restored)
-            logger.warning(f"鈾伙笍 宸叉仮澶嶆寔浠擄細{restored.symbol} {restored.side} session={session_id}")
+            logger.warning(f"♻️ 已恢复持仓：{restored.symbol} {restored.side} session={session_id}")
             send_telegram_message(
-                f"鈩癸笍 <b>瀹欐柉浜ゆ槗涓灑 | 鍚姩鎸佷粨鎭㈠</b>\n\n"
-                f"<b>鏍囩殑</b>  <code>{restored.symbol}</code>\n"
-                f"<b>鏂瑰悜</b>  <code>{'LONG' if restored.side == 'BUY' else 'SHORT'}</code>\n"
-                f"<b>鏁伴噺</b>  <code>{restored.quantity:.6f}</code>\n"
-                f"<b>寮€浠撲环</b>  <code>{restored.entry_price:.8f}</code>\n"
-                f"<b>璇存槑</b>  <code>璇ヤ粨浣嶆潵鑷氦鏄撴墍鐜版湁鎸佷粨鎭㈠锛屼笉鏄湰杞柊寮€浠?/code>"
+                f"ℹ️ <b>宙斯交易中枢 | 启动持仓恢复</b>\n\n"
+                f"<b>标的</b>  <code>{restored.symbol}</code>\n"
+                f"<b>方向</b>  <code>{'LONG' if restored.side == 'BUY' else 'SHORT'}</code>\n"
+                f"<b>数量</b>  <code>{restored.quantity:.6f}</code>\n"
+                f"<b>开仓价</b>  <code>{restored.entry_price:.8f}</code>\n"
+                f"<b>说明</b>  <code>该仓位来自交易所现有持仓恢复，不是本轮新开仓</code>"
             )
 
     def _run_health_checks(self) -> float:
         telegram_config = get_telegram_config()
         if not telegram_config.get("bot_token") or not telegram_config.get("chat_id"):
-            raise RuntimeError("Telegram 鏈厤缃?bot_token/chat_id")
+            raise RuntimeError("Telegram 未配置 bot_token/chat_id")
 
-        native_ready = is_native_binance_configured()
+        native_ready = is_exchange_ready()
         if not native_ready:
-            raise RuntimeError("鍘熺敓 Binance API 鏈厤缃細璇疯缃?BINANCE_API_KEY / BINANCE_API_SECRET")
-        logger.info("馃К 鍘熺敓 Binance API 浜ゆ槗閫氶亾宸插惎鐢?)
+            raise RuntimeError("原生 Binance API 未配置：请设置 BINANCE_API_KEY / BINANCE_API_SECRET")
+        logger.info("🧬 原生 Binance API 交易通道已启用")
 
         account_info = self._get_account_info_cached(ttl_sec=0.0, force=True)
 
         balance = float(account_info.get("availableBalance", 0) or 0)
         if balance <= 0:
-            raise RuntimeError("璐︽埛鍙敤浣欓涓?0")
+            raise RuntimeError("账户可用余额为 0")
 
         log_dir = getattr(self, "_log_dir", hermes_logs_dir())
         if not getattr(log_dir, "exists", lambda: False)():
@@ -602,13 +602,13 @@ class SyncMixin:
             except Exception:
                 pass
         if not getattr(log_dir, "is_dir", lambda: False)():
-            raise RuntimeError(f"鏃ュ織鐩綍涓嶅彲鐢? {log_dir}")
+            raise RuntimeError(f"日志目录不可用: {log_dir}")
 
         self._restore_positions(account_info)
         return balance
 
     def get_current_prices(self, symbols: List[str]) -> Dict[str, float]:
-        """鑾峰彇褰撳墠浠锋牸"""
+        """获取当前价格"""
         prices = {}
         self._refresh_price_stream(symbols)
         for symbol in symbols:
@@ -617,9 +617,8 @@ class SyncMixin:
                 if ws_price > 0:
                     prices[symbol] = ws_price
                     continue
-                ticker = fetch_ticker_24hr(symbol)
+                ticker = fetch_symbol_ticker_24h(symbol)
                 prices[symbol] = float(ticker.get("lastPrice", 0))
             except Exception as e:
-                logger.warning(f"鑾峰彇 {symbol} 浠锋牸澶辫触锛歿e}")
+                logger.warning(f"获取 {symbol} 价格失败：{e}")
         return prices
-

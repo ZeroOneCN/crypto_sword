@@ -1,4 +1,4 @@
-﻿"""Cycle orchestration mixin for the trading engine."""
+"""Cycle orchestration mixin for the trading engine."""
 
 from __future__ import annotations
 
@@ -7,7 +7,7 @@ import time
 from datetime import datetime, timedelta
 from typing import Any
 
-from binance_breakout_scanner import get_top_symbols_by_change, get_top_symbols_by_volume
+from adapters.rest_gateway import get_top_symbols_by_change_rest, get_top_symbols_by_volume_rest
 from feature_store import feature_store
 from telegram_notifier import (
     format_daily_report_msg,
@@ -58,17 +58,17 @@ class CycleMixin:
             return self._filter_altcoin_symbols(merged)
 
         if self.config.scan_by_change:
-            symbols = get_top_symbols_by_change(
+            symbols = get_top_symbols_by_change_rest(
                 self.config.scan_top_n,
                 min_change=self.config.min_change_pct,
             )
-            logger.info(f"馃敟 濡栧竵妯″紡(REST) - 鎵弿 {len(symbols)} 涓紓鍔ㄥ竵绉嶏細{symbols[:5]}...")
+            logger.info(f"🔥 妖币模式(REST) - 扫描 {len(symbols)} 个异动币种：{symbols[:5]}...")
             merged = major_symbols + symbols if prefer_major else symbols + major_symbols
             merged = list(dict.fromkeys(merged))[: self.config.scan_top_n]
             return self._filter_altcoin_symbols(merged)
 
-        symbols = get_top_symbols_by_volume(self.config.scan_top_n)
-        logger.info(f"馃搳 鎴愪氦閲忔ā寮?- 鎵弿 {len(symbols)} 涓竵绉嶏細{symbols[:5]}...")
+        symbols = get_top_symbols_by_volume_rest(self.config.scan_top_n)
+        logger.info(f"📊 成交量模式 - 扫描 {len(symbols)} 个币种：{symbols[:5]}...")
         merged = major_symbols + symbols if prefer_major else symbols + major_symbols
         merged = list(dict.fromkeys(merged))[: self.config.scan_top_n]
         return self._filter_altcoin_symbols(merged)
@@ -101,7 +101,7 @@ class CycleMixin:
         return self._loss_pause_until > time.time()
 
     def _send_position_summary(self, summary: dict):
-        """鍙戦€佹寔浠撴眹鎬婚€氱煡"""
+        """发送持仓汇总通知"""
         total_balance = 0.0
         available_balance = 0.0
         daily_report = self._get_daily_report_snapshot()
@@ -138,21 +138,21 @@ class CycleMixin:
         )
         win_rate = float(daily_report.get("win_rate", 0) or 0)
         avg_pnl = float(daily_report.get("avg_pnl", 0) or 0)
-        msg += f"\n<b>鑳滅巼</b>  <code>{win_rate:.1f}%</code>"
-        msg += f"\n<b>绗斿潎</b>  <code>{avg_pnl:+,.2f} USDT</code>"
+        msg += f"\n<b>胜率</b>  <code>{win_rate:.1f}%</code>"
+        msg += f"\n<b>笔均</b>  <code>{avg_pnl:+,.2f} USDT</code>"
         best_trade = daily_report.get("best_trade") or {}
         if best_trade.get("symbol"):
             msg += (
-                f"\n<b>鏈€浣?/b>  <code>{best_trade.get('symbol')}</code>"
+                f"\n<b>最佳</b>  <code>{best_trade.get('symbol')}</code>"
                 f"  <code>{float(best_trade.get('pnl', 0) or 0):+,.2f} USDT</code>"
             )
         worst_trade = daily_report.get("worst_trade") or {}
         if worst_trade.get("symbol"):
             msg += (
-                f"\n<b>鏈€宸?/b>  <code>{worst_trade.get('symbol')}</code>"
+                f"\n<b>最差</b>  <code>{worst_trade.get('symbol')}</code>"
                 f"  <code>{float(worst_trade.get('pnl', 0) or 0):+,.2f} USDT</code>"
             )
-        msg += f"\n\n<b>宸插钩浠?/b>  <code>{summary['closed_today']}</code> 绗?
+        msg += f"\n\n<b>已平仓</b>  <code>{summary['closed_today']}</code> 笔"
         send_telegram_message(msg)
 
     def _watchlist_monitor_items(self) -> list[dict[str, Any]]:
@@ -169,7 +169,7 @@ class CycleMixin:
                     "metrics": watch.get("metrics", {}) or {},
                     "score": watch.get("score"),
                     "entry_status": "watch",
-                    "entry_status_text": "瑙傚療涓?,
+                    "entry_status_text": "观察中",
                     "entry_note": watch.get("entry_note", ""),
                     "strategy_line": watch.get("strategy_line", ""),
                     "watch_stage": watch.get("watch_stage", ""),
@@ -178,7 +178,7 @@ class CycleMixin:
         return stable_monitor_sort(items, self._last_watch_monitor_order)
 
     def _watch_monitor_interval(self, watch_items: list[dict[str, Any]]) -> int:
-        has_breakout = any(item.get("strategy_line") == "瓒嬪娍绐佺牬绾? for item in watch_items)
+        has_breakout = any(item.get("strategy_line") == "趋势突破线" for item in watch_items)
         if has_breakout:
             return max(90, min(self._monitor_interval, max(120, self.config.fast_scan_interval_sec * 2)))
         return max(180, min(self._monitor_interval * 2, max(self._current_scan_interval, 600)))
@@ -193,7 +193,7 @@ class CycleMixin:
         delta_items, current_snapshot = build_monitor_delta(
             signals,
             self._last_scan_monitor_snapshot,
-            "鎵弿",
+            "扫描",
             top_n=5,
         )
         signature = message_signature(delta_items)
@@ -212,12 +212,12 @@ class CycleMixin:
                 signals=delta_items,
                 scanned_count=self.config.scan_top_n,
                 max_items=5,
-                report_title="瀹欐柉浜ゆ槗涓灑 | 濡栧竵鎵弿鍙樺寲",
-                count_label="鎵弿鑼冨洿",
+                report_title="宙斯交易中枢 | 妖币扫描变化",
+                count_label="扫描范围",
             )
             send_telegram_message(msg)
         except Exception as e:
-            logger.debug(f"鎵弿鐩戞帶閫氱煡鍙戦€佸け璐ワ細{e}")
+            logger.debug(f"扫描监控通知发送失败：{e}")
 
     def _send_watchlist_monitor(self):
         """Send periodic candidate follow-up even when no deep scan entry is ready."""
@@ -233,7 +233,7 @@ class CycleMixin:
         delta_items, current_snapshot = build_monitor_delta(
             watch_items,
             self._last_watch_monitor_snapshot,
-            "鍊欓€?,
+            "候选",
             top_n=5,
         )
         signature = message_signature(delta_items)
@@ -256,12 +256,12 @@ class CycleMixin:
                 signals=delta_items,
                 scanned_count=len(watch_items),
                 max_items=5,
-                report_title="瀹欐柉浜ゆ槗涓灑 | 鍊欓€夊彉鍖?,
-                count_label="鍊欓€夎寖鍥?,
+                report_title="宙斯交易中枢 | 候选变化",
+                count_label="候选范围",
             )
             send_telegram_message(msg)
         except Exception as e:
-            logger.debug(f"鍊欓€夎窡韪€氱煡鍙戦€佸け璐ワ細{e}")
+            logger.debug(f"候选跟踪通知发送失败：{e}")
 
     def run_scan_cycle(self):
         """Run one fast or deep trading cycle."""
@@ -329,8 +329,8 @@ class CycleMixin:
             if not self._daily_loss_alert_sent:
                 limit_amount = self.day_start_balance * (self.config.max_daily_loss_pct / 100.0)
                 msg = format_error_msg(
-                    error_type="鏃ュ唴鐔旀柇",
-                    message=f"褰撴棩浜忔崯宸茶揪鍒?{self.daily_pnl:.2f} USDT锛岃秴杩囬檺鍒?{-limit_amount:.2f} USDT锛屾殏鍋滄柊寮€浠?,
+                    error_type="日内熔断",
+                    message=f"当日亏损已达到 {self.daily_pnl:.2f} USDT，超过限制 {-limit_amount:.2f} USDT，暂停新开仓",
                     component="risk_guard",
                 )
                 send_telegram_message(msg)
@@ -360,7 +360,7 @@ class CycleMixin:
                 if signal_price <= 0:
                     logger.warning(f"entry guard skip {signal.get('symbol', '')}: invalid signal price={signal_price}")
                     continue
-                if any(token in guard_text for token in ("澶辨晥", "娣樻卑", "绉诲嚭鐩戞帶", "鐘舵€佸彉鏇?)):
+                if any(token in guard_text for token in ("失效", "淘汰", "移出监控", "状态变更")):
                     logger.warning(
                         f"entry guard skip {signal.get('symbol', '')}: blocked by monitor state [{guard_text}]"
                     )
@@ -376,7 +376,7 @@ class CycleMixin:
                         self._mark_watch_in_position(
                             signal["symbol"],
                             getattr(position, "strategy_line", signal.get("strategy_line", "")),
-                            note="宸插紑浠擄紝缁х画璺熻釜鍥炴挙涓庡啀鍏ュ満鏈轰細",
+                            note="已开仓，继续跟踪回撤与再入场机会",
                         )
         self._record_latency_step(latency_steps, "execute_entries", step_started)
 
@@ -408,4 +408,3 @@ class CycleMixin:
 
         self.last_scan_time = datetime.now()
         self._emit_latency_trace(f"run_scan_cycle_{cycle_type}", trace_started, latency_steps)
-
