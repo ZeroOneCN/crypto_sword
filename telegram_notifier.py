@@ -500,7 +500,7 @@ def format_summary_msg(
         msg += f"\n<b>可用余额</b>  <code>{available_balance:,.2f} USDT</code>"
 
     if not positions:
-        msg += "\n\n[EMPTY] 当前无持仓"
+        msg += "\n\n📭 <b>当前无持仓</b>\n<code>系统保持待命，等待下一次高质量入场信号。</code>"
         return msg
 
     for i, pos in enumerate(positions, 1):
