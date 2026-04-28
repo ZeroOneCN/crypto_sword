@@ -21,6 +21,7 @@ class TradingConfig:
         take_profit_pct: float = 18.0,
         take_profit_mode: str = "roi",
         max_position_pct: float = 35.0,
+        max_total_exposure_pct: float = 110.0,
         max_daily_loss_pct: float = 8.0,
         max_open_positions: int = 4,
         trailing_stop_pct: float = 5.0,
@@ -90,6 +91,7 @@ class TradingConfig:
         self.take_profit_pct = take_profit_pct
         self.take_profit_mode = take_profit_mode
         self.max_position_pct = max_position_pct
+        self.max_total_exposure_pct = max_total_exposure_pct
         self.max_daily_loss_pct = max_daily_loss_pct
         self.max_open_positions = max_open_positions
         self.trailing_stop_pct = trailing_stop_pct

@@ -424,6 +424,7 @@ def main():
     parser.add_argument("--take-profit-mode", choices=["price", "roi"], default="roi", help="Take profit mode")
     parser.add_argument("--max-positions", "-m", type=int, default=4, help="Max open positions")
     parser.add_argument("--max-position-pct", type=float, default=35.0, help="Max notional position size (%% of balance)")
+    parser.add_argument("--max-total-exposure", type=float, default=110.0, help="Max total notional exposure (%% of balance)")
     parser.add_argument("--max-daily-loss", type=float, default=8.0, help="Max daily loss (%%)")
 
     parser.add_argument("--top", type=int, default=50, help="Top N symbols")
@@ -475,6 +476,7 @@ def main():
         take_profit_pct=args.take_profit,
         take_profit_mode=args.take_profit_mode,
         max_position_pct=max(5.0, args.max_position_pct),
+        max_total_exposure_pct=max(args.max_position_pct, args.max_total_exposure),
         max_daily_loss_pct=args.max_daily_loss,
         max_open_positions=args.max_positions,
         trailing_stop_pct=args.trailing,

@@ -750,7 +750,7 @@ class ExecutionMixin:
                     base_stop_loss_pct=stop_loss_pct,
                     base_take_profit_pct=self.config.take_profit_pct * strategy_profile["tp_multiplier"],
                     max_position_pct=self.config.max_position_pct,
-                    max_total_exposure=50.0,
+                    max_total_exposure=self.config.max_total_exposure_pct,
                     max_correlated_positions=3,
                 )
 
@@ -764,7 +764,20 @@ class ExecutionMixin:
                 )
 
                 if not risk_result.get("can_open", False):
-                    logger.warning(f"🛡️ {symbol} 风控拒绝：{risk_result.get('warnings', [])}")
+                    warnings = risk_result.get("warnings", [])
+                    logger.warning(f"🛡️ {symbol} 风控拒绝：{warnings}")
+                    send_telegram_message(
+                        format_error_msg(
+                            error_type="强信号风控拒绝",
+                            message=(
+                                f"{'; '.join(str(item) for item in warnings) or '风控未通过'}\n"
+                                f"评分={score:.1f} 策略={strategy_line} 方向={direction}"
+                            ),
+                            symbol=symbol,
+                            session_id=session_id,
+                            component="risk_assessment",
+                        )
+                    )
                     return None
 
                 logger.info(
