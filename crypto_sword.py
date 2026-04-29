@@ -398,11 +398,26 @@ class CryptoSword(ExecutionMixin, ScannerMixin, CycleMixin, SyncMixin, Confirmat
                 logger.info("Interrupted by user, stopping...")
                 self.running = False
             except Exception as e:
+                error_text = str(e)
+                transient_network_error = any(
+                    token in error_text
+                    for token in (
+                        "Connection reset by peer",
+                        "Remote end closed connection",
+                        "timed out",
+                        "Temporary failure",
+                    )
+                )
+                if transient_network_error:
+                    logger.warning(f"Main loop transient network error: {error_text}")
+                    time.sleep(10)
+                    continue
                 logger.error(f"Main loop exception: {e}")
                 send_telegram_message(
                     format_error_msg(
-                        error_type="Main loop exception",
-                        message=str(e),
+                        error_type="主循环异常",
+                        message=error_text,
+                        component="main_loop",
                     )
                 )
                 time.sleep(10)

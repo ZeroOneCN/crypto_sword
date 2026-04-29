@@ -187,6 +187,7 @@ def calculate_atr_stop_loss(
     side: str,
     atr_multiplier: float = 2.0,
     atr_period: int = 14,
+    max_stop_pct: float = 7.0,
 ) -> Dict[str, Any]:
     """
     计算 ATR 动态止损
@@ -203,15 +204,16 @@ def calculate_atr_stop_loss(
     
     if not klines:
         #  fallback 到固定止损
+        fallback_stop_pct = max(2.0, float(max_stop_pct or 7.0))
         if side == "LONG":
-            stop_loss = entry_price * (1 - 0.08)
+            stop_loss = entry_price * (1 - fallback_stop_pct / 100)
         else:
-            stop_loss = entry_price * (1 + 0.08)
+            stop_loss = entry_price * (1 + fallback_stop_pct / 100)
         
         return {
             "atr": 0,
             "stop_loss": round(stop_loss, 4),
-            "stop_loss_pct": 8.0,
+            "stop_loss_pct": round(fallback_stop_pct, 2),
             "method": "FALLBACK",
         }
     
@@ -230,9 +232,9 @@ def calculate_atr_stop_loss(
         stop_loss = entry_price + atr_distance
         stop_loss_pct = (stop_loss - entry_price) / entry_price * 100
     
-    # 确保止损在合理范围：3% - 12%
-    min_stop_pct = 3.0
-    max_stop_pct = 12.0
+    # 确保止损在合理范围内，并尊重策略层传入的止损上限。
+    min_stop_pct = 2.0
+    max_stop_pct = max(min_stop_pct, min(12.0, float(max_stop_pct or 7.0)))
     if stop_loss_pct < min_stop_pct:
         if side == "LONG":
             stop_loss = entry_price * (1 - min_stop_pct / 100)
@@ -582,6 +584,7 @@ def assess_trade_risk(
         symbol, entry_price, side,
         atr_multiplier=config.atr_multiplier,
         atr_period=config.atr_period,
+        max_stop_pct=config.base_stop_loss_pct,
     )
     stop_loss = atr_result["stop_loss"]
     

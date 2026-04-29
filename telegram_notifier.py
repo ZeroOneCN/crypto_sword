@@ -270,6 +270,27 @@ def _format_source_label(source: str) -> str:
     return source_map.get(source, source)
 
 
+def _format_component_label(component: str) -> str:
+    """Translate internal component names into concise user-facing Chinese labels."""
+    component_map = {
+        "account_query": "账户查询",
+        "breakeven_stop": "保本止损",
+        "entry_protection": "开仓保护单",
+        "execute_entry": "开仓流程",
+        "execute_entry_trade": "开仓下单",
+        "execute_exit": "平仓流程",
+        "loss_guard": "连亏熔断",
+        "main_loop": "主循环",
+        "protection_guard": "保护单风控",
+        "protection_reconcile": "保护单补挂",
+        "risk_assessment": "风控评估",
+        "risk_guard": "风险守卫",
+        "startup_checks": "启动健康检查",
+        "stop_loss_cleanup": "止损单清理",
+    }
+    return component_map.get(component, component)
+
+
 def format_open_position_msg(
     symbol: str,
     direction: str,
@@ -547,7 +568,7 @@ def format_error_msg(
 
 <b>类型</b>  <code>{_escape(error_type)}</code>"""
     if component:
-        msg += f"\n<b>组件</b>  <code>{_escape(component)}</code>"
+        msg += f"\n<b>组件</b>  <code>{_escape(_format_component_label(component))}</code>"
     if symbol:
         msg += f"\n<b>标的</b>  <code>{_escape(symbol)}</code>"
     if session_id:
@@ -796,18 +817,19 @@ def format_daily_report_msg(report: dict[str, Any]) -> str:
         protection_failed = int(protection.get("failed", 0) or 0)
         protection_ok_rate = float(protection.get("ok_rate", 0) or 0)
         msg += (
-            "\n\n<b>Entry Protection</b>"
-            f"\nOK/Fail  <code>{protection_ok}</code> / <code>{protection_failed}</code>"
-            f"\nOK Rate  <code>{protection_ok_rate:.2f}%</code>"
+            "\n\n<b>开仓保护单</b>"
+            f"\n成功 / 失败  <code>{protection_ok}</code> / <code>{protection_failed}</code>"
+            f"\n成功率  <code>{protection_ok_rate:.2f}%</code>"
         )
 
         failed_by_direction = protection.get("failed_by_direction") or {}
         if failed_by_direction:
+            direction_map = {"LONG": "做多", "SHORT": "做空", "BUY": "做多", "SELL": "做空"}
             direction_text = ", ".join(
-                f"{_escape(str(direction))}:{int(count or 0)}"
+                f"{_escape(direction_map.get(str(direction).upper(), str(direction)))}:{int(count or 0)}"
                 for direction, count in failed_by_direction.items()
             )
-            msg += f"\nFail by Side  <code>{_escape(direction_text)}</code>"
+            msg += f"\n失败方向  <code>{_escape(direction_text)}</code>"
 
         failed_by_symbol = protection.get("failed_by_symbol") or {}
         if failed_by_symbol:
@@ -816,7 +838,7 @@ def format_daily_report_msg(report: dict[str, Any]) -> str:
                 f"{_escape(str(symbol))}:{int(count or 0)}"
                 for symbol, count in top_symbols
             )
-            msg += f"\nFail by Symbol  <code>{_escape(symbol_text)}</code>"
+            msg += f"\n失败标的  <code>{_escape(symbol_text)}</code>"
 
         failed_by_detail = protection.get("failed_by_detail") or {}
         if failed_by_detail:
@@ -825,7 +847,7 @@ def format_daily_report_msg(report: dict[str, Any]) -> str:
                 f"{_escape(str(detail))}:{int(count or 0)}"
                 for detail, count in top_details
             )
-            msg += f"\nFail by Detail  <code>{_escape(detail_text)}</code>"
+            msg += f"\n失败原因  <code>{_escape(detail_text)}</code>"
 
     oi_stats = report.get("oi_funding_stats") or {}
     enhanced_trades = int(oi_stats.get("enhanced_trades", 0) or 0)
@@ -835,10 +857,10 @@ def format_daily_report_msg(report: dict[str, Any]) -> str:
         enhanced_avg_bonus = float(oi_stats.get("enhanced_avg_bonus", 0) or 0)
         msg += (
             "\n\n<b>OI/Funding增强</b>"
-            f"\nTrades  <code>{enhanced_trades}</code>"
-            f"\nWinRate  <code>{enhanced_win_rate:.2f}%</code>"
-            f"\nAvgPnL  <code>{enhanced_avg_pnl:+,.2f} USDT</code>"
-            f"\nAvgBonus  <code>+{enhanced_avg_bonus:.2f}</code>"
+            f"\n交易数  <code>{enhanced_trades}</code>"
+            f"\n胜率  <code>{enhanced_win_rate:.2f}%</code>"
+            f"\n平均盈亏  <code>{enhanced_avg_pnl:+,.2f} USDT</code>"
+            f"\n平均加分  <code>+{enhanced_avg_bonus:.2f}</code>"
         )
 
     return msg

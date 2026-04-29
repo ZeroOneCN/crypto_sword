@@ -681,7 +681,7 @@ class ExecutionMixin:
                 metrics=signal["metrics"],
             )
             session_id = self._new_session_id(symbol)
-            risk_level = "UNKNOWN"
+            risk_level = "未评估"
             strategy_line = str(signal.get("strategy_line", "回踩确认线") or "回踩确认线")
             strategy_profile = self._strategy_profile(strategy_line)
             stop_loss_pct = self._strategy_stop_loss_pct(strategy_line)
@@ -783,7 +783,7 @@ class ExecutionMixin:
                 logger.info(
                     f"🛡️ {symbol} 风控评分：{risk_result.get('risk_score', 0)}/100 ({risk_result.get('risk_level', 'UNKNOWN')})"
                 )
-                risk_level = risk_result.get("risk_level", "UNKNOWN")
+                risk_level = risk_result.get("risk_level") or "未评估"
 
                 position_size = risk_result.get("position_size", {})
                 quantity = position_size.get("quantity")
@@ -891,13 +891,21 @@ class ExecutionMixin:
             stop_loss_order_id = int(stop_loss_order.get("order_id", 0) or 0)
             stop_loss_status = str(stop_loss_order.get("status", "") or "").upper()
             if stop_loss_order_id <= 0 or stop_loss_status == "ERROR":
-                protection_errors.append(f"stop_loss status={stop_loss_status or 'UNKNOWN'} id={stop_loss_order_id}")
+                sl_message = str(stop_loss_order.get("message", "") or "").strip()
+                protection_errors.append(
+                    f"stop_loss status={stop_loss_status or 'UNKNOWN'} id={stop_loss_order_id}"
+                    + (f" msg={sl_message}" if sl_message else "")
+                )
 
             for idx, target in enumerate(take_profit_targets, start=1):
                 tp_order_id = int(target.get("order_id", 0) or 0)
                 tp_status = str(target.get("status", "") or "").upper()
                 if tp_order_id <= 0 or tp_status == "ERROR":
-                    protection_errors.append(f"tp{idx} status={tp_status or 'UNKNOWN'} id={tp_order_id}")
+                    tp_message = str(target.get("message", "") or "").strip()
+                    protection_errors.append(
+                        f"tp{idx} status={tp_status or 'UNKNOWN'} id={tp_order_id}"
+                        + (f" msg={tp_message}" if tp_message else "")
+                    )
 
             if protection_errors:
                 close_side = "SELL" if direction == "LONG" else "BUY"

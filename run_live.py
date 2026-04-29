@@ -25,6 +25,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--trailing", type=float, default=5.0, help="Trailing stop (%%)")
     parser.add_argument("--max-positions", type=int, default=4, help="Max open positions")
     parser.add_argument("--max-position-pct", type=float, default=35.0, help="Max notional position size (%% of balance)")
+    parser.add_argument("--max-total-exposure", type=float, default=110.0, help="Max total notional exposure (%% of balance)")
     parser.add_argument("--scan-top-n", type=int, default=50, help="Top N symbols per deep scan")
     parser.add_argument("--scan-interval", type=int, default=120, help="Deep scan interval seconds")
     parser.add_argument("--fast-interval", type=int, default=30, help="Fast scan interval seconds")
@@ -42,6 +43,7 @@ def main() -> None:
         take_profit_pct=args.take_profit,
         trailing_stop_pct=args.trailing,
         max_position_pct=max(5.0, args.max_position_pct),
+        max_total_exposure_pct=max(args.max_position_pct, args.max_total_exposure),
         max_open_positions=args.max_positions,
         scan_top_n=args.scan_top_n,
         scan_interval_sec=args.scan_interval,
