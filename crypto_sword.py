@@ -453,7 +453,7 @@ def main():
     parser.add_argument("--take-profit-mode", choices=["price", "roi"], default="roi", help="Take profit mode")
     parser.add_argument("--max-positions", "-m", type=int, default=4, help="Max open positions")
     parser.add_argument("--max-position-pct", type=float, default=35.0, help="Max notional position size (%% of balance)")
-    parser.add_argument("--max-total-exposure", type=float, default=110.0, help="Max total notional exposure (%% of balance)")
+    parser.add_argument("--max-total-exposure", type=float, default=150.0, help="Max total notional exposure (%% of balance)")
     parser.add_argument("--max-daily-loss", type=float, default=8.0, help="Max daily loss (%%)")
 
     parser.add_argument("--top", type=int, default=50, help="Top N symbols")

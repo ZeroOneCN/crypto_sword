@@ -791,7 +791,7 @@ class ExecutionMixin:
                     base_take_profit_pct=self.config.take_profit_pct * strategy_profile["tp_multiplier"],
                     max_position_pct=self.config.max_position_pct,
                     max_total_exposure=self.config.max_total_exposure_pct,
-                    max_correlated_positions=3,
+                    max_correlated_positions=5,
                 )
 
                 risk_result = risk_service.assess(
