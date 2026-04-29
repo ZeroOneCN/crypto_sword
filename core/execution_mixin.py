@@ -723,14 +723,25 @@ class ExecutionMixin:
         if reduced_qty <= 0 or price <= 0:
             return
 
-        if position.side == "BUY":
-            estimated_pnl = (price - position.entry_price) * reduced_qty
+        entry_price = float(position.entry_price or 0.0)
+        pnl_source = "交易所真实"
+        if exchange_realized_pnl is not None:
+            pnl = float(exchange_realized_pnl)
         else:
-            estimated_pnl = (position.entry_price - price) * reduced_qty
+            if entry_price <= 0:
+                logger.warning(
+                    f"{position.symbol} partial TP notification skipped: missing entry price, "
+                    f"qty={reduced_qty:.8f} price={price:.8f}; requesting state sync"
+                )
+                self._request_state_sync_from_ws("PARTIAL_TP_MISSING_ENTRY_PRICE", position.symbol)
+                return
+            if position.side == "BUY":
+                pnl = (price - entry_price) * reduced_qty
+            else:
+                pnl = (entry_price - price) * reduced_qty
+            pnl_source = "本地估算"
 
-        pnl = float(exchange_realized_pnl) if exchange_realized_pnl is not None else estimated_pnl
-
-        notional = position.entry_price * reduced_qty
+        notional = entry_price * reduced_qty
         pnl_pct = pnl / notional * 100 if notional > 0 else 0.0
         position.partial_tp_count += 1
         position.realized_pnl += pnl
@@ -748,7 +759,7 @@ class ExecutionMixin:
             format_partial_take_profit_msg(
                 symbol=position.symbol,
                 direction="LONG" if position.side == "BUY" else "SHORT",
-                entry_price=position.entry_price,
+                entry_price=entry_price,
                 exit_price=price,
                 quantity=reduced_qty,
                 remaining_quantity=remaining_qty,
@@ -757,6 +768,7 @@ class ExecutionMixin:
                 level=position.partial_tp_count,
                 session_id=position.session_id,
                 strategy_line=position.strategy_line,
+                pnl_source=pnl_source,
             )
         )
 

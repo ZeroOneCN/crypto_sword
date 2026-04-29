@@ -497,23 +497,29 @@ def format_partial_take_profit_msg(
     level: int = 0,
     session_id: str = "",
     strategy_line: str = "",
+    pnl_source: str = "",
 ) -> str:
     """格式化分批止盈成交通知"""
     direction_text = "做多 LONG" if direction == "LONG" else "做空 SHORT"
     pnl_sign = "+" if pnl >= 0 else ""
+    pnl_emoji = _E if pnl >= 0 else _E2
     level_text = f"TP{level}" if level else "部分止盈"
+    entry_text = f"${entry_price:,.4f}" if entry_price > 0 else "待同步"
+    pnl_pct_text = f"({pnl_sign}{pnl_pct:.2f}%)" if entry_price > 0 else "(比例待同步)"
 
     msg = f"""🔄 <b>宙斯交易中枢 | 分批止盈成交</b>
 
 <b>标的</b>  <code>{_escape(symbol)}</code>
 <b>方向</b>  {direction_text}
 <b>档位</b>  <code>{_escape(level_text)}</code>
-<b>入场</b>  <code>${entry_price:,.4f}</code>
+<b>入场</b>  <code>{_escape(entry_text)}</code>
 <b>成交价格</b>  <code>${exit_price:,.4f}</code>
 <b>止盈数量</b>  <code>{_fmt_num(quantity)}</code>
 <b>剩余数量</b>  <code>{_fmt_num(remaining_quantity)}</code>
-<b>本次盈亏</b>  {_E} <b>{pnl_sign}${pnl:,.2f}</b>  ({pnl_sign}{pnl_pct:.2f}%)"""
+<b>本次盈亏</b>  {pnl_emoji} <b>{pnl_sign}${pnl:,.2f}</b>  {pnl_pct_text}"""
 
+    if pnl_source:
+        msg += f"\n<b>盈亏来源</b>  <code>{_escape(pnl_source)}</code>"
     if strategy_line:
         msg += f"\n<b>策略</b>  <code>{_escape(strategy_line)}</code>"
     if session_id:

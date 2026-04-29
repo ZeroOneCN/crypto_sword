@@ -192,7 +192,12 @@ class SyncMixin:
         status = str(order.get("X", "") or "")
         execution_type = str(order.get("x", "") or "")
         order_type = str(order.get("o", "") or "")
-        realized_pnl = float(order.get("rp", 0) or 0)
+        realized_pnl_raw = order.get("rp")
+        realized_pnl = (
+            float(realized_pnl_raw)
+            if realized_pnl_raw not in {None, ""}
+            else None
+        )
         order_id = int(order.get("i", 0) or 0)
         trade_id = str(order.get("t", "") or "")
         last_fill_qty = abs(float(order.get("l", 0) or 0))
@@ -203,7 +208,8 @@ class SyncMixin:
         if status in {"FILLED", "PARTIALLY_FILLED", "CANCELED", "EXPIRED"} or execution_type == "TRADE":
             logger.info(
                 f"WS order update: {symbol} {order_type} {execution_type}/{status} "
-                f"filled={order.get('z', '0')} price={order.get('L', '0')} rp={realized_pnl:.4f}"
+                f"filled={order.get('z', '0')} price={order.get('L', '0')} "
+                f"rp={(realized_pnl if realized_pnl is not None else 0.0):.4f}"
             )
             position = self.tracker.get_position(symbol)
             if position:
@@ -211,7 +217,7 @@ class SyncMixin:
                 if position_side in {"", "BOTH", expected_side}:
                     if order_id == position.stop_loss_order_id and execution_type == "TRADE":
                         if last_fill_qty > 0:
-                            position.exchange_realized_pnl += realized_pnl
+                            position.exchange_realized_pnl += float(realized_pnl or 0.0)
                             position.exchange_realized_exit_value += (avg_price or position.current_stop) * last_fill_qty
                             position.exchange_realized_quantity += last_fill_qty
                         self._request_state_sync_from_ws(f"{execution_type}/{status}", symbol)
@@ -617,12 +623,16 @@ class SyncMixin:
 
             side = "BUY" if live_pos["side"] == "LONG" else "SELL"
             trade = trades_by_symbol.get(live_pos["symbol"])
-            entry_price = trade.entry_price if trade else live_pos["entry_price"]
-            stop_loss_price = trade.stop_loss if trade else (
-                entry_price * (1 - self.config.stop_loss_pct / 100)
-                if side == "BUY"
-                else entry_price * (1 + self.config.stop_loss_pct / 100)
-            )
+            trade_entry_price = float(getattr(trade, "entry_price", 0.0) or 0.0) if trade else 0.0
+            live_entry_price = float(live_pos.get("entry_price", 0.0) or 0.0)
+            entry_price = trade_entry_price if trade_entry_price > 0 else live_entry_price
+            stop_loss_price = float(getattr(trade, "stop_loss", 0.0) or 0.0) if trade else 0.0
+            if stop_loss_price <= 0:
+                stop_loss_price = (
+                    entry_price * (1 - self.config.stop_loss_pct / 100)
+                    if side == "BUY"
+                    else entry_price * (1 + self.config.stop_loss_pct / 100)
+                )
             notes_map = self._parse_trade_notes(trade.notes if trade else "")
             take_profit_targets: list[dict[str, Any]] = []
             take_profit_order_ids: list[int] = []
@@ -640,11 +650,13 @@ class SyncMixin:
                 except Exception:
                     take_profit_order_ids = []
 
-            take_profit_price = trade.take_profit if trade else self._calculate_local_take_profit_price(
-                entry_price,
-                side,
-                self.config.take_profit_pct,
-            )
+            take_profit_price = float(getattr(trade, "take_profit", 0.0) or 0.0) if trade else 0.0
+            if take_profit_price <= 0 and entry_price > 0:
+                take_profit_price = self._calculate_local_take_profit_price(
+                    entry_price,
+                    side,
+                    self.config.take_profit_pct,
+                )
             entry_time = datetime.fromisoformat(trade.entry_time) if trade and trade.entry_time else datetime.now()
             session_id = notes_map.get("session_id", "")
             if not session_id:
