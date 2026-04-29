@@ -708,12 +708,17 @@ def place_market_order(
         order_id = int(result.get("orderId", result.get("orderID", 0)))
         status = result.get("status", "UNKNOWN")
 
-        # P3-2: 滑点保护
+        # P3-2: 滑点保护。订单已经成交时，滑点只能作为风险提示，
+        # 不能覆盖交易所返回的 FILLED 状态，否则后续保护单流程会被误判为开仓失败。
+        high_slippage = False
         if current_price > 0 and executed_price > 0:
             if not check_slippage(current_price, executed_price):
                 logger.warning(f"⚠️ {symbol} 滑点过大，已成交但需关注")
-                # 标记为高滑点成交，但不取消订单（已成交）
-                status = "HIGH_SLIPPAGE"
+                high_slippage = True
+
+        message = f"Leverage: {applied_leverage}x"
+        if high_slippage:
+            message += " | HIGH_SLIPPAGE"
 
         return OrderResult(
             symbol=symbol,
@@ -722,7 +727,7 @@ def place_market_order(
             executed_price=executed_price,
             order_id=order_id,
             status=status,
-            message=f"Leverage: {applied_leverage}x",
+            message=message,
         )
     except Exception as e:
         return OrderResult(
@@ -1066,13 +1071,25 @@ def execute_trade(
     except Exception:
         leverage_applied = int(leverage)
 
-    if entry_result.status != "FILLED":
+    terminal_failed_statuses = {"ERROR", "REJECTED", "EXPIRED", "CANCELED", "CANCELLED"}
+    entry_filled = entry_result.status in {"FILLED", "HIGH_SLIPPAGE"} or (
+        entry_result.status not in terminal_failed_statuses
+        and entry_result.order_id > 0
+        and entry_result.quantity > 0
+        and entry_result.executed_price > 0
+    )
+    if not entry_filled:
         return {
             "symbol": signal.symbol,
             "action": "FAILED",
             "reason": f"Entry order failed: {entry_result.message}",
             "order_result": entry_result.to_dict(),
         }
+    if entry_result.status != "FILLED":
+        logger.warning(
+            f"⚠️ {signal.symbol} 入场订单状态为 {entry_result.status}，"
+            f"但检测到已成交 quantity={entry_result.quantity} price={entry_result.executed_price}，继续挂保护单"
+        )
 
     actual_entry_price = entry_result.executed_price or signal.entry_price
     actual_quantity = entry_result.quantity or quantity
