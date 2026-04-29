@@ -454,7 +454,7 @@ def main():
     parser.add_argument("--max-positions", "-m", type=int, default=10, help="Max open positions")
     parser.add_argument("--max-position-pct", type=float, default=35.0, help="Max notional position size (%% of balance)")
     parser.add_argument("--max-total-exposure", type=float, default=220.0, help="Max total notional exposure (%% of balance)")
-    parser.add_argument("--max-daily-loss", type=float, default=8.0, help="Max daily loss (%%)")
+    parser.add_argument("--max-daily-loss", type=float, default=0.0, help="Max daily loss (%%), 0 disables daily loss circuit breaker")
 
     parser.add_argument("--top", type=int, default=50, help="Top N symbols")
     parser.add_argument("--interval", "-i", type=int, default=120, help="Deep scan interval (seconds)")

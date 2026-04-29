@@ -90,6 +90,8 @@ class CycleMixin:
                 pass
 
     def _is_daily_loss_limit_hit(self) -> bool:
+        if self.config.max_daily_loss_pct <= 0:
+            return False
         if self.day_start_balance <= 0:
             return False
         limit_amount = self.day_start_balance * (self.config.max_daily_loss_pct / 100.0)

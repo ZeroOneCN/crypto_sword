@@ -22,7 +22,7 @@ class TradingConfig:
         take_profit_mode: str = "roi",
         max_position_pct: float = 35.0,
         max_total_exposure_pct: float = 220.0,
-        max_daily_loss_pct: float = 8.0,
+        max_daily_loss_pct: float = 0.0,
         max_open_positions: int = 10,
         trailing_stop_pct: float = 5.0,
         trailing_stop_enabled: bool = True,
