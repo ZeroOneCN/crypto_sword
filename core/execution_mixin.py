@@ -70,6 +70,47 @@ class ExecutionMixin:
         ratios = self._strategy_take_profit_ratios(strategy_line, len(staged_levels))
         return staged_levels, ratios
 
+    def _is_strong_trend_signal(self, signal: dict[str, Any]) -> bool:
+        """Detect high-conviction momentum breakouts for wider profit targets."""
+        if str(signal.get("strategy_line", "") or "") != "趋势突破线":
+            return False
+        metrics = signal.get("metrics") or {}
+        score_data = signal.get("score") or {}
+        score = float(score_data.get("total_score", score_data.get("total", 0)) if isinstance(score_data, dict) else score_data or 0)
+        change_24h = float(metrics.get("change_24h_pct", 0.0) or 0.0)
+        oi_change = float(metrics.get("oi_24h_pct", 0.0) or metrics.get("oi_change_pct", 0.0) or 0.0)
+        funding = float(metrics.get("funding_rate", 0.0) or 0.0)
+        return score >= 90.0 and 10.0 <= change_24h <= 45.0 and oi_change >= 25.0 and funding <= 0.001
+
+    def _exit_profile_for_signal(self, signal: dict[str, Any]) -> dict[str, Any]:
+        """Return TP/SL profile for this entry signal."""
+        strategy_line = str(signal.get("strategy_line", "") or "")
+        if strategy_line == "趋势突破线":
+            if self._is_strong_trend_signal(signal):
+                return {
+                    "name": "强趋势",
+                    "take_profit_mode": "price",
+                    "take_profit_targets": [2.5, 5.0, 8.0],
+                    "take_profit_ratios": [0.35, 0.35, 0.30],
+                    "stop_loss_pct": 4.5,
+                }
+            return {
+                "name": "普通趋势",
+                "take_profit_mode": "price",
+                "take_profit_targets": [1.8, 3.5, 5.5],
+                "take_profit_ratios": [0.40, 0.35, 0.25],
+                "stop_loss_pct": 4.0,
+            }
+
+        targets, ratios = self._build_take_profit_plan(strategy_line)
+        return {
+            "name": "默认策略",
+            "take_profit_mode": self.config.take_profit_mode,
+            "take_profit_targets": targets,
+            "take_profit_ratios": ratios,
+            "stop_loss_pct": self._strategy_stop_loss_pct(strategy_line),
+        }
+
     def _strategy_stop_loss_pct(self, strategy_line: str = "") -> float:
         profile = self._strategy_profile(strategy_line)
         return max(0.5, float(self.config.stop_loss_pct) * profile["stop_multiplier"])
@@ -677,7 +718,10 @@ class ExecutionMixin:
             risk_level = "未评估"
             strategy_line = str(signal.get("strategy_line", "回踩确认线") or "回踩确认线")
             strategy_profile = self._strategy_profile(strategy_line)
-            stop_loss_pct = self._strategy_stop_loss_pct(strategy_line)
+            exit_profile = self._exit_profile_for_signal(signal)
+            exit_profile_name = str(exit_profile.get("name", "默认策略") or "默认策略")
+            take_profit_mode_for_trade = str(exit_profile.get("take_profit_mode", self.config.take_profit_mode) or self.config.take_profit_mode)
+            stop_loss_pct = float(exit_profile.get("stop_loss_pct", self._strategy_stop_loss_pct(strategy_line)) or self._strategy_stop_loss_pct(strategy_line))
             stop_trigger_buffer_pct = self._strategy_stop_trigger_buffer_pct(strategy_line)
 
             if not execution_service.should_trade(trading_signal):
@@ -800,7 +844,10 @@ class ExecutionMixin:
                 logger.warning(f"🛡️ 风控评估失败 {symbol}: {e}，回退到执行器默认计算")
             self._record_latency_step(latency_steps, "risk_assessment", step_started)
 
-            take_profit_target_pcts, take_profit_ratios = self._build_take_profit_plan(strategy_line)
+            take_profit_target_pcts = [float(item) for item in (exit_profile.get("take_profit_targets") or [])]
+            take_profit_ratios = [float(item) for item in (exit_profile.get("take_profit_ratios") or [])]
+            if not take_profit_target_pcts or not take_profit_ratios:
+                take_profit_target_pcts, take_profit_ratios = self._build_take_profit_plan(strategy_line)
             step_started = time.perf_counter()
             result = execution_service.execute_entry_trade(
                 signal=trading_signal,
@@ -813,7 +860,7 @@ class ExecutionMixin:
                 stop_loss_price=stop_loss,
                 take_profit_target_pcts=take_profit_target_pcts,
                 take_profit_ratios=take_profit_ratios,
-                take_profit_mode=self.config.take_profit_mode,
+                take_profit_mode=take_profit_mode_for_trade,
                 stop_trigger_buffer_pct=stop_trigger_buffer_pct,
                 defer_protection_orders=False,
             )
@@ -980,7 +1027,7 @@ class ExecutionMixin:
                 score=score,
                 risk_level=risk_level,
                 session_id=session_id,
-                strategy_line=strategy_line,
+                strategy_line=f"{strategy_line}｜{exit_profile_name}",
                 oi_funding=oi_funding,
                 target_roi_pct=primary_target_roi_pct,
                 price_move_pct=primary_price_move_pct,
@@ -1020,10 +1067,11 @@ class ExecutionMixin:
             notes_parts = [
                 f"session_id={session_id}",
                 f"strategy_line={strategy_line}",
+                f"exit_profile={exit_profile_name}",
                 f"risk_level={risk_level}",
                 f"target_roi_pct={primary_target_roi_pct}",
                 f"price_move_pct={primary_price_move_pct}",
-                f"take_profit_mode={self.config.take_profit_mode}",
+                f"take_profit_mode={take_profit_mode_for_trade}",
                 f"tp_multiplier={self._tp_multiplier}",
                 f"strategy_tp_multiplier={strategy_profile['tp_multiplier']}",
                 f"strategy_stop_pct={stop_loss_pct}",
