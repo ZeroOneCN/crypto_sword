@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import socket
 import threading
 import time
@@ -32,10 +33,75 @@ logger = logging.getLogger(__name__)
 
 def _ws_sockopt() -> tuple[tuple[int, int, int], ...]:
     """Prefer low-latency TCP packets for realtime trading streams."""
+    options: list[tuple[int, int, int]] = []
     try:
-        return ((socket.IPPROTO_TCP, socket.TCP_NODELAY, 1),)
+        options.append((socket.IPPROTO_TCP, socket.TCP_NODELAY, 1))
     except Exception:
-        return ()
+        pass
+    try:
+        options.append((socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1))
+    except Exception:
+        pass
+    return tuple(options)
+
+
+def _coerce_int(value: Any, default: int, minimum: int) -> int:
+    try:
+        return max(minimum, int(float(value)))
+    except (TypeError, ValueError):
+        return max(minimum, int(default))
+
+
+def _network_error_text(error: Any) -> str:
+    text = str(error or "").strip()
+    return text or error.__class__.__name__
+
+
+def _is_transient_ws_error(error: Any) -> bool:
+    text = _network_error_text(error).lower()
+    return any(
+        token in text
+        for token in (
+            "timed out",
+            "timeout",
+            "ping/pong timed out",
+            "connection to remote host was lost",
+            "connection reset",
+            "temporarily unavailable",
+            "network is unreachable",
+            "broken pipe",
+            "goodbye",
+        )
+    )
+
+
+def _ws_runtime_settings(kind: str) -> dict[str, int]:
+    normalized = kind.strip().upper().replace("-", "_")
+    ping_interval = _coerce_int(
+        os.environ.get(f"BINANCE_{normalized}_WS_PING_INTERVAL_SEC")
+        or os.environ.get("BINANCE_WS_PING_INTERVAL_SEC"),
+        30 if normalized == "MARKET" else 50,
+        5,
+    )
+    ping_timeout = _coerce_int(
+        os.environ.get(f"BINANCE_{normalized}_WS_PING_TIMEOUT_SEC")
+        or os.environ.get("BINANCE_WS_PING_TIMEOUT_SEC"),
+        15 if normalized == "MARKET" else 20,
+        3,
+    )
+    if ping_timeout >= ping_interval:
+        ping_timeout = max(3, ping_interval - 1)
+    reconnect_max_delay = _coerce_int(
+        os.environ.get(f"BINANCE_{normalized}_WS_RECONNECT_MAX_DELAY_SEC")
+        or os.environ.get("BINANCE_WS_RECONNECT_MAX_DELAY_SEC"),
+        20,
+        5,
+    )
+    return {
+        "ping_interval": ping_interval,
+        "ping_timeout": ping_timeout,
+        "reconnect_max_delay": reconnect_max_delay,
+    }
 
 
 @dataclass
@@ -183,7 +249,11 @@ class BinanceWebSocketClient:
 
     def _on_error(self, ws, error):
         """Handle WebSocket error."""
-        logger.error(f"WebSocket error: {error}")
+        text = _network_error_text(error)
+        if _is_transient_ws_error(error):
+            logger.warning(f"WebSocket transient network error: {text}")
+        else:
+            logger.error(f"WebSocket error: {text}")
 
     def _on_close(self, ws, close_status_code, close_msg):
         """Handle WebSocket close."""
@@ -198,6 +268,7 @@ class BinanceWebSocketClient:
         reconnect_delay = 1.0
         streams = "/".join(self._get_streams())
         url = f"{self.base_ws_url}/stream?streams={streams}"
+        ws_settings = _ws_runtime_settings("price")
 
         while self.running:
             try:
@@ -209,8 +280,8 @@ class BinanceWebSocketClient:
                     on_close=self._on_close,
                 )
                 self.ws.run_forever(
-                    ping_interval=20,
-                    ping_timeout=5,
+                    ping_interval=ws_settings["ping_interval"],
+                    ping_timeout=ws_settings["ping_timeout"],
                     skip_utf8_validation=True,
                     sockopt=_ws_sockopt(),
                 )
@@ -220,7 +291,7 @@ class BinanceWebSocketClient:
             if self.running:
                 logger.info(f"WebSocket reconnecting in {reconnect_delay:.1f}s")
                 time.sleep(reconnect_delay)
-                reconnect_delay = min(reconnect_delay * 1.5, 15.0)
+                reconnect_delay = min(reconnect_delay * 1.5, float(ws_settings["reconnect_max_delay"]))
 
     def start(self):
         """Start WebSocket connection in background thread."""
@@ -339,7 +410,11 @@ class BinanceAllMarketTickerWebSocketClient:
             logger.error(f"Error processing all-market WebSocket message: {e}")
 
     def _on_error(self, ws, error):
-        logger.error(f"All-market WebSocket error: {error}")
+        text = _network_error_text(error)
+        if _is_transient_ws_error(error):
+            logger.warning(f"All-market WebSocket transient network error: {text}")
+        else:
+            logger.error(f"All-market WebSocket error: {text}")
 
     def _on_close(self, ws, close_status_code, close_msg):
         logger.info(f"All-market WebSocket closed: {close_status_code} {close_msg}")
@@ -350,6 +425,7 @@ class BinanceAllMarketTickerWebSocketClient:
     def _run_ws(self):
         reconnect_delay = 1.0
         url = f"{self.base_ws_url}/ws/!miniTicker@arr"
+        ws_settings = _ws_runtime_settings("market")
         while self.running:
             try:
                 self.ws = websocket.WebSocketApp(
@@ -360,8 +436,8 @@ class BinanceAllMarketTickerWebSocketClient:
                     on_close=self._on_close,
                 )
                 self.ws.run_forever(
-                    ping_interval=20,
-                    ping_timeout=5,
+                    ping_interval=ws_settings["ping_interval"],
+                    ping_timeout=ws_settings["ping_timeout"],
                     skip_utf8_validation=True,
                     sockopt=_ws_sockopt(),
                 )
@@ -371,7 +447,7 @@ class BinanceAllMarketTickerWebSocketClient:
             if self.running:
                 logger.info(f"All-market WebSocket reconnecting in {reconnect_delay:.1f}s")
                 time.sleep(reconnect_delay)
-                reconnect_delay = min(reconnect_delay * 1.5, 15.0)
+                reconnect_delay = min(reconnect_delay * 1.5, float(ws_settings["reconnect_max_delay"]))
 
     def start(self):
         if websocket is None:
@@ -528,7 +604,11 @@ class BinanceUserDataWebSocketClient:
             logger.error(f"Error processing user data WebSocket message: {e}")
 
     def _on_error(self, ws, error):
-        logger.error(f"User data WebSocket error: {error}")
+        text = _network_error_text(error)
+        if _is_transient_ws_error(error):
+            logger.warning(f"User data WebSocket transient network error: {text}")
+        else:
+            logger.error(f"User data WebSocket error: {text}")
 
     def _on_close(self, ws, close_status_code, close_msg):
         logger.info(f"User data WebSocket closed: {close_status_code} {close_msg}")
@@ -549,6 +629,8 @@ class BinanceUserDataWebSocketClient:
                 self._reconnect_async()
 
     def _run_ws(self):
+        ws_settings = _ws_runtime_settings("user_data")
+        reconnect_delay = 2.0
         while self.running:
             try:
                 listen_key = self.listen_key or self._open_listen_key()
@@ -562,8 +644,8 @@ class BinanceUserDataWebSocketClient:
                     on_close=self._on_close,
                 )
                 self.ws.run_forever(
-                    ping_interval=45,
-                    ping_timeout=8,
+                    ping_interval=ws_settings["ping_interval"],
+                    ping_timeout=ws_settings["ping_timeout"],
                     skip_utf8_validation=True,
                     sockopt=_ws_sockopt(),
                 )
@@ -571,7 +653,9 @@ class BinanceUserDataWebSocketClient:
                 logger.error(f"User data WebSocket loop failed: {e}")
 
             if self.running:
-                time.sleep(5)
+                logger.info(f"User data WebSocket reconnecting in {reconnect_delay:.1f}s")
+                time.sleep(reconnect_delay)
+                reconnect_delay = min(reconnect_delay * 1.5, float(ws_settings["reconnect_max_delay"]))
 
     def _reconnect_async(self):
         if not self.running:

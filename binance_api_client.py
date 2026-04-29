@@ -329,7 +329,15 @@ class BinanceApiClient:
 
     def websocket_base_url(self) -> str:
         """Return the USD-M futures WebSocket base URL."""
-        return "wss://fstream.binance.com"
+        config = _load_binance_config()
+        ws_url = (
+            os.environ.get("BINANCE_WS_BASE_URL")
+            or os.environ.get("BINANCE_FSTREAM_WS_URL")
+            or config.get("ws_base_url")
+            or config.get("websocket_base_url")
+            or config.get("ws_endpoint")
+        )
+        return str(ws_url or "wss://fstream.binance.com").rstrip("/")
 
     def change_leverage(self, symbol: str, leverage: int) -> dict[str, Any]:
         return self._request(

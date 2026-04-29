@@ -355,7 +355,18 @@ class CryptoSword(ExecutionMixin, ScannerMixin, CycleMixin, SyncMixin, Confirmat
         ):
             return self._account_info_cache
 
-        account_info = load_account_balance()
+        try:
+            account_info = load_account_balance()
+        except Exception as exc:
+            if not force and self._account_info_cache is not None:
+                cache_age = max(0.0, now - self._account_info_cache_at)
+                stale_grace_sec = max(10.0, ttl_sec * 4)
+                if cache_age <= stale_grace_sec:
+                    logger.warning(
+                        f"Account snapshot refresh failed; reusing stale cache age={cache_age:.1f}s: {exc}"
+                    )
+                    return self._account_info_cache
+            raise
         if isinstance(account_info, dict):
             self._account_info_cache = account_info
             self._account_info_cache_at = now
