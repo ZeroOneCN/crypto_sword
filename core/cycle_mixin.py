@@ -81,9 +81,7 @@ class CycleMixin:
             self.traded_symbols_today.clear()
             self.tracker.reset_daily_summary()
             self._daily_loss_alert_sent = False
-            self._symbol_cooldowns.clear()
             self._consecutive_losses = 0
-            self._loss_pause_until = 0.0
             self._entry_watchlist.clear()
             try:
                 balance_info = self._get_account_info_cached(ttl_sec=5.0, force=True)
@@ -96,9 +94,6 @@ class CycleMixin:
             return False
         limit_amount = self.day_start_balance * (self.config.max_daily_loss_pct / 100.0)
         return self.daily_pnl <= -limit_amount
-
-    def _is_loss_pause_active(self) -> bool:
-        return self._loss_pause_until > time.time()
 
     def _send_position_summary(self, summary: dict):
         """发送持仓汇总通知"""

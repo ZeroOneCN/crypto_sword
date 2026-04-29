@@ -51,9 +51,6 @@ class TradingConfig:
         oi_funding_rising_bonus: float = 10.0,
         oi_funding_bonus_cap: float = 16.0,
         oi_funding_cache_sec: int = 120,
-        symbol_cooldown_sec: int = 24 * 3600,
-        max_consecutive_losses: int = 3,
-        loss_pause_sec: int = 30 * 60,
         breakeven_after_tp: bool = True,
         breakeven_offset_pct: float = 0.08,
         stop_trigger_buffer_pct: float = 0.15,
@@ -121,9 +118,6 @@ class TradingConfig:
         self.oi_funding_rising_bonus = oi_funding_rising_bonus
         self.oi_funding_bonus_cap = oi_funding_bonus_cap
         self.oi_funding_cache_sec = max(30, int(oi_funding_cache_sec))
-        self.symbol_cooldown_sec = symbol_cooldown_sec
-        self.max_consecutive_losses = max_consecutive_losses
-        self.loss_pause_sec = loss_pause_sec
         self.breakeven_after_tp = breakeven_after_tp
         self.breakeven_offset_pct = breakeven_offset_pct
         self.stop_trigger_buffer_pct = stop_trigger_buffer_pct

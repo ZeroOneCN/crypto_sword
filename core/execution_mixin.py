@@ -115,40 +115,11 @@ class ExecutionMixin:
                 logger.warning(f"⚠️ {position.symbol} 止盈委托撤销失败：{order_id}")
 
     def _record_closed_trade_result(self, position: Position, pnl: float):
-        """Update cooldown and consecutive-loss guards from a closed trade."""
-        now = time.time()
-        if pnl < 0:
-            severe_loss = abs(float(position.pnl_pct or 0)) >= 2.0 or str(position.exit_reason or "").upper().startswith(
-                "STOP_LOSS"
-            )
-            self._consecutive_losses += 1
-            self._symbol_cooldowns[position.symbol] = now + self.config.symbol_cooldown_sec
-            logger.warning(
-                f"🧊 {position.symbol} 亏损冷却 {int(self.config.symbol_cooldown_sec / 60)} 分钟 | "
-                f"连续亏损={self._consecutive_losses}"
-            )
-            if severe_loss and self._consecutive_losses >= self.config.max_consecutive_losses:
-                self._loss_pause_until = now + self.config.loss_pause_sec
-                logger.warning(
-                    f"🛑 连续亏损达到 {self._consecutive_losses} 笔，暂停新开仓 "
-                    f"{int(self.config.loss_pause_sec / 60)} 分钟"
-                )
-                send_telegram_message(
-                    format_error_msg(
-                        error_type="连续亏损熔断",
-                        message=(
-                            f"连续亏损 {self._consecutive_losses} 笔，暂停新开仓 "
-                            f"{int(self.config.loss_pause_sec / 60)} 分钟"
-                        ),
-                        symbol=position.symbol,
-                        session_id=position.session_id,
-                        component="loss_guard",
-                    )
-                )
-            elif not severe_loss:
-                logger.info(f"{position.symbol} small loss ignored by pause guard | pnl_pct={position.pnl_pct:+.2f}%")
-        else:
+        """Record closed trade outcome without applying loss cooldowns."""
+        if pnl >= 0:
             self._consecutive_losses = 0
+        else:
+            logger.info(f"{position.symbol} loss cooldown disabled | pnl={pnl:+.4f} pnl_pct={position.pnl_pct:+.2f}%")
 
     def _breakeven_offset_for_position(self, position: Position) -> float:
         """Lock profits faster after TP, with tighter rules for breakout entries."""
@@ -619,15 +590,6 @@ class ExecutionMixin:
         oi_change = float(metrics.get("oi_24h_pct", 0.0) or 0.0)
         volume_mult = float(metrics.get("volume_24h_mult", 1.0) or 1.0)
         required_pullback = self._required_pullback_pct(metrics)
-        now = time.time()
-
-        if self._is_loss_pause_active():
-            remaining_min = max(1, int((self._loss_pause_until - now) / 60))
-            return f"连续亏损暂停中，剩余 {remaining_min} 分钟"
-        cooldown_until = self._symbol_cooldowns.get(symbol, 0.0)
-        if cooldown_until > now:
-            remaining_min = max(1, int((cooldown_until - now) / 60))
-            return f"亏损冷却中，剩余 {remaining_min} 分钟"
 
         if abs(funding) >= self.config.max_abs_funding_rate:
             return f"资金费率过热 {funding * 100:.3f}%"

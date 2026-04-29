@@ -108,9 +108,7 @@ class CryptoSword(ExecutionMixin, ScannerMixin, CycleMixin, SyncMixin, Confirmat
         self._last_fast_scan_time: float = 0.0
         self._last_deep_scan_time: float = 0.0
         self._last_position_sync_time: float = 0.0
-        self._symbol_cooldowns: dict[str, float] = {}
         self._consecutive_losses: int = 0
-        self._loss_pause_until: float = 0.0
         self._entry_watchlist: dict[str, dict[str, Any]] = {}
         self._last_daily_report_sent_for: str = ""
         self._last_watch_monitor_time: float = 0.0
@@ -460,8 +458,6 @@ def main():
     parser.add_argument("--max-abs-funding-rate", type=float, default=0.008, help="Max abs funding rate")
     parser.add_argument("--max-range-position", type=float, default=95.0, help="Max 24h range position (%%)")
     parser.add_argument("--max-chase-change", type=float, default=45.0, help="Max chase 24h change (%%)")
-    parser.add_argument("--max-consecutive-losses", type=int, default=3, help="Max consecutive losses")
-    parser.add_argument("--loss-pause-mins", type=int, default=30, help="Loss pause minutes")
     parser.add_argument("--no-daily-report", action="store_true", help="Disable daily report")
     parser.add_argument("--trailing", type=float, default=5.0, help="Trailing stop (%%)")
     parser.add_argument("--no-trailing", action="store_true", help="Disable trailing stop")
@@ -512,8 +508,6 @@ def main():
         entry_confirmation_timeout_sec=max(300, args.entry_confirm_timeout),
         momentum_entry_enabled=not args.no_momentum_entry,
         momentum_entry_score=max(0.0, args.momentum_score),
-        max_consecutive_losses=max(1, int(args.max_consecutive_losses)),
-        loss_pause_sec=max(300, int(args.loss_pause_mins) * 60),
         accumulation_entry_score=max(0.0, args.accumulation_score),
         accumulation_entry_min_oi_pct=max(0.0, args.accumulation_min_oi),
         accumulation_entry_max_change_pct=max(0.0, args.accumulation_max_change),
