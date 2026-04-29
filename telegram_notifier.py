@@ -415,6 +415,16 @@ def _humanize_close_reason(reason: str) -> str:
     return reason
 
 
+def _format_duration_from_hours(duration_hours: float) -> str:
+    total_minutes = max(1, int(round(float(duration_hours or 0) * 60)))
+    if total_minutes < 60:
+        return f"{total_minutes}分钟"
+    hours, minutes = divmod(total_minutes, 60)
+    if minutes <= 0:
+        return f"{hours}小时"
+    return f"{hours}小时{minutes}分钟"
+
+
 def format_close_position_msg(
     symbol: str,
     direction: str,
@@ -457,7 +467,7 @@ def format_close_position_msg(
     if roi_pct:
         msg += f"\n<b>实际ROI</b>  <code>{roi_pct:+.2f}%</code>"
     if duration_hours > 0:
-        msg += f"\n<b>持仓</b>  {duration_hours:.1f} 小时"
+        msg += f"\n<b>持仓</b>  {_format_duration_from_hours(duration_hours)}"
     if session_id:
         msg += f"\n<b>流水号</b>  <code>{_escape(session_id)}</code>"
 
@@ -942,15 +952,17 @@ def format_dark_flow_alert(
     market_cap: float,
 ) -> str:
     """Format a 'dark flow' alert (OI up while price barely moves)."""
-    return f"""🔄 <b>暗流信号</b>
+    funding_pct = funding_rate * 100 if abs(funding_rate) < 1 else funding_rate
+    cap_text = f"${market_cap/1e6:.1f}M" if market_cap > 0 else "UNKNOWN"
+    return f"""🔄 <b>宙斯交易中枢 | 雷达暗流</b>
 
 <b>标的</b>  <code>{_escape(symbol)}</code>
 <b>OI 变化</b>  <code>{oi_change_pct:+.1f}%</code>
 <b>价格变化</b>  <code>{price_change_pct:+.1f}%</code>
-<b>资金费率</b>  <code>{funding_rate:.4f}%</code>
-<b>市值</b>  <code>${market_cap/1e6:.1f}M</code>
+<b>资金费率</b>  <code>{funding_pct:+.4f}%</code>
+<b>市值</b>  <code>{cap_text}</code>
 
-📌 <b>解读</b>  OI 上升但价格滞涨，可能有埋伏资金/对冲盘，避免情绪化追涨。"""
+📌 <b>解读</b>  OI 明显扩张但价格未充分释放，可能有资金提前埋伏；只作为雷达提醒，最终仍以主策略风控为准。"""
 
 
 def format_accumulation_pool_report(pool: list, limit: int = 10) -> str:
@@ -1013,7 +1025,7 @@ def format_radar_summary(
     top_dark_flow: str | None = None,
 ) -> str:
     """Format a compact radar summary."""
-    msg = f"""📊 <b>雷达摘要</b>
+    msg = f"""📡 <b>宙斯交易中枢 | 雷达摘要</b>
 
 <b>收筹池</b>  <code>{pool_count}</code>
 <b>OI 异动</b>  <code>{oi_signals}</code>

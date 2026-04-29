@@ -8,14 +8,125 @@ from typing import Any
 
 from adapters.rest_gateway import load_market_overview
 from adapters.ws_gateway import get_all_market_ticker_client_class
+from telegram_notifier import format_dark_flow_alert, format_radar_summary, send_telegram_message
 
 logger = logging.getLogger(__name__)
 
 
 class MarketMixin:
     def _run_radar_background_scan(self, now: float):
-        """Radar entry removed: keep hook for scheduler compatibility."""
-        _ = now
+        """Send lightweight radar notifications from the in-memory watchlist.
+
+        This intentionally reuses symbols already scanned by the strategy loop so
+        radar alerts do not add another REST-heavy path or slow down entries.
+        """
+        interval = max(900, int(getattr(self, "_radar_scan_interval", 3600) or 3600))
+        if now - float(getattr(self, "_last_radar_scan_time", 0.0) or 0.0) < interval:
+            return
+
+        watchlist = getattr(self, "_entry_watchlist", {}) or {}
+        if not watchlist:
+            return
+
+        active_items: list[dict[str, Any]] = []
+        max_age = max(1800, int(getattr(self, "_current_scan_interval", 300) or 300) * 8)
+        for symbol, item in watchlist.items():
+            last_seen = float(item.get("last_seen_ts", now) or now)
+            if now - last_seen > max_age:
+                continue
+            metrics = item.get("metrics", {}) or {}
+            score = item.get("score", {}) or {}
+            score_parts = score.get("scores", {}) if isinstance(score, dict) else {}
+            active_items.append(
+                {
+                    "symbol": str(symbol).upper(),
+                    "direction": str(item.get("direction", "") or ""),
+                    "stage": str(item.get("stage", "") or ""),
+                    "price": float(item.get("price", 0) or 0),
+                    "score_total": float((score or {}).get("total_score", item.get("score_total", 0)) or 0),
+                    "dark_flow": float(score_parts.get("dark_flow", 0) or 0),
+                    "ambush": float(score_parts.get("ambush", 0) or 0),
+                    "oi_change_pct": float(metrics.get("oi_24h_pct", metrics.get("oi_change_pct", 0)) or 0),
+                    "price_change_pct": float(metrics.get("change_24h_pct", metrics.get("price_change_pct", 0)) or 0),
+                    "funding_rate": float(metrics.get("funding_rate", metrics.get("funding_current", 0)) or 0),
+                    "market_cap": float((score or {}).get("market_cap_usd", metrics.get("market_cap_usd", 0)) or 0),
+                }
+            )
+
+        if not active_items:
+            return
+        self._last_radar_scan_time = now
+
+        oi_items = [item for item in active_items if abs(item["oi_change_pct"]) >= 15.0]
+        dark_items = [
+            item
+            for item in active_items
+            if item["dark_flow"] >= 45.0
+            or (
+                item["oi_change_pct"] >= 15.0
+                and abs(item["price_change_pct"]) <= 10.0
+                and item["score_total"] >= 55.0
+            )
+        ]
+        pool_items = [
+            item
+            for item in active_items
+            if item["ambush"] >= 40.0
+            or (
+                item["score_total"] >= 60.0
+                and item["oi_change_pct"] >= 8.0
+                and abs(item["price_change_pct"]) <= 20.0
+            )
+        ]
+        short_fuel_items = [
+            item
+            for item in active_items
+            if item["direction"] == "LONG" and item["funding_rate"] <= -0.0003 and item["oi_change_pct"] >= 10.0
+        ]
+
+        top_dark = max(dark_items, key=lambda item: (item["dark_flow"], item["score_total"]), default=None)
+        summary_signature = "|".join(
+            [
+                str(len(pool_items)),
+                str(len(oi_items)),
+                str(len(dark_items)),
+                str(len(short_fuel_items)),
+                str(top_dark["symbol"] if top_dark else ""),
+                f"{top_dark['score_total']:.1f}" if top_dark else "",
+            ]
+        )
+        if summary_signature != getattr(self, "_last_radar_summary_signature", ""):
+            self._last_radar_summary_signature = summary_signature
+            if pool_items or oi_items or dark_items or short_fuel_items:
+                top_text = None
+                if top_dark:
+                    top_text = (
+                        f"{top_dark['symbol']} 评分 {top_dark['score_total']:.1f} | "
+                        f"暗流 {top_dark['dark_flow']:.1f} | OI {top_dark['oi_change_pct']:+.1f}%"
+                    )
+                send_telegram_message(
+                    format_radar_summary(
+                        pool_count=len(pool_items),
+                        oi_signals=len(oi_items),
+                        dark_flows=len(dark_items),
+                        short_fuel=len(short_fuel_items),
+                        top_dark_flow=top_text,
+                    )
+                )
+
+        if top_dark and top_dark["dark_flow"] >= 60.0 and top_dark["score_total"] >= 65.0:
+            alert_signature = f"{top_dark['symbol']}:{int(top_dark['dark_flow'] // 5)}:{int(top_dark['oi_change_pct'] // 5)}"
+            if alert_signature != getattr(self, "_last_radar_alert_signature", ""):
+                self._last_radar_alert_signature = alert_signature
+                send_telegram_message(
+                    format_dark_flow_alert(
+                        symbol=top_dark["symbol"],
+                        oi_change_pct=top_dark["oi_change_pct"],
+                        price_change_pct=top_dark["price_change_pct"],
+                        funding_rate=top_dark["funding_rate"],
+                        market_cap=top_dark["market_cap"],
+                    )
+                )
 
     def _refresh_market_profile(self):
         """Update market-aware scan interval and TP multiplier."""
