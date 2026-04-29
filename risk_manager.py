@@ -387,7 +387,10 @@ def get_correlation_group(symbol: str) -> str:
     if any(meme in base for meme in ["DOGE", "SHIB", "PEPE", "FLOKI", "BONK"]):
         return "MEME"
     
-    return "OTHER"
+    # Unknown symbols should not all collapse into one giant "OTHER" bucket.
+    # Total exposure already controls broad altcoin risk; correlation should
+    # only block genuinely related symbols.
+    return f"ALT:{base}"
 
 
 def check_correlation_risk(

@@ -22,6 +22,9 @@ class TradingConfig:
         take_profit_mode: str = "roi",
         max_position_pct: float = 35.0,
         max_total_exposure_pct: float = 220.0,
+        dynamic_exposure_enabled: bool = True,
+        min_total_exposure_pct: float = 100.0,
+        dynamic_total_exposure_hard_cap_pct: float = 260.0,
         max_daily_loss_pct: float = 0.0,
         max_open_positions: int = 10,
         trailing_stop_pct: float = 5.0,
@@ -89,6 +92,9 @@ class TradingConfig:
         self.take_profit_mode = take_profit_mode
         self.max_position_pct = max_position_pct
         self.max_total_exposure_pct = max_total_exposure_pct
+        self.dynamic_exposure_enabled = dynamic_exposure_enabled
+        self.min_total_exposure_pct = min_total_exposure_pct
+        self.dynamic_total_exposure_hard_cap_pct = dynamic_total_exposure_hard_cap_pct
         self.max_daily_loss_pct = max_daily_loss_pct
         self.max_open_positions = max_open_positions
         self.trailing_stop_pct = trailing_stop_pct

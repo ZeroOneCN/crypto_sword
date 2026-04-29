@@ -82,6 +82,88 @@ class ExecutionMixin:
         funding = float(metrics.get("funding_rate", 0.0) or 0.0)
         return score >= 90.0 and 10.0 <= change_24h <= 45.0 and oi_change >= 25.0 and funding <= 0.001
 
+    def _dynamic_risk_limits(self, signal: dict[str, Any]) -> dict[str, Any]:
+        """Calculate adaptive exposure and correlation limits for the next entry."""
+        base_exposure = float(self.config.max_total_exposure_pct)
+        hard_cap = max(base_exposure, float(getattr(self.config, "dynamic_total_exposure_hard_cap_pct", base_exposure)))
+        min_cap = min(base_exposure, float(getattr(self.config, "min_total_exposure_pct", 100.0)))
+        max_correlated = 5
+        if not getattr(self.config, "dynamic_exposure_enabled", True):
+            return {
+                "max_total_exposure": base_exposure,
+                "max_correlated_positions": max_correlated,
+                "mode": "固定",
+                "reason": "动态敞口关闭",
+            }
+
+        score_data = signal.get("score") or {}
+        score = float(score_data.get("total_score", score_data.get("total", 0)) if isinstance(score_data, dict) else score_data or 0)
+        strategy_line = str(signal.get("strategy_line", "") or "")
+        metrics = signal.get("metrics") or {}
+        oi_change = abs(float(metrics.get("oi_24h_pct", metrics.get("oi_change_pct", 0)) or 0))
+        funding = abs(float(metrics.get("funding_rate", metrics.get("funding_current", 0)) or 0))
+
+        exposure = min(base_exposure, 180.0)
+        mode = "标准"
+        reasons: list[str] = []
+        try:
+            report = self._get_daily_report_snapshot(ttl_sec=90.0)
+        except Exception as exc:
+            report = {}
+            logger.debug(f"dynamic exposure daily snapshot skipped: {exc}")
+
+        closed = int(report.get("closed_trades", 0) or 0)
+        win_rate = float(report.get("win_rate", 0) or 0)
+        profit_factor = float(report.get("profit_factor", 0) or 0)
+        total_pnl = float(report.get("total_pnl", 0) or 0)
+        protection = report.get("entry_protection", {}) or {}
+        protection_attempts = int(protection.get("attempts", 0) or 0)
+        protection_ok_rate = float(protection.get("ok_rate", 100.0) or 100.0)
+
+        if closed >= 5:
+            if total_pnl < 0 and (profit_factor < 0.90 or win_rate < 38.0):
+                exposure = min(exposure, 120.0)
+                max_correlated = 3
+                mode = "防守"
+                reasons.append(f"今日弱势 PF={profit_factor:.2f} 胜率={win_rate:.0f}%")
+            elif profit_factor < 1.10 or win_rate < 45.0:
+                exposure = min(exposure, 150.0)
+                max_correlated = 4
+                mode = "谨慎"
+                reasons.append(f"今日一般 PF={profit_factor:.2f} 胜率={win_rate:.0f}%")
+            elif total_pnl > 0 and profit_factor >= 1.25 and win_rate >= 50.0:
+                exposure = base_exposure
+                mode = "进攻"
+                reasons.append(f"今日顺风 PF={profit_factor:.2f} 胜率={win_rate:.0f}%")
+
+        if protection_attempts >= 3 and protection_ok_rate < 85.0:
+            exposure = min(exposure, 140.0)
+            max_correlated = min(max_correlated, 4)
+            mode = "保护单谨慎"
+            reasons.append(f"保护单成功率={protection_ok_rate:.0f}%")
+
+        if strategy_line == "趋势突破线" and score >= 85.0 and oi_change >= 20.0 and funding < self.config.max_abs_funding_rate * 0.75:
+            exposure = min(hard_cap, max(exposure, base_exposure + 20.0))
+            max_correlated = max(max_correlated, 6)
+            mode = "强信号进攻"
+            reasons.append(f"强趋势评分={score:.0f} OI={oi_change:.0f}%")
+        elif score < 72.0:
+            exposure = max(min_cap, min(exposure, base_exposure - 40.0))
+            max_correlated = min(max_correlated, 4)
+            reasons.append(f"评分偏普通={score:.0f}")
+
+        exposure = max(min_cap, min(hard_cap, exposure))
+        return {
+            "max_total_exposure": round(exposure, 1),
+            "max_correlated_positions": int(max_correlated),
+            "mode": mode,
+            "reason": "；".join(reasons) if reasons else "常规预算",
+            "score": round(score, 1),
+            "daily_closed": closed,
+            "daily_profit_factor": round(profit_factor, 2),
+            "daily_win_rate": round(win_rate, 1),
+        }
+
     def _exit_profile_for_signal(self, signal: dict[str, Any]) -> dict[str, Any]:
         """Return TP/SL profile for this entry signal."""
         strategy_line = str(signal.get("strategy_line", "") or "")
@@ -808,14 +890,20 @@ class ExecutionMixin:
                             "position_value": pos.entry_price * pos.quantity,
                         }
                     )
+                dynamic_limits = self._dynamic_risk_limits(signal)
+                logger.info(
+                    f"🛡️ {symbol} 动态风控预算：敞口={dynamic_limits['max_total_exposure']}% "
+                    f"相关仓={dynamic_limits['max_correlated_positions']} "
+                    f"模式={dynamic_limits['mode']} 原因={dynamic_limits['reason']}"
+                )
 
                 risk_config = risk_service.build_config(
                     risk_per_trade_pct=self.config.risk_per_trade_pct,
                     base_stop_loss_pct=stop_loss_pct,
                     base_take_profit_pct=self.config.take_profit_pct * strategy_profile["tp_multiplier"],
                     max_position_pct=self.config.max_position_pct,
-                    max_total_exposure=self.config.max_total_exposure_pct,
-                    max_correlated_positions=5,
+                    max_total_exposure=float(dynamic_limits["max_total_exposure"]),
+                    max_correlated_positions=int(dynamic_limits["max_correlated_positions"]),
                 )
 
                 risk_result = risk_service.assess(
@@ -835,7 +923,9 @@ class ExecutionMixin:
                             error_type="强信号风控拒绝",
                             message=(
                                 f"{'; '.join(str(item) for item in warnings) or '风控未通过'}\n"
-                                f"评分={score:.1f} 策略={strategy_line} 方向={direction}"
+                                f"评分={score:.1f} 策略={strategy_line} 方向={direction}\n"
+                                f"动态预算={dynamic_limits['mode']} 敞口上限={dynamic_limits['max_total_exposure']}% "
+                                f"相关仓={dynamic_limits['max_correlated_positions']} | {dynamic_limits['reason']}"
                             ),
                             symbol=symbol,
                             session_id=session_id,
