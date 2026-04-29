@@ -461,6 +461,82 @@ class ExecutionMixin:
             "expected_tp_count": expected_tp_count,
         }
 
+    def _adopt_existing_protection(self, position: Position) -> bool:
+        """Adopt already-open exchange protection orders before placing new ones."""
+        close_side = "SELL" if position.side == "BUY" else "BUY"
+        position_side = "LONG" if position.side == "BUY" else "SHORT"
+        try:
+            snapshot = order_service.list_symbol_protective_orders(
+                position.symbol,
+                position_side=position_side,
+                close_side=close_side,
+            )
+        except Exception as exc:
+            logger.debug(f"{position.symbol} 保护单接管快照失败：{exc}")
+            return False
+
+        stop_orders = snapshot.get("stop_loss_orders") or []
+        tp_orders = snapshot.get("take_profit_orders") or []
+        open_stop_ids = [int(order.get("order_id", 0) or 0) for order in stop_orders if order.get("order_id")]
+        open_tp_ids = [int(order.get("order_id", 0) or 0) for order in tp_orders if order.get("order_id")]
+        open_ids = set(open_stop_ids + open_tp_ids)
+        if not open_ids:
+            return False
+
+        changed = False
+        if position.stop_loss_order_id and position.stop_loss_order_id not in open_ids:
+            logger.info(f"{position.symbol} 本地止损单已不在交易所打开列表，等待补挂：{position.stop_loss_order_id}")
+            position.stop_loss_order_id = 0
+            changed = True
+        if not position.stop_loss_order_id and open_stop_ids:
+            position.stop_loss_order_id = open_stop_ids[0]
+            stop_price = float((stop_orders[0] or {}).get("price", 0) or 0)
+            if stop_price > 0:
+                position.stop_loss_price = stop_price
+                position.current_stop = stop_price
+            logger.info(f"🛡️ {position.symbol} 已接管交易所现有止损单：{position.stop_loss_order_id}")
+            changed = True
+
+        current_tp_ids = [int(order_id) for order_id in position.take_profit_order_ids if int(order_id or 0) > 0]
+        filtered_tp_ids = [order_id for order_id in current_tp_ids if order_id in open_ids]
+        if current_tp_ids and len(filtered_tp_ids) != len(current_tp_ids):
+            logger.info(f"{position.symbol} 本地止盈单含失效ID，已按交易所打开列表修正")
+            current_tp_ids = filtered_tp_ids
+            changed = True
+        if not current_tp_ids and open_tp_ids:
+            current_tp_ids = open_tp_ids
+            changed = True
+            logger.info(f"🎯 {position.symbol} 已接管交易所现有止盈单：{', '.join(str(x) for x in open_tp_ids)}")
+        elif open_tp_ids:
+            merged_tp_ids = list(dict.fromkeys(current_tp_ids + open_tp_ids))
+            if merged_tp_ids != position.take_profit_order_ids:
+                current_tp_ids = merged_tp_ids
+                changed = True
+
+        if current_tp_ids != position.take_profit_order_ids:
+            position.take_profit_order_ids = current_tp_ids
+        if position.take_profit_targets and tp_orders:
+            sorted_orders = sorted(
+                tp_orders,
+                key=lambda item: float(item.get("price", 0) or 0),
+                reverse=position.side != "BUY",
+            )
+            for target, order in zip(position.take_profit_targets, sorted_orders):
+                order_id = int(order.get("order_id", 0) or 0)
+                if order_id > 0:
+                    target["order_id"] = order_id
+                    target["status"] = "ADOPTED"
+                    if float(order.get("quantity", 0) or 0) > 0:
+                        target["quantity"] = float(order.get("quantity", 0) or 0)
+                    if float(order.get("price", 0) or 0) > 0:
+                        target["price"] = float(order.get("price", 0) or 0)
+                    changed = True
+
+        if self._position_protection_status(position)["protected"]:
+            position.protection_failures = 0
+            position.last_protection_error = ""
+        return changed
+
     def _send_protection_status(self, position: Position, source: str, force: bool = False):
         status = self._position_protection_status(position)
         if not force and status["protected"]:
@@ -525,6 +601,7 @@ class ExecutionMixin:
         """Place missing exchange-side SL/TP orders for tracked or restored positions."""
         close_side = "SELL" if position.side == "BUY" else "BUY"
         position_side = "LONG" if position.side == "BUY" else "SHORT"
+        self._adopt_existing_protection(position)
 
         if not position.stop_loss_order_id:
             sl_result = order_service.place_stop_loss(

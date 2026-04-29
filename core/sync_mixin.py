@@ -408,6 +408,8 @@ class SyncMixin:
             return
 
         for position in list(self.tracker.positions.values()):
+            self._adopt_existing_protection(position)
+            self._sync_protective_order_snapshot(position)
             self._ensure_position_protection(position)
             self._sync_protective_order_snapshot(position)
             self._send_protection_status(position, source=source, force=True)
@@ -670,6 +672,7 @@ class SyncMixin:
                 take_profit_order_ids=take_profit_order_ids,
                 leverage=restored_leverage,
             )
+            self._adopt_existing_protection(restored)
             self.tracker.add_position(restored)
             logger.warning(f"♻️ 已恢复持仓：{restored.symbol} {restored.side} session={session_id}")
             send_telegram_message(
