@@ -875,7 +875,28 @@ class SyncMixin:
             raise RuntimeError("原生 Binance API 未配置：请设置 BINANCE_API_KEY / BINANCE_API_SECRET")
         logger.info("🧬 原生 Binance API 交易通道已启用")
 
-        account_info = self._get_account_info_cached(ttl_sec=0.0, force=True)
+        account_info: dict[str, Any] | None = None
+        last_error: Exception | None = None
+        startup_attempts = 3
+        for attempt in range(1, startup_attempts + 1):
+            try:
+                account_info = self._get_account_info_cached(ttl_sec=0.0, force=True)
+                break
+            except Exception as exc:
+                last_error = exc
+                if attempt >= startup_attempts:
+                    raise
+                delay_sec = min(2.0 * attempt, 5.0)
+                logger.warning(
+                    f"Startup account snapshot failed ({attempt}/{startup_attempts}): {exc}; "
+                    f"retrying in {delay_sec:.1f}s"
+                )
+                time.sleep(delay_sec)
+
+        if account_info is None:
+            if last_error:
+                raise last_error
+            raise RuntimeError("Binance account snapshot unavailable during startup")
 
         balance = float(account_info.get("availableBalance", 0) or 0)
         if balance <= 0:

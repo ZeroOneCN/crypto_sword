@@ -21,6 +21,7 @@ from hermes_paths import hermes_config_dir
 logger = logging.getLogger(__name__)
 
 MAINNET_BASE_URL = "https://fapi.binance.com"
+DEFAULT_REQUEST_TIMEOUT_SEC = 10.0
 
 
 class BinanceApiClient:
@@ -32,11 +33,13 @@ class BinanceApiClient:
         api_secret: str = "",
         base_url: str = "",
         recv_window: int = 5000,
+        request_timeout_sec: float = DEFAULT_REQUEST_TIMEOUT_SEC,
     ):
         self.api_key = api_key
         self.api_secret = api_secret
         self.base_url = (base_url or MAINNET_BASE_URL).rstrip("/")
         self.recv_window = recv_window
+        self.request_timeout_sec = max(float(request_timeout_sec or DEFAULT_REQUEST_TIMEOUT_SEC), 1.0)
 
     @classmethod
     def from_environment(cls) -> "BinanceApiClient":
@@ -54,6 +57,14 @@ class BinanceApiClient:
             api_secret=os.environ.get("BINANCE_API_SECRET") or config.get("api_secret", ""),
             base_url=base_url,
             recv_window=int(os.environ.get("BINANCE_RECV_WINDOW", config.get("recv_window", 5000))),
+            request_timeout_sec=_coerce_float(
+                os.environ.get("BINANCE_REQUEST_TIMEOUT_SEC")
+                or os.environ.get("BINANCE_HTTP_TIMEOUT_SEC")
+                or config.get("request_timeout_sec")
+                or config.get("http_timeout_sec")
+                or config.get("timeout_sec"),
+                DEFAULT_REQUEST_TIMEOUT_SEC,
+            ),
         )
 
     def is_configured(self) -> bool:
@@ -489,12 +500,17 @@ class BinanceApiClient:
 
         request = urllib.request.Request(url, method=method.upper(), headers=headers)
         try:
-            with urllib.request.urlopen(request, timeout=20) as response:
+            with urllib.request.urlopen(request, timeout=self.request_timeout_sec) as response:
                 raw = response.read().decode("utf-8")
                 return json.loads(raw) if raw else {}
         except urllib.error.HTTPError as e:
             body = e.read().decode("utf-8", errors="replace")
-            raise RuntimeError(f"Binance API HTTP {e.code}: {body[:300]}") from e
+            raise RuntimeError(f"Binance API HTTP {e.code} | {method.upper()} {url} | {body[:300]}") from e
+        except urllib.error.URLError as e:
+            reason = getattr(e, "reason", e)
+            raise RuntimeError(
+                f"Binance API request failed | {method.upper()} {url} | timeout={self.request_timeout_sec:.1f}s | {reason}"
+            ) from e
 
 
 def _format_decimal(value: float) -> str:
@@ -536,6 +552,13 @@ def _required(params: dict[str, str], key: str) -> str:
     if not value:
         raise RuntimeError(f"Missing required parameter: {key}")
     return value
+
+
+def _coerce_float(value: Any, default: float) -> float:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return float(default)
 
 
 def _load_binance_config() -> dict[str, Any]:
