@@ -607,12 +607,13 @@ def format_summary_msg(
         side = pos.get("side", "UNKNOWN")
         current_price = float(pos.get("current_price", 0) or 0)
         take_profit_display = pos.get("take_profit_targets_text") or f"${float(pos.get('take_profit', 0) or 0):,.4f}"
+        stop_suffix = " 估算" if pos.get("stop_loss_estimated") else ""
 
         msg += f"""
 
 <b>{i}.</b> <code>{_escape(pos.get('symbol', 'UNKNOWN'))}</code>  {side}
 入场 <code>${float(pos.get('entry_price', 0) or 0):,.4f}</code>  |  现价 <code>${current_price:,.4f}</code>
-止损 <code>${float(pos.get('stop_loss', 0) or 0):,.4f}</code>  |  止盈 <code>{_escape(take_profit_display)}</code>
+止损 <code>${float(pos.get('stop_loss', 0) or 0):,.4f}</code>{stop_suffix}  |  止盈 <code>{_escape(take_profit_display)}</code>
 盈亏 {pnl_emoji} <code>{pnl_sign}${pnl:,.2f}</code>  ({float(pos.get('unrealized_pnl_pct', 0) or 0):+.2f}%)"""
 
     return msg

@@ -279,6 +279,14 @@ class Position:
         return " | ".join(parts)
 
     def to_dict(self) -> dict:
+        display_stop = float(self.current_stop or 0)
+        stop_estimated = False
+        if display_stop <= 0 and self.entry_price > 0:
+            if self.side == "BUY":
+                display_stop = self.entry_price * 0.968
+            else:
+                display_stop = self.entry_price * 1.032
+            stop_estimated = True
         return {
             "symbol": self.symbol,
             "side": "LONG" if self.side == "BUY" else "SHORT",
@@ -288,7 +296,8 @@ class Position:
             else round(self.entry_price * (1 - self.pnl_pct / 100), 4),
             "quantity": self.quantity,
             "entry_time": self.entry_time.isoformat(),
-            "stop_loss": round(self.current_stop, 4),
+            "stop_loss": round(display_stop, 4),
+            "stop_loss_estimated": stop_estimated,
             "take_profit": round(self.take_profit_price, 4),
             "target_roi_pct": round(self.target_roi_pct, 2),
             "take_profit_targets": self.take_profit_targets,
