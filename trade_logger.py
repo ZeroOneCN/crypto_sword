@@ -536,6 +536,12 @@ class TradeDatabase:
         losing = [t for t in trades if float(t.pnl or 0) < 0]
         avg_pnl = round(total_pnl / closed_count, 2) if closed_count else 0.0
         win_rate = round(len(winning) / closed_count * 100, 2) if closed_count else 0.0
+        gross_profit = sum(float(t.pnl or 0) for t in winning)
+        gross_loss_abs = abs(sum(float(t.pnl or 0) for t in losing))
+        avg_win = round(gross_profit / len(winning), 2) if winning else 0.0
+        avg_loss = round(-(gross_loss_abs / len(losing)), 2) if losing else 0.0
+        payoff_ratio = round((avg_win / abs(avg_loss)), 2) if avg_loss else (999.0 if avg_win > 0 else 0.0)
+        profit_factor = round((gross_profit / gross_loss_abs), 2) if gross_loss_abs > 0 else (999.0 if gross_profit > 0 else 0.0)
 
         best_trade = max(trades, key=lambda t: float(t.pnl or 0), default=None)
         worst_trade = min(trades, key=lambda t: float(t.pnl or 0), default=None)
@@ -663,6 +669,11 @@ class TradeDatabase:
             "win_rate": win_rate,
             "total_pnl": total_pnl,
             "avg_pnl": avg_pnl,
+            "avg_win": avg_win,
+            "avg_loss": avg_loss,
+            "payoff_ratio": payoff_ratio,
+            "profit_factor": profit_factor,
+            "max_loss": round(min(0.0, float(worst_trade.pnl or 0) if worst_trade else 0.0), 2),
             "best_trade": _trade_summary(best_trade),
             "worst_trade": _trade_summary(worst_trade),
             "reason_counts": reason_counts,

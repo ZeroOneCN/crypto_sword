@@ -802,6 +802,22 @@ def format_daily_report_msg(report: dict[str, Any]) -> str:
     if closed_trades <= 0:
         return msg + "\n\n📭 昨日无已平仓交易，系统继续观察中。"
 
+    avg_win = float(report.get("avg_win", 0) or 0)
+    avg_loss = float(report.get("avg_loss", 0) or 0)
+    payoff_ratio = float(report.get("payoff_ratio", 0) or 0)
+    profit_factor = float(report.get("profit_factor", 0) or 0)
+    max_loss = float(report.get("max_loss", 0) or 0)
+    payoff_text = "∞" if payoff_ratio >= 999 else f"{payoff_ratio:.2f}"
+    profit_factor_text = "∞" if profit_factor >= 999 else f"{profit_factor:.2f}"
+    msg += (
+        "\n\n<b>风险质量</b>"
+        f"\n平均盈利  <code>{avg_win:+,.2f} USDT</code>"
+        f"\n平均亏损  <code>{avg_loss:+,.2f} USDT</code>"
+        f"\n盈亏比  <code>{payoff_text}</code>"
+        f"\n收益因子  <code>{profit_factor_text}</code>"
+        f"\n最大单亏  <code>{max_loss:+,.2f} USDT</code>"
+    )
+
     best_trade = report.get("best_trade") or {}
     if best_trade:
         msg += (

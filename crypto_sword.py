@@ -156,6 +156,11 @@ class CryptoSword(ExecutionMixin, ScannerMixin, CycleMixin, SyncMixin, Confirmat
             "win_rate": 0.0,
             "total_pnl": 0.0,
             "avg_pnl": 0.0,
+            "avg_win": 0.0,
+            "avg_loss": 0.0,
+            "payoff_ratio": 0.0,
+            "profit_factor": 0.0,
+            "max_loss": 0.0,
             "best_trade": None,
             "worst_trade": None,
             "reason_counts": {},
@@ -274,6 +279,12 @@ class CryptoSword(ExecutionMixin, ScannerMixin, CycleMixin, SyncMixin, Confirmat
             closed_count = len(order_rows)
             winning_count = sum(1 for item in order_rows if float(item["pnl"]) > 0)
             losing_count = sum(1 for item in order_rows if float(item["pnl"]) < 0)
+            gross_profit = sum(float(item["pnl"]) for item in order_rows if float(item["pnl"]) > 0)
+            gross_loss_abs = abs(sum(float(item["pnl"]) for item in order_rows if float(item["pnl"]) < 0))
+            avg_win = gross_profit / winning_count if winning_count else 0.0
+            avg_loss = -(gross_loss_abs / losing_count) if losing_count else 0.0
+            payoff_ratio = (avg_win / abs(avg_loss)) if avg_loss else (999.0 if avg_win > 0 else 0.0)
+            profit_factor = (gross_profit / gross_loss_abs) if gross_loss_abs > 0 else (999.0 if gross_profit > 0 else 0.0)
             best_trade = max(order_rows, key=lambda item: float(item["pnl"]))
             worst_trade = min(order_rows, key=lambda item: float(item["pnl"]))
 
@@ -283,6 +294,11 @@ class CryptoSword(ExecutionMixin, ScannerMixin, CycleMixin, SyncMixin, Confirmat
             api_report["total_pnl"] = round(total_pnl, 2)
             api_report["win_rate"] = round(winning_count / closed_count * 100, 2) if closed_count else 0.0
             api_report["avg_pnl"] = round(total_pnl / closed_count, 2) if closed_count else 0.0
+            api_report["avg_win"] = round(avg_win, 2)
+            api_report["avg_loss"] = round(avg_loss, 2)
+            api_report["payoff_ratio"] = round(payoff_ratio, 2)
+            api_report["profit_factor"] = round(profit_factor, 2)
+            api_report["max_loss"] = round(min(0.0, float(worst_trade["pnl"])), 2)
             api_report["best_trade"] = {
                 "symbol": str(best_trade["symbol"]),
                 "pnl": round(float(best_trade["pnl"]), 2),
