@@ -11,6 +11,7 @@ from typing import Any, Dict, List
 
 from adapters.rest_gateway import fetch_symbol_ticker_24h, is_exchange_ready
 from adapters.ws_gateway import get_market_price_client_class, get_user_data_client_class
+from binance_api_client import get_native_binance_client, is_native_binance_configured
 from hermes_paths import hermes_logs_dir
 from telegram_notifier import format_close_position_msg, format_error_msg, get_telegram_config, send_telegram_message
 
@@ -101,7 +102,14 @@ class SyncMixin:
         except Exception as e:
             logger.warning(f"WS state sync failed: {e}")
 
-    def _handle_ws_tp_fill(self, position: Position, order_id: int, filled_qty: float, fill_price: float):
+    def _handle_ws_tp_fill(
+        self,
+        position: Position,
+        order_id: int,
+        filled_qty: float,
+        fill_price: float,
+        realized_pnl: float | None = None,
+    ):
         if filled_qty <= 0:
             return
         reduced_qty = min(filled_qty, position.quantity)
@@ -110,7 +118,7 @@ class SyncMixin:
             position.take_profit_order_ids = [oid for oid in position.take_profit_order_ids if oid != order_id]
         position.quantity = remaining_qty
         position.last_synced_quantity = remaining_qty
-        self._notify_partial_take_profit(position, reduced_qty, remaining_qty, fill_price)
+        self._notify_partial_take_profit(position, reduced_qty, remaining_qty, fill_price, realized_pnl)
         if remaining_qty > 0:
             self._move_stop_to_breakeven(position, remaining_qty)
             self._ensure_position_protection(position)
@@ -176,10 +184,20 @@ class SyncMixin:
                 expected_side = "LONG" if position.side == "BUY" else "SHORT"
                 if position_side in {"", "BOTH", expected_side}:
                     if order_id == position.stop_loss_order_id and execution_type == "TRADE":
+                        if last_fill_qty > 0:
+                            position.exchange_realized_pnl += realized_pnl
+                            position.exchange_realized_exit_value += (avg_price or position.current_stop) * last_fill_qty
+                            position.exchange_realized_quantity += last_fill_qty
                         self._request_state_sync_from_ws(f"{execution_type}/{status}", symbol)
                         return
                     if order_id in position.take_profit_order_ids and execution_type == "TRADE":
-                        self._handle_ws_tp_fill(position, order_id, last_fill_qty, avg_price or position.take_profit_price)
+                        self._handle_ws_tp_fill(
+                            position,
+                            order_id,
+                            last_fill_qty,
+                            avg_price or position.take_profit_price,
+                            realized_pnl,
+                        )
                         return
             self._request_state_sync_from_ws(f"{execution_type}/{status}", symbol)
 
@@ -204,6 +222,47 @@ class SyncMixin:
         event_type = str(event.get("e", "") or "ALGO_UPDATE")
         logger.info(f"WS algo update: {event_type}{f' | {symbol}' if symbol else ''}")
         self._request_state_sync_from_ws(event_type, symbol)
+
+    def _fetch_exchange_realized_close_summary(self, position: Position) -> tuple[float, float, float, float] | None:
+        """Fetch real close fills from Binance userTrades and build an exchange-authoritative summary."""
+        if not is_native_binance_configured():
+            return None
+        try:
+            start_ms = int((position.entry_time.timestamp() - 10) * 1000)
+            end_ms = int((time.time() + 5) * 1000)
+            trades = get_native_binance_client().get_trade_history(  # type: ignore[union-attr]
+                symbol=position.symbol,
+                start_time=start_ms,
+                end_time=end_ms,
+                limit=1000,
+            )
+        except Exception as exc:
+            logger.warning(f"{position.symbol} 交易所真实盈亏查询失败：{exc}")
+            return None
+
+        close_side = "SELL" if position.side == "BUY" else "BUY"
+        realized_pnl = 0.0
+        exit_value = 0.0
+        qty = 0.0
+        for trade in trades or []:
+            if str(trade.get("side", "")).upper() != close_side:
+                continue
+            trade_qty = abs(float(trade.get("qty", 0) or 0))
+            if trade_qty <= 0:
+                continue
+            trade_price = float(trade.get("price", 0) or 0)
+            realized_pnl += float(trade.get("realizedPnl", 0) or 0)
+            exit_value += trade_price * trade_qty
+            qty += trade_qty
+
+        if qty <= 0:
+            return None
+        avg_exit_price = exit_value / qty
+        total_qty = max(float(position.initial_quantity or 0.0), qty)
+        entry_notional = position.entry_price * total_qty
+        pnl_pct = realized_pnl / entry_notional * 100 if entry_notional > 0 else 0.0
+        remaining_pnl_delta = realized_pnl - float(position.realized_pnl or 0.0)
+        return avg_exit_price, realized_pnl, pnl_pct, remaining_pnl_delta
 
     def _parse_trade_notes(self, notes: str) -> dict[str, str]:
         parsed: dict[str, str] = {}
@@ -361,23 +420,29 @@ class SyncMixin:
 
             if not live_pos:
                 logger.warning(f"♻️ {symbol} 本地有仓位但交易所已无持仓，按交易所状态移除")
-                close_summary = self._estimate_exchange_take_profit_close(position)
+                close_summary = self._fetch_exchange_realized_close_summary(position)
                 if close_summary:
                     exit_price, pnl, pnl_pct, remaining_pnl = close_summary
-                    inferred_reason = "TAKE_PROFIT_TP_FULL"
+                    inferred_reason = "EXCHANGE_REALIZED"
                 else:
-                    current_price = self.get_current_prices([symbol]).get(
-                        symbol, position.take_profit_price or position.current_stop or position.entry_price
-                    )
-                    if position.side == "BUY":
-                        inferred_reason = "STOP_LOSS" if current_price <= position.current_stop else "TAKE_PROFIT"
-                    else:
-                        inferred_reason = "STOP_LOSS" if current_price >= position.current_stop else "TAKE_PROFIT"
-                    exit_price, pnl, pnl_pct, remaining_pnl = self._close_summary_from_realized_state(
+                    close_summary = self._close_summary_from_exchange_realized(
                         position,
-                        position.quantity,
-                        current_price,
+                        position.take_profit_price or position.current_stop or position.entry_price,
                     )
+                    if close_summary:
+                        exit_price, pnl, pnl_pct, remaining_pnl = close_summary
+                        inferred_reason = "EXCHANGE_REALIZED"
+                    else:
+                        current_price = self.get_current_prices([symbol]).get(symbol, position.entry_price)
+                        if position.side == "BUY":
+                            inferred_reason = "STOP_LOSS" if current_price <= position.current_stop else "TAKE_PROFIT"
+                        else:
+                            inferred_reason = "STOP_LOSS" if current_price >= position.current_stop else "TAKE_PROFIT"
+                        exit_price, pnl, pnl_pct, remaining_pnl = self._close_summary_from_realized_state(
+                            position,
+                            position.quantity,
+                            current_price,
+                        )
 
                 position.exit_price = exit_price
                 position.exit_time = datetime.now()

@@ -386,14 +386,23 @@ class ExecutionMixin:
             self._refresh_protection_risk_switch()
         return protected
 
-    def _notify_partial_take_profit(self, position: Position, reduced_qty: float, remaining_qty: float, price: float):
+    def _notify_partial_take_profit(
+        self,
+        position: Position,
+        reduced_qty: float,
+        remaining_qty: float,
+        price: float,
+        exchange_realized_pnl: Optional[float] = None,
+    ):
         if reduced_qty <= 0 or price <= 0:
             return
 
         if position.side == "BUY":
-            pnl = (price - position.entry_price) * reduced_qty
+            estimated_pnl = (price - position.entry_price) * reduced_qty
         else:
-            pnl = (position.entry_price - price) * reduced_qty
+            estimated_pnl = (position.entry_price - price) * reduced_qty
+
+        pnl = float(exchange_realized_pnl) if exchange_realized_pnl is not None else estimated_pnl
 
         notional = position.entry_price * reduced_qty
         pnl_pct = pnl / notional * 100 if notional > 0 else 0.0
@@ -401,6 +410,10 @@ class ExecutionMixin:
         position.realized_pnl += pnl
         position.realized_exit_value += price * reduced_qty
         position.realized_quantity += reduced_qty
+        if exchange_realized_pnl is not None:
+            position.exchange_realized_pnl += float(exchange_realized_pnl)
+            position.exchange_realized_exit_value += price * reduced_qty
+            position.exchange_realized_quantity += reduced_qty
         self.daily_pnl += pnl
         send_telegram_message(
             format_partial_take_profit_msg(
@@ -440,6 +453,24 @@ class ExecutionMixin:
         entry_notional = position.entry_price * total_qty
         pnl_pct = total_pnl / entry_notional * 100 if entry_notional > 0 else 0.0
         return avg_exit_price, total_pnl, pnl_pct, remaining_pnl
+
+    def _close_summary_from_exchange_realized(
+        self,
+        position: Position,
+        fallback_exit_price: float,
+    ) -> Optional[tuple[float, float, float, float]]:
+        """Build close summary from exchange realized PnL collected by WS/userTrades."""
+        realized_qty = float(getattr(position, "exchange_realized_quantity", 0.0) or 0.0)
+        realized_pnl = float(getattr(position, "exchange_realized_pnl", 0.0) or 0.0)
+        realized_exit_value = float(getattr(position, "exchange_realized_exit_value", 0.0) or 0.0)
+        total_qty = max(float(position.initial_quantity or 0.0), realized_qty)
+        if total_qty <= 0 or realized_qty <= 0:
+            return None
+        avg_exit_price = realized_exit_value / realized_qty if realized_exit_value > 0 else fallback_exit_price
+        entry_notional = position.entry_price * total_qty
+        pnl_pct = realized_pnl / entry_notional * 100 if entry_notional > 0 else 0.0
+        remaining_pnl_delta = realized_pnl - float(position.realized_pnl or 0.0)
+        return avg_exit_price, realized_pnl, pnl_pct, remaining_pnl_delta
 
     def _find_open_trade_for_session(self, symbol: str, session_id: str) -> tuple[Optional[TradeRecord], str]:
         """Find the best open trade row for a closing position."""

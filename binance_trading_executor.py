@@ -934,10 +934,18 @@ def cancel_protective_order(symbol: str, order_id: int) -> bool:
         get_native_binance_client().cancel_algo_order(symbol, order_id)  # type: ignore
         return True
     except Exception as algo_error:
+        algo_text = str(algo_error)
+        if any(token in algo_text for token in ("Unknown order", "-2011", "Order does not exist")):
+            logger.info(f"{symbol} protective order already gone id={order_id}: {algo_error}")
+            return True
         try:
             get_native_binance_client().cancel_order(symbol, order_id)  # type: ignore
             return True
         except Exception as order_error:
+            order_text = str(order_error)
+            if any(token in order_text for token in ("Unknown order", "-2011", "Order does not exist")):
+                logger.info(f"{symbol} protective order already gone id={order_id}: {order_error}")
+                return True
             logger.warning(
                 f"{symbol} native cancel failed id={order_id}: "
                 f"algo={algo_error}; order={order_error}"

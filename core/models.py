@@ -211,6 +211,9 @@ class Position:
         self.realized_pnl = 0.0
         self.realized_exit_value = 0.0
         self.realized_quantity = 0.0
+        self.exchange_realized_pnl = 0.0
+        self.exchange_realized_exit_value = 0.0
+        self.exchange_realized_quantity = 0.0
         self.protection_failures = 0
         self.last_protection_error = ""
         self.highest_price: float = entry_price

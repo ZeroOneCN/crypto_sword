@@ -356,6 +356,8 @@ def _humanize_close_reason(reason: str) -> str:
     reason_key = (reason or "").upper()
     if reason_key == "TAKE_PROFIT_TP_FULL_EXCHANGE":
         return "TP1/TP2/TP3 全部成交｜交易所分批止盈完成"
+    if reason_key == "EXCHANGE_REALIZED_EXCHANGE":
+        return "交易所真实盈亏同步"
     if reason_key == "TAKE_PROFIT_EXCHANGE":
         return "交易所止盈完成"
     if reason_key == "STOP_LOSS_EXCHANGE":
