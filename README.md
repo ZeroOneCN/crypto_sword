@@ -1,14 +1,14 @@
 # ⚔️ Crypto Sword / 宙斯交易中枢
 
-> 面向 Binance USDT 永续合约的自动化交易中枢：自动扫描热点币、识别信号、风控开仓、挂保护单、监听成交、Telegram 通知、复盘记录。
+> 面向 Binance USDT 永续合约的自动化交易中枢：扫描热点币、识别信号、资金分配、风控开仓、交易所保护单、WebSocket 同步、Telegram 通知、SQLite 复盘记录。
 
-这套系统的目标不是“无脑追涨”，而是把 **热点扫描 + OI/Funding + 均线确认 + 风控执行 + 交易所保护单 + WS 同步** 串成一条尽量短延迟、可复盘、可继续进化的实盘链路。
+这套系统不是“看到上涨就追”，而是把 **热点扫描 + OI/Funding + 均线/动量确认 + 复利资金分配 + 交易所止损/分批止盈 + WS 成交同步** 串成一条尽量短延迟、可复盘、可继续进化的实盘链路。
 
 ---
 
 ## 🚀 默认启动
 
-服务器上默认直接运行：
+服务器日常只建议运行：
 
 ```bash
 python3 run_live.py
@@ -32,7 +32,35 @@ tail -f /root/.hermes/logs/crypto_sword.log
 pkill -f "crypto_sword.py|run_live.py"
 ```
 
-> ✅ 日常建议使用 `run_live.py`。它会加载当前项目内置的默认实盘配置，避免每次启动都写一长串参数。
+更新并重启：
+
+```bash
+cd /root/.hermes/scripts
+git pull
+pkill -f "crypto_sword.py|run_live.py"
+nohup python3 run_live.py > /root/.hermes/logs/crypto_sword.log 2>&1 &
+tail -f /root/.hermes/logs/crypto_sword.log
+```
+
+> ✅ 日常使用 `run_live.py`，不要把一长串参数塞进启动命令。要长期调参，改 `core/models.py -> TradingConfig`。
+
+---
+
+## ⚙️ 当前默认参数
+
+| 参数 | 默认值 | 说明 |
+|---|---:|---|
+| 最大持仓 | `3` | 小资金优先控制回撤，不再默认开 5-10 个仓位。 |
+| 基础杠杆 | `5x` | 资金分配器允许极强信号临时升到 `8x/10x`。 |
+| 单笔基础风险 | `1.0%` | 资金分配器会在 `0.35%-1.6%` 区间动态调整。 |
+| 基础止损 | `7.0%` | 实际会按策略线、ATR、保护单规则调整。 |
+| 基础止盈 | `18.0% ROI` | 实际下单会转换为价格目标，并分批止盈。 |
+| 深扫间隔 | `120s` | 用于完整信号评分。 |
+| 快扫间隔 | `30s` | 用于快速更新热点候选。 |
+| 深扫数量 | `Top 50` | 默认扫描异动币种前 50。 |
+| 单仓名义上限 | `35%` | 按余额和风险预算限制仓位。 |
+| 总敞口上限 | `220%` | `run_live.py` 默认值，用于防止小资金过度铺仓。 |
+| 日内亏损熔断 | `关闭` | `max_daily_loss_pct=0`，目前通过资金分配器降档防守。 |
 
 ---
 
@@ -42,21 +70,24 @@ pkill -f "crypto_sword.py|run_live.py"
 flowchart TD
     A["启动 run_live.py"] --> B["加载 TradingConfig 默认配置"]
     B --> C["启动 CryptoSword 主交易中枢"]
-    C --> D["同步账户 / 持仓 / 保护单"]
-    D --> E["快扫热点币"]
-    E --> F["深扫信号评分"]
-    F --> G["策略分流"]
-    G --> H["趋势突破线"]
-    G --> I["回踩确认线"]
-    G --> J["吸筹暗流线"]
-    H --> K["风控检查"]
-    I --> K
-    J --> K
-    K --> L["原生 Binance API 下单"]
-    L --> M["交易所止损 / 分批止盈保护单"]
-    M --> N["WebSocket 监听价格 / 订单 / 持仓"]
-    N --> O["Telegram 通知"]
-    N --> P["SQLite 交易日志 / 复盘数据"]
+    C --> D["健康检查 / 恢复交易所持仓"]
+    D --> E["清理旧保护单 / 补挂缺失保护"]
+    E --> F["WebSocket 行情 / 账户 / 订单监听"]
+    F --> G["快扫热点候选"]
+    G --> H["深扫信号评分"]
+    H --> I["策略分流"]
+    I --> J["趋势突破线"]
+    I --> K["回踩确认线"]
+    I --> L["吸筹暗流线"]
+    J --> M["复利资金分配器"]
+    K --> M
+    L --> M
+    M --> N["风控：仓位 / 敞口 / 相关性 / 流动性 / 滑点"]
+    N --> O["原生 Binance API 下单"]
+    O --> P["交易所止损 + TP1/TP2/TP3 分批止盈"]
+    P --> Q["WS 成交回报 / 持仓变化同步"]
+    Q --> R["Telegram 通知"]
+    Q --> S["SQLite 交易日志 / 复盘特征"]
 ```
 
 ---
@@ -65,59 +96,72 @@ flowchart TD
 
 | 模块 | 作用 |
 |---|---|
-| `run_live.py` | 🟢 简化启动入口，默认实盘运行。 |
-| `crypto_sword.py` | ⚔️ 主程序入口，负责创建交易中枢、解析完整配置、启动循环。 |
-| `core/` | 🧩 主交易引擎拆分层，包含扫描、确认、执行、同步、周期调度。 |
-| `core/models.py` | ⚙️ 默认参数中心，绝大多数策略和风控默认值都在 `TradingConfig`。 |
-| `signal_enhancer.py` | 📈 K 线、趋势、均线、信号增强分析。 |
-| `risk_manager.py` | 🛡️ 仓位、止损、风险评分、敞口控制。 |
-| `binance_api_client.py` | 🔌 原生 Binance REST API 客户端。 |
+| `run_live.py` | 🟢 简化启动入口，加载当前推荐默认值。 |
+| `crypto_sword.py` | ⚔️ 主程序入口，负责完整参数、初始化和主循环。 |
+| `core/` | 🧩 主交易引擎拆分层：扫描、确认、执行、同步、周期调度。 |
+| `core/models.py` | ⚙️ 默认参数中心，重点看 `TradingConfig`。 |
+| `services/capital_allocator.py` | 🏦 复利资金分配器，决定是否开仓、用多少风险、是否临时升杠杆。 |
+| `services/order_service.py` | 📤 订单服务封装，包含保护单撤销和补挂。 |
+| `services/risk_service.py` | 🛡️ 风控服务封装，连接 `risk_manager.py`。 |
+| `binance_api_client.py` | 🔌 原生 Binance REST API 客户端，不再依赖 `binance-cli` 下单。 |
 | `binance_websocket.py` | ⚡ WebSocket 行情、订单、账户监听。 |
-| `binance_trading_executor.py` | 📤 下单、保护单、分批止盈、交易所订单执行。 |
-| `oi_funding_scanner.py` | 🌊 OI / Funding 数据增强，用于识别资金费率和未平仓合约变化。 |
-| `token_anomaly_radar.py` | 📡 妖币/异动币扫描雷达。 |
+| `binance_trading_executor.py` | ⚙️ 实际下单、杠杆、止损、分批止盈执行。 |
+| `signal_enhancer.py` | 📈 K 线、均线、趋势、成交量、信号增强分析。 |
+| `oi_funding_scanner.py` | 🌊 OI / Funding 数据增强。 |
+| `token_anomaly_radar.py` | 📡 妖币/异动雷达。 |
 | `telegram_notifier.py` | 📲 Telegram 通知模板。 |
 | `trade_logger.py` | 🧾 SQLite 交易记录、日报、复盘数据。 |
-| `feature_store/` | 🧠 交易特征和复盘原因沉淀，方便后续训练或策略分析。 |
+| `feature_store/` | 🧠 交易特征、开仓保护、复盘原因沉淀。 |
 
 ---
 
-## ⚙️ 参数在哪里调？
+## 🏦 复利资金分配器
 
-默认不建议在启动命令里写一堆参数。
+最新主链已经接入 `CapitalAllocator`。它不是单纯加仓，而是每笔信号开仓前做一次资金决策：
 
-如果要改策略、风控、扫描速度，优先修改：
+- `期望盈亏比`：预计分批止盈收益必须覆盖止损风险，默认最低 `1.18R`。
+- `风险动态化`：基础风险 `1.0%`，根据行情和日内表现调整到 `0.35%-1.6%`。
+- `杠杆动态化`：默认 `5x`，只有极强趋势信号才临时使用 `8x/10x`。
+- `回撤降档`：日内表现弱、胜率/PF 低、回撤扩大时自动进入防守。
+- `盈利锁仓`：日内盈利达到阈值后，部分利润不再参与下一笔风险计算。
+- `通知可见`：开仓通知会显示资金档位、EV、盈利锁仓等信息。
 
-```text
-core/models.py
-```
+常见资金档位：
 
-重点看：
+| 档位 | 说明 |
+|---|---|
+| 标准复利 | 正常交易状态。 |
+| 防守复利 | 日内亏损或胜率/PF 偏弱，自动降风险。 |
+| 深度防守 | 日内回撤较大，只保留更小风险。 |
+| 进攻复利 | 强趋势信号，适度提高风险和仓位上限。 |
+| 精英强攻 | 极强趋势 + OI 合理 + 盈亏比优秀，允许临时 10x。 |
 
-```text
-TradingConfig
-```
+---
 
-这里控制：
+## 🧬 当前策略思想
 
-- 💰 杠杆、单笔风险、最大持仓数
-- 🛡️ 止损、止盈、追踪止损、连亏暂停
-- 📡 快扫 / 深扫间隔、扫描数量、并发扫描数
-- 🌊 OI / Funding 加分逻辑
-- 🎯 趋势突破、回踩确认、吸筹暗流入场条件
-- 📲 每日复盘、Telegram 通知要求
+系统目前是多线并行：
 
-如果只是想临时测试完整参数能力，可以看：
+- 🚀 **趋势突破线**：热点币放量、OI 扩张、趋势延续时快速入场。
+- 🎯 **回踩确认线**：热点首次出现后进入观察池，等待回踩和重站确认。
+- 🌊 **吸筹暗流线**：涨幅不夸张，但 OI、成交量、资金费率出现异动时提前观察。
+- 🧊 **短线冲高过滤**：避免刚冲高插针后立刻追入。
+- 🛡️ **风控守门**：仓位、敞口、相关性、流动性、滑点、保护单全部检查。
+- ⚡ **WS 驱动同步**：订单成交、分批止盈、持仓变化优先通过 WebSocket 处理。
 
-```bash
-python3 crypto_sword.py --help
-```
+---
 
-但正式服务器运行建议继续保持：
+## 🛡️ 止盈止损逻辑
 
-```bash
-python3 run_live.py
-```
+开仓成功后，系统会尽量立即挂交易所保护单：
+
+- 止损：交易所 `STOP_MARKET` 保护单。
+- 止盈：交易所 `TAKE_PROFIT_MARKET`，默认 TP1/TP2/TP3 三档。
+- TP1 成交：发送分批止盈通知，剩余仓位继续等待 TP2/TP3。
+- TP 后保本：系统会尝试把止损移动到接近保本位置，避免盈利单转大亏。
+- 全部平仓：以交易所真实成交/持仓同步为准，通知会显示价格涨幅和实际 ROI。
+
+> ⚠️ 保护单是实盘生命线。若通知出现“裸仓风险”或“保护单不完整”，必须优先处理。
 
 ---
 
@@ -131,7 +175,8 @@ python3 run_live.py
 - 🎯 分批止盈成交
 - 🔴 平仓完成
 - 📊 持仓汇总
-- 📡 妖币扫描报告
+- 📡 妖币扫描报告 / 候选跟踪
+- 🧭 雷达通知
 - ❌ 开仓失败 / 异常通知
 - 🧾 每日复盘
 
@@ -178,61 +223,97 @@ tail -f /root/.hermes/logs/crypto_sword.log
 ps -ef | grep -E "crypto_sword.py|run_live.py"
 ```
 
----
-
-## 🧬 当前策略思想
-
-系统目前不是单一策略，而是多线并行：
-
-- 🚀 **趋势突破线**：热点币继续放量、OI 扩张、趋势延续时，允许更快入场。
-- 🎯 **回踩确认线**：发现热点后进入观察池，等待回踩和均线确认，减少追高。
-- 🌊 **吸筹暗流线**：涨幅不夸张但 OI、成交量、资金费率出现异动时提前观察。
-- 🛡️ **风控守门**：仓位、余额、敞口、流动性、滑点、连亏熔断统一检查。
-- ⚡ **WS 驱动**：用 WebSocket 尽量减少 REST 轮询，提升订单和持仓同步速度。
-
----
-
-## 🛡️ 风控原则
-
-系统会尽量做到：
-
-- 开仓后立刻挂交易所保护单。
-- 止损和分批止盈尽量由交易所执行，不只依赖本地轮询。
-- TP1 后可推进保本，减少盈利单变亏损。
-- 连续亏损后暂停新开仓，避免情绪化连续扫损。
-- 裸仓保护不完整时会通知并限制风险。
-
-> ⚠️ 实盘仍然有风险。交易所延迟、极端插针、流动性不足、API 异常都可能造成非预期结果。
-
----
-
-## 🔄 服务器更新流程
+查看数据库示例：
 
 ```bash
-cd /root/.hermes/scripts
-git pull
-pkill -f "crypto_sword.py|run_live.py"
-nohup python3 run_live.py > /root/.hermes/logs/crypto_sword.log 2>&1 &
-tail -f /root/.hermes/logs/crypto_sword.log
+sqlite3 /root/.hermes/logs/trade_log.db
+```
+
+进入 SQLite 后可执行：
+
+```sql
+.tables
+SELECT symbol, side, entry_price, exit_price, pnl, pnl_pct, exit_reason, entry_time, exit_time
+FROM trades
+ORDER BY id DESC
+LIMIT 20;
+```
+
+---
+
+## ⚙️ 参数在哪里调？
+
+长期默认参数优先改：
+
+```text
+core/models.py -> TradingConfig
+```
+
+常调区域：
+
+- 💰 `leverage`：基础杠杆，默认 `5`。
+- 🧮 `risk_per_trade_pct`：基础单笔风险，默认 `1.0`。
+- 🧩 `max_open_positions`：最大持仓数，默认 `3`。
+- 🛡️ `stop_loss_pct`：基础止损，默认 `7.0`。
+- 🎯 `take_profit_pct`：基础止盈 ROI，默认 `18.0`。
+- 🏦 `capital_*`：复利资金分配器参数。
+- 📡 `scan_interval_sec` / `fast_scan_interval_sec`：深扫/快扫间隔。
+- 🌊 `oi_funding_*`：OI/Funding 加分逻辑。
+- 🚀 `momentum_*` / `accumulation_*`：趋势和吸筹入场门槛。
+
+临时查看完整命令参数：
+
+```bash
+python3 crypto_sword.py --help
+```
+
+但正式服务器运行仍建议：
+
+```bash
+python3 run_live.py
 ```
 
 ---
 
 ## 🧪 本地检查
 
-提交前建议跑：
+提交前建议至少跑：
 
 ```bash
 python -m py_compile crypto_sword.py
 ```
 
-更完整的方式是编译全部 Python 文件，确保没有语法错误。
+完整检查所有 Python 文件：
+
+```bash
+python - <<'PY'
+import pathlib, py_compile
+for path in pathlib.Path('.').rglob('*.py'):
+    py_compile.compile(str(path), doraise=True)
+print('PY_COMPILE_OK')
+PY
+```
 
 ---
 
 ## 👑 给宙斯的操作口诀
 
-日常只记这几句就够：
+日常启动：
+
+```bash
+cd /root/.hermes/scripts
+python3 run_live.py
+```
+
+后台实盘：
+
+```bash
+cd /root/.hermes/scripts
+nohup python3 run_live.py > /root/.hermes/logs/crypto_sword.log 2>&1 &
+tail -f /root/.hermes/logs/crypto_sword.log
+```
+
+更新重启：
 
 ```bash
 cd /root/.hermes/scripts
@@ -242,19 +323,19 @@ nohup python3 run_live.py > /root/.hermes/logs/crypto_sword.log 2>&1 &
 tail -f /root/.hermes/logs/crypto_sword.log
 ```
 
-参数不要塞启动命令里，要调就改：
+调参数：
 
 ```text
 core/models.py -> TradingConfig
 ```
 
-交易结果和复盘看：
+看交易复盘：
 
 ```text
 /root/.hermes/logs/trade_log.db
 ```
 
-日志异常看：
+看运行异常：
 
 ```text
 /root/.hermes/logs/crypto_sword.log
@@ -264,4 +345,4 @@ core/models.py -> TradingConfig
 
 ## ⚠️ 免责声明
 
-本项目用于自动化交易研究和个人实盘辅助。任何策略都不保证盈利，请根据账户规模控制风险，尤其注意高杠杆、小市值币、极端行情和 API 异常。
+本项目用于自动化交易研究和个人实盘辅助。任何策略都不保证盈利。小资金、高杠杆、小市值币、极端行情、交易所延迟、API 异常都可能造成损失。默认 3 仓和资金分配器是为了降低风险，不代表可以忽视仓位管理。
