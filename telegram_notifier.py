@@ -346,6 +346,7 @@ def format_open_position_msg(
     target_roi_pct: float = 0,
     price_move_pct: float = 0,
     take_profit_targets: list[dict[str, Any]] | None = None,
+    capital_plan: dict[str, Any] | None = None,
 ) -> str:
     """格式化开仓通知"""
     direction_emoji = _E if direction == "LONG" else _E2
@@ -386,6 +387,16 @@ def format_open_position_msg(
         msg += f"\n<b>目标收益率</b>  <code>{target_roi_pct:.2f}% ROI</code>"
     if price_move_pct > 0:
         msg += f"\n<b>实际价格目标</b>  <code>{price_move_pct:.2f}%</code>"
+    if capital_plan:
+        notes = capital_plan.get("notes") or []
+        note_text = f" | {_escape('；'.join(str(item) for item in notes[:2]))}" if notes else ""
+        msg += (
+            f"\n<b>资金档位</b>  <code>{_escape(str(capital_plan.get('mode', '')))}</code>"
+            f" | EV <code>{float(capital_plan.get('expected_rr', 0) or 0):.2f}R</code>{note_text}"
+        )
+        locked_profit = float(capital_plan.get("locked_profit", 0) or 0)
+        if locked_profit > 0:
+            msg += f"\n<b>盈利锁仓</b>  <code>{locked_profit:,.2f} USDT</code>"
     if take_profit_targets:
         if expected_tp_total > 0:
             msg += f"\n<b>预计止盈</b>  <code>+${expected_tp_total:,.2f}</code>"

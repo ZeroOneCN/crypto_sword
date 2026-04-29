@@ -87,6 +87,17 @@ class TradingConfig:
         target_altcoins: bool = True,
         target_memes: bool = True,
         require_telegram_notify: bool = True,
+        capital_allocator_enabled: bool = True,
+        capital_min_expected_rr: float = 1.18,
+        capital_max_leverage: int = 10,
+        capital_aggressive_score: float = 92.0,
+        capital_defensive_drawdown_pct: float = 3.0,
+        capital_hard_drawdown_pct: float = 6.0,
+        capital_min_risk_pct: float = 0.35,
+        capital_max_risk_pct: float = 1.6,
+        capital_profit_lock_enabled: bool = True,
+        capital_profit_lock_start_pct: float = 3.0,
+        capital_profit_lock_ratio: float = 0.35,
     ):
         self.mode = mode
         self.leverage = leverage
@@ -161,6 +172,17 @@ class TradingConfig:
         self.target_altcoins = target_altcoins
         self.target_memes = target_memes
         self.require_telegram_notify = require_telegram_notify
+        self.capital_allocator_enabled = capital_allocator_enabled
+        self.capital_min_expected_rr = capital_min_expected_rr
+        self.capital_max_leverage = max(1, min(10, int(capital_max_leverage)))
+        self.capital_aggressive_score = capital_aggressive_score
+        self.capital_defensive_drawdown_pct = capital_defensive_drawdown_pct
+        self.capital_hard_drawdown_pct = capital_hard_drawdown_pct
+        self.capital_min_risk_pct = capital_min_risk_pct
+        self.capital_max_risk_pct = capital_max_risk_pct
+        self.capital_profit_lock_enabled = capital_profit_lock_enabled
+        self.capital_profit_lock_start_pct = capital_profit_lock_start_pct
+        self.capital_profit_lock_ratio = capital_profit_lock_ratio
 
     @property
     def mode_emoji(self) -> str:
@@ -194,6 +216,7 @@ class Position:
         target_roi_pct: float = 0.0,
         take_profit_targets: Optional[List[dict[str, Any]]] = None,
         take_profit_order_ids: Optional[List[int]] = None,
+        leverage: int = 0,
     ):
         self.symbol = symbol
         self.side = side
@@ -213,6 +236,7 @@ class Position:
         self.target_roi_pct = target_roi_pct
         self.take_profit_targets = take_profit_targets or []
         self.take_profit_order_ids = take_profit_order_ids or []
+        self.leverage = int(leverage or 0)
         self.initial_quantity = quantity
         self.last_synced_quantity = quantity
         self.partial_tp_count = 0
@@ -312,6 +336,7 @@ class Position:
             "stop_loss_estimated": stop_estimated,
             "take_profit": round(self.take_profit_price, 4),
             "target_roi_pct": round(self.target_roi_pct, 2),
+            "leverage": self.leverage,
             "take_profit_targets": self.take_profit_targets,
             "take_profit_targets_text": self._format_take_profit_targets_text(),
             "highest": round(self.highest_price, 4),

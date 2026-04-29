@@ -499,7 +499,7 @@ class SyncMixin:
                         duration_hours=(position.exit_time - position.entry_time).total_seconds() / 3600,
                         session_id=position.session_id,
                         strategy_line=position.strategy_line,
-                        roi_pct=pnl_pct * self.config.leverage,
+                        roi_pct=pnl_pct * max(int(getattr(position, "leverage", 0) or self.config.leverage), 1),
                         price_move_pct=pnl_pct,
                     )
                 )
@@ -647,6 +647,10 @@ class SyncMixin:
             session_id = notes_map.get("session_id", "")
             if not session_id:
                 session_id = self._new_session_id(live_pos["symbol"])
+            try:
+                restored_leverage = int(float(notes_map.get("leverage_applied", self.config.leverage) or self.config.leverage))
+            except Exception:
+                restored_leverage = int(self.config.leverage)
 
             restored = Position(
                 symbol=live_pos["symbol"],
@@ -664,6 +668,7 @@ class SyncMixin:
                 target_roi_pct=target_roi_pct,
                 take_profit_targets=take_profit_targets,
                 take_profit_order_ids=take_profit_order_ids,
+                leverage=restored_leverage,
             )
             self.tracker.add_position(restored)
             logger.warning(f"♻️ 已恢复持仓：{restored.symbol} {restored.side} session={session_id}")

@@ -21,6 +21,7 @@ from telegram_notifier import (
     send_telegram_message,
 )
 from trade_logger import TradeRecord
+from services.capital_allocator import capital_allocator
 from services.execution_service import execution_service
 from services.order_service import order_service
 from services.risk_service import risk_service
@@ -1003,6 +1004,11 @@ class ExecutionMixin:
 
             quantity = None
             stop_loss = None
+            capital_plan = None
+            risk_balance = balance
+            entry_risk_pct = self.config.risk_per_trade_pct
+            entry_max_position_pct = self.config.max_position_pct
+            entry_leverage = self.config.leverage
 
             step_started = time.perf_counter()
             try:
@@ -1022,20 +1028,60 @@ class ExecutionMixin:
                     f"模式={dynamic_limits['mode']} 原因={dynamic_limits['reason']}"
                 )
 
+                capital_plan = capital_allocator.build_plan(
+                    config=self.config,
+                    signal=signal,
+                    exit_profile=exit_profile,
+                    dynamic_limits=dynamic_limits,
+                    account_balance=balance,
+                    day_start_balance=self.day_start_balance,
+                    daily_pnl=self.daily_pnl,
+                    daily_report=self._get_daily_report_snapshot(ttl_sec=90.0),
+                    market_style_mode=self._market_style_mode,
+                )
+                logger.info(
+                    f"🏦 {symbol} 资金分配：{capital_plan.mode} | "
+                    f"风险={capital_plan.risk_per_trade_pct:.2f}% 杠杆={capital_plan.leverage}x "
+                    f"仓位上限={capital_plan.max_position_pct:.1f}% 敞口={capital_plan.max_total_exposure_pct:.1f}% "
+                    f"EV={capital_plan.expected_rr:.2f}R 原因={capital_plan.reason}"
+                )
+                if not capital_plan.allowed:
+                    if score >= 85.0:
+                        send_telegram_message(
+                            format_error_msg(
+                                error_type="资本分配拒绝",
+                                message=(
+                                    f"{capital_plan.reason}\n"
+                                    f"评分={score:.1f} 策略={strategy_line} 方向={direction}\n"
+                                    f"资金档位={capital_plan.mode} 期望收益={capital_plan.expected_reward_pct:.2f}% "
+                                    f"止损={stop_loss_pct:.2f}%"
+                                ),
+                                symbol=symbol,
+                                session_id=session_id,
+                                component="risk_assessment",
+                            )
+                        )
+                    return None
+
+                risk_balance = capital_plan.effective_balance if capital_plan.effective_balance > 0 else balance
+                entry_risk_pct = capital_plan.risk_per_trade_pct
+                entry_max_position_pct = capital_plan.max_position_pct
+                entry_leverage = capital_plan.leverage
+
                 risk_config = risk_service.build_config(
-                    risk_per_trade_pct=self.config.risk_per_trade_pct,
+                    risk_per_trade_pct=entry_risk_pct,
                     base_stop_loss_pct=stop_loss_pct,
                     base_take_profit_pct=self.config.take_profit_pct * strategy_profile["tp_multiplier"],
-                    max_position_pct=self.config.max_position_pct,
-                    max_total_exposure=float(dynamic_limits["max_total_exposure"]),
-                    max_correlated_positions=int(dynamic_limits["max_correlated_positions"]),
+                    max_position_pct=entry_max_position_pct,
+                    max_total_exposure=float(capital_plan.max_total_exposure_pct),
+                    max_correlated_positions=int(capital_plan.max_correlated_positions),
                 )
 
                 risk_result = risk_service.assess(
                     symbol=symbol,
                     side="LONG" if direction == "LONG" else "SHORT",
                     entry_price=price,
-                    account_balance=balance,
+                    account_balance=risk_balance,
                     existing_positions=existing_positions,
                     config=risk_config,
                 )
@@ -1049,8 +1095,8 @@ class ExecutionMixin:
                             message=(
                                 f"{'; '.join(str(item) for item in warnings) or '风控未通过'}\n"
                                 f"评分={score:.1f} 策略={strategy_line} 方向={direction}\n"
-                                f"动态预算={dynamic_limits['mode']} 敞口上限={dynamic_limits['max_total_exposure']}% "
-                                f"相关仓={dynamic_limits['max_correlated_positions']} | {dynamic_limits['reason']}"
+                                f"资金档位={capital_plan.mode} 敞口上限={capital_plan.max_total_exposure_pct}% "
+                                f"相关仓={capital_plan.max_correlated_positions} | {capital_plan.reason}"
                             ),
                             symbol=symbol,
                             session_id=session_id,
@@ -1077,7 +1123,7 @@ class ExecutionMixin:
                     return None
 
                 logger.info(
-                    f"🔍 {symbol} 风控参数: 余额=${balance:.2f}, 杠杆={self.config.leverage}x, "
+                    f"🔍 {symbol} 风控参数: 余额=${balance:.2f}, 风险余额=${risk_balance:.2f}, 杠杆={capital_plan.leverage}x, "
                     f"名义仓位=${position_size.get('position_value', 0):.2f}, "
                     f"数量={quantity}, 止损=${(stop_loss or 0):.4f}"
                 )
@@ -1093,11 +1139,11 @@ class ExecutionMixin:
             step_started = time.perf_counter()
             result = execution_service.execute_entry_trade(
                 signal=trading_signal,
-                account_balance=balance,
-                risk_per_trade_pct=self.config.risk_per_trade_pct,
+                account_balance=risk_balance,
+                risk_per_trade_pct=entry_risk_pct,
                 stop_loss_pct=stop_loss_pct,
-                max_position_pct=self.config.max_position_pct,
-                leverage=self.config.leverage,
+                max_position_pct=entry_max_position_pct,
+                leverage=entry_leverage,
                 quantity=quantity,
                 stop_loss_price=stop_loss,
                 take_profit_target_pcts=take_profit_target_pcts,
@@ -1116,7 +1162,7 @@ class ExecutionMixin:
                         error_type="开仓下单失败",
                         message=(
                             f"{failure_reason}\n"
-                            f"方向={direction} 数量={quantity} 杠杆={self.config.leverage}x 策略={strategy_line}"
+                            f"方向={direction} 数量={quantity} 杠杆={entry_leverage}x 策略={strategy_line}"
                         ),
                         symbol=symbol,
                         session_id=session_id,
@@ -1250,6 +1296,7 @@ class ExecutionMixin:
                 take_profit_order_ids=[
                     int(item.get("order_id", 0) or 0) for item in take_profit_targets if item.get("order_id")
                 ],
+                leverage=leverage_applied,
             )
 
             from telegram_notifier import format_open_position_msg
@@ -1264,7 +1311,7 @@ class ExecutionMixin:
                 stop_loss=position.stop_loss_price,
                 take_profit=tp_price,
                 risk_amount=result.get("risk_amount_usdt", 0),
-                risk_pct=self.config.risk_per_trade_pct,
+                risk_pct=entry_risk_pct,
                 score=score,
                 risk_level=risk_level,
                 session_id=session_id,
@@ -1273,6 +1320,7 @@ class ExecutionMixin:
                 target_roi_pct=primary_target_roi_pct,
                 price_move_pct=primary_price_move_pct,
                 take_profit_targets=take_profit_targets,
+                capital_plan=capital_plan.to_dict() if capital_plan else None,
             )
             notify_ok = send_telegram_message(msg)
             if not notify_ok:
@@ -1318,6 +1366,7 @@ class ExecutionMixin:
                 f"strategy_stop_pct={stop_loss_pct}",
                 f"stop_trigger_buffer_pct={stop_trigger_buffer_pct}",
                 f"leverage_applied={leverage_applied}",
+                f"capital_plan={json.dumps(capital_plan.to_dict() if capital_plan else {}, ensure_ascii=False, separators=(',', ':'))}",
                 f"oi_funding_bonus={float(oi_funding.get('score_bonus', 0) or 0):.2f}",
                 f"tp_plan={json.dumps(take_profit_targets, separators=(',', ':'))}",
                 f"tp_order_ids={','.join(str(int(item.get('order_id', 0))) for item in take_profit_targets if item.get('order_id'))}",
@@ -1330,7 +1379,7 @@ class ExecutionMixin:
                 stage=signal["stage"],
                 entry_price=executed_entry_price,
                 quantity=position.quantity,
-                leverage=self.config.leverage,
+                leverage=leverage_applied,
                 stop_loss=position.stop_loss_price,
                 take_profit=tp_price,
                 entry_time=position.entry_time.isoformat(),
@@ -1340,6 +1389,7 @@ class ExecutionMixin:
                     "_oi_funding": oi_funding,
                     "_entry_score": signal.get("score", {}) or {},
                     "_leverage_applied": leverage_applied,
+                    "_capital_plan": capital_plan.to_dict() if capital_plan else {},
                 },
                 notes=";".join(notes_parts),
             )
@@ -1466,7 +1516,7 @@ class ExecutionMixin:
                         session_id=position.session_id,
                         strategy_line=position.strategy_line,
                         oi_funding=getattr(position, "oi_funding", None),
-                        roi_pct=pnl_pct * self.config.leverage,
+                        roi_pct=pnl_pct * max(int(getattr(position, "leverage", 0) or self.config.leverage), 1),
                         price_move_pct=pnl_pct,
                     )
                 )
