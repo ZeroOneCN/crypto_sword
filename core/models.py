@@ -44,6 +44,10 @@ class TradingConfig:
         max_abs_funding_rate: float = 0.004,
         max_oi_change_pct: float = 90.0,
         max_entry_slippage_pct: float = 0.8,
+        spike_reversal_guard_enabled: bool = True,
+        spike_guard_min_runup_pct: float = 2.2,
+        spike_guard_min_pullback_pct: float = 0.75,
+        spike_guard_min_wick_ratio: float = 0.42,
         min_quote_volume_usdt: float = 250000.0,
         alt_min_quote_volume_usdt: float = 600000.0,
         max_position_to_volume_ratio: float = 0.002,
@@ -114,6 +118,10 @@ class TradingConfig:
         self.max_abs_funding_rate = max_abs_funding_rate
         self.max_oi_change_pct = max_oi_change_pct
         self.max_entry_slippage_pct = max_entry_slippage_pct
+        self.spike_reversal_guard_enabled = spike_reversal_guard_enabled
+        self.spike_guard_min_runup_pct = spike_guard_min_runup_pct
+        self.spike_guard_min_pullback_pct = spike_guard_min_pullback_pct
+        self.spike_guard_min_wick_ratio = spike_guard_min_wick_ratio
         self.min_quote_volume_usdt = min_quote_volume_usdt
         self.alt_min_quote_volume_usdt = alt_min_quote_volume_usdt
         self.max_position_to_volume_ratio = max_position_to_volume_ratio

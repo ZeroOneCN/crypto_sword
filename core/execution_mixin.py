@@ -24,6 +24,7 @@ from trade_logger import TradeRecord
 from services.execution_service import execution_service
 from services.order_service import order_service
 from services.risk_service import risk_service
+from signal_enhancer import get_klines
 
 from .monitoring import build_execution_event, message_signature
 from .models import Position
@@ -212,6 +213,69 @@ class ExecutionMixin:
         if side == "BUY":
             return entry_price * (1 + price_move_pct / 100.0)
         return entry_price * (1 - price_move_pct / 100.0)
+
+    def _recent_spike_reversal_reason(self, symbol: str, direction: str, current_price: float) -> str:
+        """Avoid entering immediately after a short-timeframe wick reversal."""
+        if not getattr(self.config, "spike_reversal_guard_enabled", True):
+            return ""
+        if current_price <= 0:
+            return ""
+        try:
+            klines = get_klines(symbol, interval="5m", limit=8) or []
+        except Exception as exc:
+            logger.debug(f"{symbol} spike reversal guard skipped: {exc}")
+            return ""
+        if len(klines) < 4:
+            return ""
+
+        recent = klines[-4:]
+        highs = [float(k.get("high", 0) or 0) for k in recent]
+        lows = [float(k.get("low", 0) or 0) for k in recent]
+        if not highs or not lows or min(lows) <= 0:
+            return ""
+
+        high = max(highs)
+        low = min(lows)
+        runup_pct = (high - low) / low * 100.0
+        if direction == "LONG":
+            pullback_pct = (high - current_price) / high * 100.0 if high > 0 else 0.0
+        else:
+            recent_low = low
+            pullback_pct = (current_price - recent_low) / recent_low * 100.0 if recent_low > 0 else 0.0
+
+        if runup_pct < float(self.config.spike_guard_min_runup_pct):
+            return ""
+        if pullback_pct < float(self.config.spike_guard_min_pullback_pct):
+            return ""
+
+        wick_ratio = 0.0
+        reversal_candle = False
+        for candle in recent[-2:]:
+            open_price = float(candle.get("open", 0) or 0)
+            close_price = float(candle.get("close", 0) or 0)
+            high_price = float(candle.get("high", 0) or 0)
+            low_price = float(candle.get("low", 0) or 0)
+            candle_range = max(high_price - low_price, 0.0)
+            if candle_range <= 0:
+                continue
+            if direction == "LONG":
+                wick = high_price - max(open_price, close_price)
+                wick_ratio = max(wick_ratio, wick / candle_range)
+                if close_price < open_price and wick / candle_range >= float(self.config.spike_guard_min_wick_ratio):
+                    reversal_candle = True
+            else:
+                wick = min(open_price, close_price) - low_price
+                wick_ratio = max(wick_ratio, wick / candle_range)
+                if close_price > open_price and wick / candle_range >= float(self.config.spike_guard_min_wick_ratio):
+                    reversal_candle = True
+
+        if wick_ratio < float(self.config.spike_guard_min_wick_ratio) and not reversal_candle:
+            return ""
+
+        return (
+            f"短线冲高回落：5m拉升 {runup_pct:.2f}%，"
+            f"距短线高点回落 {pullback_pct:.2f}%，影线占比 {wick_ratio:.0%}"
+        )
 
     def _cancel_symbol_stale_protection(
         self,
@@ -928,6 +992,10 @@ class ExecutionMixin:
                 if latest_price > 0:
                     price = latest_price
                     trading_signal.entry_price = latest_price
+            spike_reason = self._recent_spike_reversal_reason(symbol, direction, price)
+            if spike_reason:
+                logger.warning(f"🧊 {symbol} 开仓前过滤：{spike_reason}")
+                return None
             self._record_latency_step(latency_steps, "price_recheck", step_started)
 
             quantity = None
