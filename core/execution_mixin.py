@@ -42,6 +42,11 @@ class ExecutionMixin:
                 "tp_multiplier": self.config.breakout_tp_multiplier,
                 "stop_multiplier": self.config.breakout_stop_multiplier,
             }
+        if strategy_line == "均线二启线":
+            return {
+                "tp_multiplier": 1.05,
+                "stop_multiplier": 0.72,
+            }
         return {
             "tp_multiplier": self.config.pullback_tp_multiplier,
             "stop_multiplier": self.config.pullback_stop_multiplier,
@@ -50,6 +55,8 @@ class ExecutionMixin:
     def _strategy_take_profit_ratios(self, strategy_line: str, levels_count: int) -> list[float]:
         if strategy_line == "趋势突破线":
             base_ratios = [0.40, 0.35, 0.25]
+        elif strategy_line == "均线二启线":
+            base_ratios = [0.35, 0.35, 0.30]
         else:
             base_ratios = [0.55, 0.30, 0.15]
         ratios = base_ratios[:levels_count]
@@ -185,6 +192,14 @@ class ExecutionMixin:
                 "take_profit_ratios": [0.35, 0.35, 0.30],
                 "stop_loss_pct": 3.2,
             }
+        if strategy_line == "均线二启线":
+            return {
+                "name": "均线二次启动",
+                "take_profit_mode": "price",
+                "take_profit_targets": [1.8, 3.8, 6.5],
+                "take_profit_ratios": [0.35, 0.35, 0.30],
+                "stop_loss_pct": 2.8,
+            }
 
         targets, ratios = self._build_take_profit_plan(strategy_line)
         return {
@@ -202,6 +217,8 @@ class ExecutionMixin:
     def _strategy_stop_trigger_buffer_pct(self, strategy_line: str = "") -> float:
         if strategy_line == "趋势突破线":
             return max(0.0, float(self.config.breakout_stop_trigger_buffer_pct))
+        if strategy_line == "均线二启线":
+            return max(0.0, float(self.config.pullback_stop_trigger_buffer_pct))
         if strategy_line == "回踩确认线":
             return max(0.0, float(self.config.pullback_stop_trigger_buffer_pct))
         return max(0.0, float(self.config.stop_trigger_buffer_pct))
