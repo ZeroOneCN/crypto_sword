@@ -213,6 +213,47 @@ class ExecutionMixin:
             return entry_price * (1 + price_move_pct / 100.0)
         return entry_price * (1 - price_move_pct / 100.0)
 
+    def _cancel_symbol_stale_protection(
+        self,
+        symbol: str,
+        *,
+        position_side: str | None = None,
+        session_id: str = "",
+        reason: str = "",
+    ) -> dict[str, Any]:
+        """Cancel all exchange-side protective orders that may outlive a position."""
+        try:
+            result = order_service.cancel_symbol_protective_orders(symbol, position_side=position_side)
+        except Exception as exc:
+            logger.warning(f"⚠️ {symbol} 保护条件单批量清理失败：{exc}")
+            send_telegram_message(
+                format_error_msg(
+                    error_type="保护条件单批量清理失败",
+                    message=str(exc),
+                    symbol=symbol,
+                    session_id=session_id,
+                    component="protection_cleanup",
+                )
+            )
+            return {"checked": 0, "canceled": [], "failed": [], "error": str(exc)}
+
+        canceled = result.get("canceled", []) or []
+        failed = result.get("failed", []) or []
+        if canceled:
+            logger.warning(f"🔕 {symbol} 已清理遗留保护条件单：{canceled} reason={reason}")
+        if failed:
+            logger.warning(f"⚠️ {symbol} 遗留保护条件单清理失败：{failed} reason={reason}")
+            send_telegram_message(
+                format_error_msg(
+                    error_type="遗留保护条件单清理失败",
+                    message=f"order_ids={failed}",
+                    symbol=symbol,
+                    session_id=session_id,
+                    component="protection_cleanup",
+                )
+            )
+        return result
+
     def _cancel_position_protection(self, position: Position):
         if position.stop_loss_order_id:
             if order_service.cancel_stop_loss(position.symbol, position.stop_loss_order_id):
@@ -236,6 +277,14 @@ class ExecutionMixin:
                 logger.info(f"🔕 已撤销 {position.symbol} 止盈委托：{order_id}")
             else:
                 logger.warning(f"⚠️ {position.symbol} 止盈委托撤销失败：{order_id}")
+
+        self._cancel_symbol_stale_protection(
+            position.symbol,
+            session_id=position.session_id,
+            reason="position_closed",
+        )
+        position.stop_loss_order_id = 0
+        position.take_profit_order_ids = []
 
     def _record_closed_trade_result(self, position: Position, pnl: float):
         """Record closed trade outcome without applying loss cooldowns."""
@@ -832,6 +881,11 @@ class ExecutionMixin:
 
             if not execution_service.should_trade(trading_signal):
                 return None
+
+            if symbol not in self.tracker.positions:
+                step_started = time.perf_counter()
+                self._cancel_symbol_stale_protection(symbol, session_id=session_id, reason="before_new_entry")
+                self._record_latency_step(latency_steps, "stale_protection_cleanup", step_started)
 
             score_data = signal.get("score") or {}
             score = float(score_data.get("total_score", score_data.get("total", 0)) if isinstance(score_data, dict) else score_data or 0)
