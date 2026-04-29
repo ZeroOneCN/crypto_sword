@@ -121,8 +121,11 @@ class CapitalAllocator:
             abs(target / target_leverage_for_rr) if take_profit_mode == "roi" else abs(target)
             for target in targets
         ]
-        expected_reward_pct = sum(move * ratios[index] for index, move in enumerate(price_moves)) if price_moves else 0.0
-        expected_rr = expected_reward_pct / stop_loss_pct if stop_loss_pct > 0 else 0.0
+        gross_reward_pct = sum(move * ratios[index] for index, move in enumerate(price_moves)) if price_moves else 0.0
+        roundtrip_cost_pct = max(0.0, float(getattr(config, "capital_estimated_roundtrip_cost_pct", 0.22) or 0.0))
+        expected_reward_pct = max(0.0, gross_reward_pct - roundtrip_cost_pct)
+        effective_risk_pct = stop_loss_pct + roundtrip_cost_pct
+        expected_rr = expected_reward_pct / effective_risk_pct if effective_risk_pct > 0 else 0.0
 
         if not bool(getattr(config, "capital_allocator_enabled", True)):
             return CapitalPlan(
@@ -156,52 +159,56 @@ class CapitalAllocator:
         max_position_multiplier = 1.0
         max_exposure = base_exposure
 
-        if closed >= 5 and total_pnl < 0 and (profit_factor < 0.9 or win_rate < 38.0):
+        if closed >= 3 and total_pnl < 0 and (profit_factor < 1.0 or win_rate < 45.0):
             mode = "防守复利"
-            risk_multiplier = min(risk_multiplier, 0.55)
-            max_position_multiplier = min(max_position_multiplier, 0.75)
-            max_exposure = min(max_exposure, 150.0)
-            max_correlated = min(max_correlated, 4)
+            risk_multiplier = min(risk_multiplier, 0.45)
+            max_position_multiplier = min(max_position_multiplier, 0.70)
+            max_exposure = min(max_exposure, 100.0)
+            max_correlated = min(max_correlated, 3)
             notes.append(f"日内弱势 PF={profit_factor:.2f} 胜率={win_rate:.0f}%")
 
         if drawdown_pct >= float(getattr(config, "capital_hard_drawdown_pct", 6.0)):
             mode = "深度防守"
             risk_multiplier = min(risk_multiplier, 0.45)
             max_position_multiplier = min(max_position_multiplier, 0.65)
-            max_exposure = min(max_exposure, 120.0)
-            max_correlated = min(max_correlated, 3)
+            max_exposure = min(max_exposure, 80.0)
+            max_correlated = min(max_correlated, 2)
             notes.append(f"日内回撤 {drawdown_pct:.2f}%")
         elif drawdown_pct >= float(getattr(config, "capital_defensive_drawdown_pct", 3.0)):
             mode = "防守复利"
             risk_multiplier = min(risk_multiplier, 0.70)
             max_position_multiplier = min(max_position_multiplier, 0.80)
-            max_exposure = min(max_exposure, 160.0)
-            max_correlated = min(max_correlated, 4)
+            max_exposure = min(max_exposure, 100.0)
+            max_correlated = min(max_correlated, 3)
             notes.append(f"日内回撤 {drawdown_pct:.2f}%")
 
         is_breakout = strategy_line == "趋势突破线"
         strong_signal = (
             is_breakout
-            and score >= float(getattr(config, "capital_aggressive_score", 92.0))
-            and 12.0 <= abs(change_24h) <= 45.0
-            and 18.0 <= oi_change <= float(getattr(config, "max_oi_change_pct", 90.0))
-            and abs(funding) <= float(getattr(config, "max_abs_funding_rate", 0.004)) * 0.80
+            and score >= float(getattr(config, "capital_aggressive_score", 95.0))
+            and 8.0 <= abs(change_24h) <= 38.0
+            and 24.0 <= oi_change <= float(getattr(config, "max_oi_change_pct", 90.0))
+            and abs(funding) <= float(getattr(config, "max_abs_funding_rate", 0.004)) * 0.70
         )
-        elite_signal = strong_signal and score >= 96.0 and expected_rr >= 1.35 and drawdown_pct < 2.0
+        elite_signal = strong_signal and score >= 97.0 and expected_rr >= 1.70 and drawdown_pct < 1.0
 
-        if strong_signal and mode not in {"深度防守"}:
+        if strong_signal and mode not in {"深度防守"} and total_pnl >= 0 and drawdown_pct < 1.0:
             mode = "进攻复利" if not elite_signal else "精英强攻"
-            risk_multiplier = max(risk_multiplier, 1.20 if not elite_signal else 1.35)
-            max_position_multiplier = max(max_position_multiplier, 1.12 if not elite_signal else 1.25)
-            max_exposure = max(max_exposure, min(float(getattr(config, "max_total_exposure_pct", base_exposure)), base_exposure + 20.0))
-            max_correlated = max(max_correlated, 6)
-            leverage = max(leverage, min(max_leverage, 8 if not elite_signal else 10))
+            risk_multiplier = max(risk_multiplier, 1.05 if not elite_signal else 1.15)
+            max_position_multiplier = max(max_position_multiplier, 1.05 if not elite_signal else 1.12)
+            max_exposure = max(max_exposure, min(float(getattr(config, "max_total_exposure_pct", base_exposure)), base_exposure))
+            max_correlated = max(max_correlated, 3)
             notes.append(f"强趋势 score={score:.1f} OI={oi_change:.1f}%")
 
-        if score < 70.0:
-            risk_multiplier = min(risk_multiplier, 0.75)
-            max_position_multiplier = min(max_position_multiplier, 0.85)
+        if score < 78.0:
+            risk_multiplier = min(risk_multiplier, 0.65)
+            max_position_multiplier = min(max_position_multiplier, 0.75)
             notes.append(f"评分偏普通 {score:.1f}")
+
+        if expected_rr < 1.70:
+            risk_multiplier = min(risk_multiplier, 0.80)
+            max_position_multiplier = min(max_position_multiplier, 0.85)
+            notes.append(f"扣成本后盈亏比 {expected_rr:.2f}R")
 
         if market_style_mode == "major" and signal.get("symbol", "").upper() not in getattr(config, "major_symbols", []):
             risk_multiplier = min(risk_multiplier, 0.80)
@@ -213,9 +220,9 @@ class CapitalAllocator:
 
         min_expected_rr = float(getattr(config, "capital_min_expected_rr", 1.18) or 1.18)
         if mode in {"防守复利", "深度防守"}:
-            min_expected_rr = max(min_expected_rr, 1.28)
+            min_expected_rr = max(min_expected_rr, 1.55)
         if strong_signal:
-            min_expected_rr = max(1.08, min_expected_rr - 0.08)
+            min_expected_rr = max(1.40, min_expected_rr - 0.05)
 
         allowed = expected_rr >= min_expected_rr
         reason = "通过资本分配"

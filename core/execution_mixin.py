@@ -56,9 +56,9 @@ class ExecutionMixin:
         if strategy_line == "趋势突破线":
             base_ratios = [0.40, 0.35, 0.25]
         elif strategy_line == "均线二启线":
-            base_ratios = [0.35, 0.35, 0.30]
+            base_ratios = [0.25, 0.30, 0.45]
         else:
-            base_ratios = [0.55, 0.30, 0.15]
+            base_ratios = [0.25, 0.30, 0.45]
         ratios = base_ratios[:levels_count]
         ratio_total = sum(ratios) or 1.0
         return [ratio / ratio_total for ratio in ratios]
@@ -89,7 +89,7 @@ class ExecutionMixin:
         change_24h = float(metrics.get("change_24h_pct", 0.0) or 0.0)
         oi_change = float(metrics.get("oi_24h_pct", 0.0) or metrics.get("oi_change_pct", 0.0) or 0.0)
         funding = float(metrics.get("funding_rate", 0.0) or 0.0)
-        return score >= 90.0 and 10.0 <= change_24h <= 45.0 and oi_change >= 25.0 and funding <= 0.001
+        return score >= 94.0 and 8.0 <= change_24h <= 38.0 and oi_change >= 25.0 and funding <= 0.001
 
     def _dynamic_risk_limits(self, signal: dict[str, Any]) -> dict[str, Any]:
         """Calculate adaptive exposure and correlation limits for the next entry."""
@@ -151,9 +151,9 @@ class ExecutionMixin:
             mode = "保护单谨慎"
             reasons.append(f"保护单成功率={protection_ok_rate:.0f}%")
 
-        if strategy_line == "趋势突破线" and score >= 85.0 and oi_change >= 20.0 and funding < self.config.max_abs_funding_rate * 0.75:
+        if strategy_line == "趋势突破线" and score >= 95.0 and oi_change >= 24.0 and funding < self.config.max_abs_funding_rate * 0.60:
             exposure = min(hard_cap, max(exposure, base_exposure + 20.0))
-            max_correlated = max(max_correlated, 6)
+            max_correlated = max(max_correlated, 4)
             mode = "强信号进攻"
             reasons.append(f"强趋势评分={score:.0f} OI={oi_change:.0f}%")
         elif score < 72.0:
@@ -181,24 +181,24 @@ class ExecutionMixin:
                 return {
                     "name": "强趋势",
                     "take_profit_mode": "price",
-                    "take_profit_targets": [3.0, 6.0, 10.0],
-                    "take_profit_ratios": [0.35, 0.35, 0.30],
-                    "stop_loss_pct": 4.2,
+                    "take_profit_targets": [2.4, 5.5, 10.0],
+                    "take_profit_ratios": [0.20, 0.30, 0.50],
+                    "stop_loss_pct": 3.3,
                 }
             return {
                 "name": "普通趋势",
                 "take_profit_mode": "price",
-                "take_profit_targets": [2.2, 4.5, 7.0],
-                "take_profit_ratios": [0.35, 0.35, 0.30],
-                "stop_loss_pct": 3.2,
+                "take_profit_targets": [1.8, 3.8, 7.5],
+                "take_profit_ratios": [0.20, 0.30, 0.50],
+                "stop_loss_pct": 2.6,
             }
         if strategy_line == "均线二启线":
             return {
                 "name": "均线二次启动",
                 "take_profit_mode": "price",
-                "take_profit_targets": [1.8, 3.8, 6.5],
-                "take_profit_ratios": [0.35, 0.35, 0.30],
-                "stop_loss_pct": 2.8,
+                "take_profit_targets": [1.5, 3.2, 6.0],
+                "take_profit_ratios": [0.25, 0.30, 0.45],
+                "stop_loss_pct": 2.2,
             }
 
         targets, ratios = self._build_take_profit_plan(strategy_line)
