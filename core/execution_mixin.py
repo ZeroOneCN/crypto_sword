@@ -1381,6 +1381,7 @@ class ExecutionMixin:
                 return None
 
             oi_funding = signal.get("oi_funding") or {}
+            leverage_applied = int(result.get("leverage_applied", entry_leverage) or entry_leverage or self.config.leverage)
             position = Position(
                 symbol=symbol,
                 side=side,
@@ -1407,7 +1408,6 @@ class ExecutionMixin:
 
             from telegram_notifier import format_open_position_msg
 
-            leverage_applied = int(result.get("leverage_applied", self.config.leverage) or self.config.leverage)
             msg = format_open_position_msg(
                 symbol=symbol,
                 direction=direction,
