@@ -23,7 +23,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--stop-loss", type=float, default=7.0, help="Stop loss (%%)")
     parser.add_argument("--take-profit", type=float, default=18.0, help="Take profit (%%)")
     parser.add_argument("--trailing", type=float, default=5.0, help="Trailing stop (%%)")
-    parser.add_argument("--max-positions", type=int, default=4, help="Max open positions")
+    parser.add_argument("--max-positions", type=int, default=10, help="Max open positions")
     parser.add_argument("--max-position-pct", type=float, default=35.0, help="Max notional position size (%% of balance)")
     parser.add_argument("--max-total-exposure", type=float, default=150.0, help="Max total notional exposure (%% of balance)")
     parser.add_argument("--scan-top-n", type=int, default=50, help="Top N symbols per deep scan")

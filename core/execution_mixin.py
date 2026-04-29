@@ -90,16 +90,16 @@ class ExecutionMixin:
                 return {
                     "name": "强趋势",
                     "take_profit_mode": "price",
-                    "take_profit_targets": [2.5, 5.0, 8.0],
+                    "take_profit_targets": [3.0, 6.0, 10.0],
                     "take_profit_ratios": [0.35, 0.35, 0.30],
-                    "stop_loss_pct": 4.5,
+                    "stop_loss_pct": 4.2,
                 }
             return {
                 "name": "普通趋势",
                 "take_profit_mode": "price",
-                "take_profit_targets": [1.8, 3.5, 5.5],
-                "take_profit_ratios": [0.40, 0.35, 0.25],
-                "stop_loss_pct": 4.0,
+                "take_profit_targets": [2.2, 4.5, 7.0],
+                "take_profit_ratios": [0.35, 0.35, 0.30],
+                "stop_loss_pct": 3.2,
             }
 
         targets, ratios = self._build_take_profit_plan(strategy_line)
@@ -168,7 +168,7 @@ class ExecutionMixin:
         tp_count = max(int(position.partial_tp_count), 1)
         if position.strategy_line == "趋势突破线":
             if tp_count <= 1:
-                return 0.0
+                return 0.05
             return base_offset + 0.12 + 0.10 * (tp_count - 2)
         return base_offset + 0.05 + 0.08 * (tp_count - 1)
 
@@ -178,9 +178,6 @@ class ExecutionMixin:
             return False
 
         offset_pct = self._breakeven_offset_for_position(position)
-        if position.strategy_line == "趋势突破线" and position.partial_tp_count < 2:
-            logger.info(f"{position.symbol} breakout TP1 hit; keep original stop until TP2 to let trend run")
-            return False
         if position.side == "BUY":
             breakeven_price = position.entry_price * (1 + offset_pct / 100.0)
             close_side = "SELL"
