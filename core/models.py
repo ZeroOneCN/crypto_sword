@@ -26,7 +26,7 @@ class TradingConfig:
         min_total_exposure_pct: float = 100.0,
         dynamic_total_exposure_hard_cap_pct: float = 260.0,
         max_daily_loss_pct: float = 0.0,
-        max_open_positions: int = 10,
+        max_open_positions: int = 3,
         trailing_stop_pct: float = 5.0,
         trailing_stop_enabled: bool = True,
         scan_top_n: int = 50,
