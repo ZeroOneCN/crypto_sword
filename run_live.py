@@ -28,7 +28,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--max-total-exposure", type=float, default=220.0, help="Max total notional exposure (%% of balance)")
     parser.add_argument("--scan-top-n", type=int, default=50, help="Top N symbols per deep scan")
     parser.add_argument("--scan-interval", type=int, default=120, help="Deep scan interval seconds")
-    parser.add_argument("--fast-interval", type=int, default=30, help="Fast scan interval seconds")
+    parser.add_argument("--fast-interval", type=int, default=10, help="Fast scan interval seconds")
     parser.add_argument("--disable-oi-funding", action="store_true", help="Disable OI/Funding scoring bonus")
     return parser
 

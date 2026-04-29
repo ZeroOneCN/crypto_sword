@@ -106,6 +106,8 @@ class CryptoSword(ExecutionMixin, ScannerMixin, CycleMixin, SyncMixin, Confirmat
         self._latency_alert_threshold_ms: float = 5000.0
         self._fast_candidates: list[str] = []
         self._last_fast_scan_time: float = 0.0
+        self._last_fast_candidate_signature: str = ""
+        self._last_ws_hot_deep_scan_at: float = 0.0
         self._last_deep_scan_time: float = 0.0
         self._last_position_sync_time: float = 0.0
         self._consecutive_losses: int = 0

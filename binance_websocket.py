@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 import logging
+import socket
 import threading
 import time
 from collections import deque
@@ -27,6 +28,14 @@ except Exception:  # pragma: no cover - optional runtime dependency
     websocket = None
 
 logger = logging.getLogger(__name__)
+
+
+def _ws_sockopt() -> tuple[tuple[int, int, int], ...]:
+    """Prefer low-latency TCP packets for realtime trading streams."""
+    try:
+        return ((socket.IPPROTO_TCP, socket.TCP_NODELAY, 1),)
+    except Exception:
+        return ()
 
 
 @dataclass
@@ -199,7 +208,12 @@ class BinanceWebSocketClient:
                     on_error=self._on_error,
                     on_close=self._on_close,
                 )
-                self.ws.run_forever(ping_interval=30, ping_timeout=10)
+                self.ws.run_forever(
+                    ping_interval=20,
+                    ping_timeout=5,
+                    skip_utf8_validation=True,
+                    sockopt=_ws_sockopt(),
+                )
             except Exception as e:
                 logger.warning(f"WebSocket loop failed: {e}")
 
@@ -270,6 +284,7 @@ class BinanceAllMarketTickerWebSocketClient:
         self.callbacks = callbacks or {}
         self.base_ws_url = (base_ws_url or _get_default_ws_base_url()).rstrip("/")
         self.tickers: dict[str, TickerData] = {}
+        self.price_history: dict[str, deque[tuple[float, float]]] = {}
         self.ws: Optional[websocket.WebSocketApp] = None
         self.running = False
         self._thread: Optional[threading.Thread] = None
@@ -310,6 +325,10 @@ class BinanceAllMarketTickerWebSocketClient:
                         quote_volume_24h=float(item.get("q", 0) or 0),
                         last_update=now,
                     )
+                    if last_price > 0:
+                        history = self.price_history.setdefault(symbol, deque(maxlen=900))
+                        if not history or now - history[-1][0] >= 0.9:
+                            history.append((now, last_price))
                     updated += 1
                 if updated:
                     self._last_event_time = now
@@ -340,7 +359,12 @@ class BinanceAllMarketTickerWebSocketClient:
                     on_error=self._on_error,
                     on_close=self._on_close,
                 )
-                self.ws.run_forever(ping_interval=30, ping_timeout=10)
+                self.ws.run_forever(
+                    ping_interval=20,
+                    ping_timeout=5,
+                    skip_utf8_validation=True,
+                    sockopt=_ws_sockopt(),
+                )
             except Exception as e:
                 logger.warning(f"All-market WebSocket loop failed: {e}")
 
@@ -372,7 +396,6 @@ class BinanceAllMarketTickerWebSocketClient:
         min_change: float = 3.0,
         max_age_sec: float = 180.0,
     ) -> list[str]:
-        exclude_patterns = ("USDC", "FDUSD", "TUSD", "UP", "DOWN", "BULL", "BEAR")
         now = time.time()
         with self._lock:
             fresh = [
@@ -380,10 +403,79 @@ class BinanceAllMarketTickerWebSocketClient:
                 for ticker in self.tickers.values()
                 if now - ticker.last_update <= max_age_sec
                 and abs(ticker.price_change_pct) >= min_change
-                and not any(pattern in ticker.symbol for pattern in exclude_patterns)
+                and not self._is_excluded_symbol(ticker.symbol)
             ]
         fresh.sort(key=lambda ticker: abs(ticker.price_change_pct), reverse=True)
         return [ticker.symbol for ticker in fresh[:limit]]
+
+    @staticmethod
+    def _is_excluded_symbol(symbol: str) -> bool:
+        stable_bases = ("USDC", "FDUSD", "TUSD", "USDE", "BUSD")
+        leveraged_suffixes = ("UPUSDT", "DOWNUSDT", "BULLUSDT", "BEARUSDT")
+        return symbol in {f"{base}USDT" for base in stable_bases} or symbol.endswith(leveraged_suffixes)
+
+    @staticmethod
+    def _change_since(history: deque[tuple[float, float]], now: float, window_sec: float) -> float:
+        if not history:
+            return 0.0
+        latest_price = history[-1][1]
+        if latest_price <= 0:
+            return 0.0
+        baseline = 0.0
+        cutoff = now - window_sec
+        for ts, price in reversed(history):
+            if ts <= cutoff:
+                baseline = price
+                break
+        if baseline <= 0:
+            if now - history[0][0] < min(window_sec * 0.35, 30.0):
+                return 0.0
+            baseline = history[0][1]
+        return (latest_price / baseline - 1.0) * 100.0 if baseline > 0 else 0.0
+
+    def get_top_symbols_by_hotness(
+        self,
+        limit: int,
+        min_change: float = 0.5,
+        max_age_sec: float = 30.0,
+    ) -> list[str]:
+        """Rank symbols by fresh WS velocity instead of only 24h change."""
+        now = time.time()
+        rows: list[tuple[float, str]] = []
+        with self._lock:
+            tickers = list(self.tickers.values())
+            histories = self.price_history
+
+        for ticker in tickers:
+            symbol = ticker.symbol.upper()
+            if now - ticker.last_update > max_age_sec or self._is_excluded_symbol(symbol):
+                continue
+            history = histories.get(symbol)
+            if not history:
+                continue
+            change_60 = self._change_since(history, now, 60.0)
+            change_180 = self._change_since(history, now, 180.0)
+            change_300 = self._change_since(history, now, 300.0)
+            change_24h = float(ticker.price_change_pct or 0.0)
+            if not (
+                abs(change_60) >= min_change
+                or abs(change_180) >= min_change * 1.6
+                or abs(change_300) >= min_change * 2.2
+                or abs(change_24h) >= max(min_change * 4.0, 2.0)
+            ):
+                continue
+            liquidity_score = min(float(ticker.quote_volume_24h or 0.0) / 5_000_000.0, 8.0)
+            hot_score = (
+                abs(change_60) * 6.0
+                + abs(change_180) * 3.0
+                + abs(change_300) * 2.0
+                + abs(change_24h) * 0.25
+                + liquidity_score
+            )
+            rows.append((hot_score, symbol))
+
+        rows.sort(reverse=True)
+        return [symbol for _, symbol in rows[:limit]]
 
     def size(self, max_age_sec: float = 180.0) -> int:
         now = time.time()
@@ -469,7 +561,12 @@ class BinanceUserDataWebSocketClient:
                     on_error=self._on_error,
                     on_close=self._on_close,
                 )
-                self.ws.run_forever(ping_interval=60, ping_timeout=10)
+                self.ws.run_forever(
+                    ping_interval=45,
+                    ping_timeout=8,
+                    skip_utf8_validation=True,
+                    sockopt=_ws_sockopt(),
+                )
             except Exception as e:
                 logger.error(f"User data WebSocket loop failed: {e}")
 

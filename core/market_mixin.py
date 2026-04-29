@@ -243,14 +243,25 @@ class MarketMixin:
         if not self._market_ws_client:
             return []
         try:
-            symbols = self._market_ws_client.get_top_symbols_by_change(
-                limit=limit,
-                min_change=min_change,
-                max_age_sec=max(180, self._current_scan_interval * 2),
-            )
+            ws_limit = min(limit, int(getattr(self.config, "ws_deep_scan_candidate_limit", limit) or limit))
+            hot_min_change = max(0.2, float(getattr(self.config, "ws_hot_min_change_pct", min_change) or min_change))
+            if hasattr(self._market_ws_client, "get_top_symbols_by_hotness"):
+                symbols = self._market_ws_client.get_top_symbols_by_hotness(
+                    limit=ws_limit,
+                    min_change=hot_min_change,
+                    max_age_sec=max(20, min(90, self._current_scan_interval)),
+                )
+                rank_name = "WS热度榜"
+            else:
+                symbols = self._market_ws_client.get_top_symbols_by_change(
+                    limit=ws_limit,
+                    min_change=min_change,
+                    max_age_sec=max(180, self._current_scan_interval * 2),
+                )
+                rank_name = "WS异动榜"
             if symbols:
                 logger.info(
-                    f"📋 WS异动榜命中 {len(symbols)} 个币种 "
+                    f"📋 {rank_name}命中 {len(symbols)} 个币种 "
                     f"(缓存新鲜币种 {self._market_ws_client.size()}): {symbols[:5]}..."
                 )
             return symbols
@@ -261,7 +272,11 @@ class MarketMixin:
     def _fast_scan_candidates(self) -> list[str]:
         """Refresh lightweight candidate pool from all-market WS."""
         now = time.time()
-        min_gap = max(10, int(self.config.fast_scan_interval_sec))
+        ws_enabled = bool(self._market_ws_client)
+        if ws_enabled:
+            min_gap = max(3, int(getattr(self.config, "ws_fast_scan_interval_sec", self.config.fast_scan_interval_sec)))
+        else:
+            min_gap = max(10, int(self.config.fast_scan_interval_sec))
         if self._fast_candidates and now - self._last_fast_scan_time < min_gap:
             return self._fast_candidates
 
@@ -280,3 +295,26 @@ class MarketMixin:
             logger.info(f"⚡ Fast scan keeps previous candidates: {self._fast_candidates[:5]}...")
 
         return self._fast_candidates
+
+    def _should_force_ws_deep_scan(self, now: float, candidates: list[str]) -> bool:
+        """Trigger an early deep scan when the WS hot list materially changes."""
+        if not self._market_ws_client or not candidates:
+            return False
+        if self._last_deep_scan_time <= 0:
+            return False
+        min_gap = max(15, int(getattr(self.config, "ws_hot_deep_scan_min_gap_sec", 45) or 45))
+        if now - self._last_deep_scan_time < min_gap:
+            return False
+
+        signature_size = max(3, int(getattr(self.config, "ws_hot_signature_size", 5) or 5))
+        signature = "|".join(candidates[:signature_size])
+        if not signature or signature == getattr(self, "_last_fast_candidate_signature", ""):
+            return False
+
+        self._last_fast_candidate_signature = signature
+        self._last_ws_hot_deep_scan_at = now
+        logger.info(
+            f"⚡ WS热榜变化触发提前深扫：top{signature_size}={candidates[:signature_size]} "
+            f"| 距上次深扫 {int(now - self._last_deep_scan_time)}s"
+        )
+        return True

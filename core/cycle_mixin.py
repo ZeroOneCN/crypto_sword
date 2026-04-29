@@ -305,6 +305,9 @@ class CycleMixin:
         step_started = time.perf_counter()
         candidates = self._fast_scan_candidates()
         self._record_latency_step(latency_steps, "fast_scan_candidates", step_started)
+        if not deep_due and self._should_force_ws_deep_scan(now, candidates):
+            deep_due = True
+            cycle_type = "deep"
 
         signals = []
         if deep_due:

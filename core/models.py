@@ -33,6 +33,11 @@ class TradingConfig:
         scan_interval_sec: int = 120,
         fast_scan_interval_sec: int = 30,
         scan_workers: int = 8,
+        ws_fast_scan_interval_sec: int = 10,
+        ws_deep_scan_candidate_limit: int = 24,
+        ws_hot_min_change_pct: float = 0.5,
+        ws_hot_deep_scan_min_gap_sec: int = 45,
+        ws_hot_signature_size: int = 5,
         min_stage: str = "pre_break",
         scan_by_change: bool = True,
         min_change_pct: float = 1.0,
@@ -128,6 +133,11 @@ class TradingConfig:
         self.scan_interval_sec = scan_interval_sec
         self.fast_scan_interval_sec = fast_scan_interval_sec
         self.scan_workers = scan_workers
+        self.ws_fast_scan_interval_sec = max(3, int(ws_fast_scan_interval_sec))
+        self.ws_deep_scan_candidate_limit = max(5, int(ws_deep_scan_candidate_limit))
+        self.ws_hot_min_change_pct = ws_hot_min_change_pct
+        self.ws_hot_deep_scan_min_gap_sec = max(15, int(ws_hot_deep_scan_min_gap_sec))
+        self.ws_hot_signature_size = max(3, int(ws_hot_signature_size))
         self.min_stage = min_stage
         self.scan_by_change = scan_by_change
         self.min_change_pct = min_change_pct
