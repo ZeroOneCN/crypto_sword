@@ -946,7 +946,7 @@ class ExecutionMixin:
                     )
                 dynamic_limits = self._dynamic_risk_limits(signal)
                 logger.info(
-                    f"🛡️ {symbol} 动态风控预算：敞口={dynamic_limits['max_total_exposure']}% "
+                    f"🛡️ {symbol} 风控预算：敞口={dynamic_limits['max_total_exposure']}% "
                     f"相关仓={dynamic_limits['max_correlated_positions']} "
                     f"模式={dynamic_limits['mode']} 原因={dynamic_limits['reason']}"
                 )

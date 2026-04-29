@@ -22,7 +22,7 @@ class TradingConfig:
         take_profit_mode: str = "roi",
         max_position_pct: float = 35.0,
         max_total_exposure_pct: float = 220.0,
-        dynamic_exposure_enabled: bool = True,
+        dynamic_exposure_enabled: bool = False,
         min_total_exposure_pct: float = 100.0,
         dynamic_total_exposure_hard_cap_pct: float = 260.0,
         max_daily_loss_pct: float = 0.0,
