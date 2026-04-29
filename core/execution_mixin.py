@@ -191,32 +191,59 @@ class ExecutionMixin:
             if position.current_stop <= breakeven_price:
                 return True
 
-        old_order_id = position.stop_loss_order_id
-        if old_order_id and not order_service.cancel_stop_loss(position.symbol, old_order_id):
-            logger.warning(f"⚠️ {position.symbol} 保本止损移动失败：旧止损撤销失败 {old_order_id}")
-            return False
+        latest_price = 0.0
+        try:
+            latest_price = float(self.get_current_prices([position.symbol]).get(position.symbol, 0) or 0)
+        except Exception as exc:
+            logger.debug(f"{position.symbol} breakeven latest price fetch skipped: {exc}")
 
+        stop_price = breakeven_price
+        # Binance rejects stop orders that would immediately trigger. Keep the
+        # old hard stop unless the adjusted trigger still improves protection.
+        if latest_price > 0:
+            trigger_buffer = max(float(self.config.stop_trigger_buffer_pct), 0.10) / 100.0
+            if position.side == "BUY":
+                max_valid_stop = latest_price * (1 - trigger_buffer)
+                stop_price = min(stop_price, max_valid_stop)
+                if stop_price <= position.current_stop:
+                    logger.info(
+                        f"{position.symbol} breakeven move skipped: safe stop {stop_price:.8f} "
+                        f"does not improve current stop {position.current_stop:.8f}"
+                    )
+                    return False
+            else:
+                min_valid_stop = latest_price * (1 + trigger_buffer)
+                stop_price = max(stop_price, min_valid_stop)
+                if stop_price >= position.current_stop:
+                    logger.info(
+                        f"{position.symbol} breakeven move skipped: safe stop {stop_price:.8f} "
+                        f"does not improve current stop {position.current_stop:.8f}"
+                    )
+                    return False
+
+        old_order_id = position.stop_loss_order_id
         sl_result = order_service.place_stop_loss(
             position.symbol,
             close_side,
             remaining_qty,
-            breakeven_price,
+            stop_price,
             position_side=position_side,
             reduce_only=True,
         )
         if sl_result.status != "ERROR" and sl_result.order_id:
             position.stop_loss_order_id = sl_result.order_id
-            position.stop_loss_price = breakeven_price
-            position.current_stop = breakeven_price
-            logger.warning(f"🛡️ {position.symbol} TP后止损已移动到保本：{sl_result.order_id} @ {breakeven_price:.8f}")
+            position.stop_loss_price = stop_price
+            position.current_stop = stop_price
+            if old_order_id and not order_service.cancel_stop_loss(position.symbol, old_order_id):
+                logger.warning(f"⚠️ {position.symbol} 新保本止损已生效，但旧止损撤销失败：{old_order_id}")
+            logger.warning(f"🛡️ {position.symbol} TP后止损已移动到防守位：{sl_result.order_id} @ {stop_price:.8f}")
             return True
 
-        position.stop_loss_order_id = 0
         position.protection_failures += 1
         position.last_protection_error = sl_result.message
         send_telegram_message(
             format_error_msg(
-                error_type="保本止损移动失败",
+                error_type="防守止损移动失败，旧止损保留",
                 message=sl_result.message,
                 symbol=position.symbol,
                 session_id=position.session_id,

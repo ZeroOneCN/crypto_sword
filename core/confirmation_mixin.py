@@ -76,9 +76,9 @@ class ConfirmationMixin:
         oi_change = abs(float(metrics.get("oi_24h_pct", 0) or 0))
         funding = float(metrics.get("funding_rate", 0) or 0)
         return (
-            score_total >= 55.0
-            and change_24h >= 10.0
-            and oi_change >= 10.0
+            score_total >= 62.0
+            and change_24h >= 12.0
+            and oi_change >= 14.0
             and abs(funding) < self.config.max_abs_funding_rate
         )
 
@@ -93,8 +93,8 @@ class ConfirmationMixin:
     ) -> bool:
         """Let elite setups enter before the 1h MA fully flips, but never against it."""
         higher_alignment = str(higher_alignment or "NEUTRAL").upper()
-        strong_hotspot = score_total >= 78.0 and abs(change_24h) >= 6.0
-        strong_flow = score_total >= 72.0 and abs(oi_change) >= 12.0 and abs(change_24h) >= 5.0
+        strong_hotspot = score_total >= 82.0 and abs(change_24h) >= 7.0
+        strong_flow = score_total >= 78.0 and abs(oi_change) >= 18.0 and abs(change_24h) >= 6.0
         if direction == "LONG":
             if strong_hotspot or strong_flow:
                 return higher_alignment != "BEARISH"
@@ -134,7 +134,7 @@ class ConfirmationMixin:
             and oi_change >= self.config.momentum_entry_min_oi_pct
         ):
             return "趋势突破线"
-        if score_total >= 55.0 and change_24h >= 12.0 and oi_change >= 20.0 and funding <= 0:
+        if score_total >= 64.0 and change_24h >= 12.0 and oi_change >= 24.0 and funding <= 0:
             return "趋势突破线"
         if self._is_accumulation_candidate(metrics, score_total):
             return "趋势突破线"
@@ -232,7 +232,7 @@ class ConfirmationMixin:
         change_24h = float(metrics.get("change_24h_pct", 0) or 0)
         oi_change = float(metrics.get("oi_24h_pct", 0) or 0)
         funding = abs(float(metrics.get("funding_rate", 0) or 0))
-        if score_total < 54 or abs(change_24h) < 8.0 or funding >= self.config.max_abs_funding_rate * 0.95:
+        if score_total < 60 or abs(change_24h) < 8.0 or funding >= self.config.max_abs_funding_rate * 0.95:
             return False, ""
         trend_1h = trend.get("1h", {}) or {}
         trend_15m = trend.get("15m", {}) or {}
@@ -285,7 +285,7 @@ class ConfirmationMixin:
         ma_alignment_1h = str(trend_1h.get("ma_alignment", "NEUTRAL") or "NEUTRAL")
         ma5_5m = float(trend_5m.get("ma5", 0) or 0)
         short_tf_ok = self._short_tf_breakout_ready(trend, direction, current_price)
-        if score_total < 60 or oi_change < 18:
+        if score_total < 64 or oi_change < 22:
             return False, ""
         if direction == "LONG":
             ready = (
