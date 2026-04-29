@@ -284,6 +284,7 @@ class Position:
         self.last_protection_error = ""
         self.highest_price: float = entry_price
         self.lowest_price: float = entry_price
+        self.current_price: float = entry_price if entry_price > 0 else 0.0
         self.current_stop: float = stop_loss_price
         self.exit_price: Optional[float] = None
         self.exit_time: Optional[datetime] = None
@@ -293,6 +294,9 @@ class Position:
 
     def update_price(self, current_price: float, trailing_stop_pct: float):
         """Update price and trailing stop."""
+        if current_price > 0:
+            self.current_price = current_price
+
         if self.side == "BUY":
             if current_price > self.highest_price:
                 self.highest_price = current_price
@@ -345,6 +349,12 @@ class Position:
         return " | ".join(parts)
 
     def to_dict(self) -> dict:
+        current_price = float(self.current_price or 0.0)
+        if current_price <= 0 and self.entry_price > 0:
+            if self.side == "BUY":
+                current_price = self.entry_price * (1 + self.pnl_pct / 100)
+            else:
+                current_price = self.entry_price * (1 - self.pnl_pct / 100)
         display_stop = float(self.current_stop or 0)
         stop_estimated = False
         if display_stop <= 0 and self.entry_price > 0:
@@ -357,9 +367,7 @@ class Position:
             "symbol": self.symbol,
             "side": "LONG" if self.side == "BUY" else "SHORT",
             "entry_price": self.entry_price,
-            "current_price": round(self.entry_price * (1 + self.pnl_pct / 100), 4)
-            if self.side == "BUY"
-            else round(self.entry_price * (1 - self.pnl_pct / 100), 4),
+            "current_price": round(current_price, 8),
             "quantity": self.quantity,
             "entry_time": self.entry_time.isoformat(),
             "stop_loss": round(display_stop, 4),

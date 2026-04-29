@@ -165,13 +165,23 @@ class SyncMixin:
             self._request_state_sync_from_ws("ACCOUNT_ZERO", symbol)
             return
 
-        entry_price = float(pos_event.get("ep", position.entry_price) or position.entry_price)
+        entry_price = self._first_positive(pos_event.get("ep"), position.entry_price)
+        unrealized_pnl = self._safe_float(pos_event.get("up", position.pnl), position.pnl)
         if self._rebase_position_from_exchange_snapshot(
             position,
             live_qty=live_qty,
             live_entry_price=entry_price,
             source="ws_account_update",
         ):
+            self._apply_live_position_snapshot(
+                position,
+                {
+                    "quantity": live_qty,
+                    "entry_price": entry_price,
+                    "unrealized_pnl": unrealized_pnl,
+                },
+                source="ws_account_update_rebase",
+            )
             self._ensure_position_protection(position)
             return
 
@@ -181,8 +191,17 @@ class SyncMixin:
             self._notify_partial_take_profit(position, reduced_qty, live_qty, current_price)
             self._move_stop_to_breakeven(position, live_qty)
 
-        position.quantity = live_qty
-        position.last_synced_quantity = live_qty
+        current_price = self.get_current_prices([symbol]).get(symbol, 0.0)
+        self._apply_live_position_snapshot(
+            position,
+            {
+                "quantity": live_qty,
+                "entry_price": entry_price,
+                "current_price": current_price,
+                "unrealized_pnl": unrealized_pnl,
+            },
+            source="ws_account_update",
+        )
         self._ensure_position_protection(position)
 
     def _handle_ws_order_update(self, event: dict[str, Any]):
@@ -310,6 +329,144 @@ class SyncMixin:
             key, value = note.split("=", 1)
             parsed[key] = value
         return parsed
+
+    @staticmethod
+    def _safe_float(value: Any, default: float = 0.0) -> float:
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return default
+
+    @staticmethod
+    def _first_positive(*values: Any) -> float:
+        for value in values:
+            number = SyncMixin._safe_float(value, 0.0)
+            if number > 0:
+                return number
+        return 0.0
+
+    def _derive_current_price_from_pnl(self, position: Position, unrealized_pnl: float) -> float:
+        qty = float(position.quantity or 0.0)
+        entry = float(position.entry_price or 0.0)
+        if qty <= 0 or entry <= 0:
+            return 0.0
+        if position.side == "BUY":
+            return max(entry + unrealized_pnl / qty, 0.0)
+        return max(entry - unrealized_pnl / qty, 0.0)
+
+    def _repair_position_targets(self, position: Position):
+        entry = float(position.entry_price or 0.0)
+        if entry <= 0:
+            return
+
+        if float(position.highest_price or 0.0) <= 0:
+            position.highest_price = entry
+        if float(position.lowest_price or 0.0) <= 0:
+            position.lowest_price = entry
+
+        if float(position.stop_loss_price or 0.0) <= 0:
+            stop_loss_pct = self._strategy_stop_loss_pct(position.strategy_line)
+            if position.side == "BUY":
+                position.stop_loss_price = entry * (1 - stop_loss_pct / 100.0)
+            else:
+                position.stop_loss_price = entry * (1 + stop_loss_pct / 100.0)
+        if float(position.current_stop or 0.0) <= 0:
+            position.current_stop = float(position.stop_loss_price or 0.0)
+
+        valid_targets = [
+            target
+            for target in (position.take_profit_targets or [])
+            if self._safe_float(target.get("price", 0), 0.0) > 0
+        ]
+        if valid_targets:
+            if float(position.take_profit_price or 0.0) <= 0:
+                position.take_profit_price = self._safe_float(valid_targets[0].get("price", 0), 0.0)
+            return
+
+        target_roi_pcts, target_ratios = self._build_take_profit_plan(position.strategy_line)
+        qty = float(position.quantity or position.initial_quantity or 0.0)
+        rebuilt_targets: list[dict[str, Any]] = []
+        remaining_qty = qty
+        for index, target_pct in enumerate(target_roi_pcts):
+            ratio = target_ratios[index] if index < len(target_ratios) else 0.0
+            if index == len(target_roi_pcts) - 1:
+                target_qty = remaining_qty
+            else:
+                target_qty = qty * ratio
+                remaining_qty = max(remaining_qty - target_qty, 0.0)
+            target_price = self._calculate_local_take_profit_price(entry, position.side, float(target_pct))
+            rebuilt_targets.append(
+                {
+                    "level": index + 1,
+                    "price": target_price,
+                    "quantity": target_qty,
+                    "ratio": ratio,
+                    "target_roi_pct": float(target_pct),
+                    "price_move_pct": abs(target_price - entry) / max(entry, 1e-9) * 100,
+                }
+            )
+        if rebuilt_targets:
+            position.take_profit_targets = rebuilt_targets
+            position.take_profit_price = float(rebuilt_targets[0]["price"])
+            position.target_roi_pct = float(rebuilt_targets[0].get("target_roi_pct", position.target_roi_pct))
+
+    def _apply_live_position_snapshot(self, position: Position, live_pos: dict[str, Any], source: str = ""):
+        live_qty = self._safe_float(live_pos.get("quantity", position.quantity), position.quantity)
+        live_entry_price = self._first_positive(
+            live_pos.get("entry_price"),
+            live_pos.get("break_even_price"),
+            live_pos.get("avg_price"),
+            position.entry_price,
+        )
+        current_price = self._first_positive(
+            live_pos.get("current_price"),
+            live_pos.get("mark_price"),
+            live_pos.get("last_price"),
+        )
+        unrealized_pnl = self._safe_float(live_pos.get("unrealized_pnl", position.pnl), position.pnl)
+
+        if live_entry_price > 0:
+            position.entry_price = live_entry_price
+        if live_qty > 0:
+            position.quantity = live_qty
+            position.last_synced_quantity = live_qty
+            if float(position.initial_quantity or 0.0) <= 0:
+                position.initial_quantity = live_qty
+
+        self._repair_position_targets(position)
+
+        if current_price <= 0:
+            current_price = self._derive_current_price_from_pnl(position, unrealized_pnl)
+        if current_price > 0:
+            position.update_price(current_price, self.config.trailing_stop_pct)
+            if position.side == "BUY":
+                position.highest_price = max(float(position.highest_price or 0.0), current_price)
+            else:
+                position.lowest_price = min(float(position.lowest_price or current_price), current_price)
+
+        entry_notional = float(position.entry_price or 0.0) * float(position.quantity or 0.0)
+        position.pnl = unrealized_pnl
+        if entry_notional > 0:
+            position.pnl_pct = unrealized_pnl / entry_notional * 100.0
+        logger.debug(
+            "live position snapshot applied | source=%s symbol=%s qty=%.8f entry=%.8f mark=%.8f pnl=%.4f",
+            source or "-",
+            position.symbol,
+            float(position.quantity or 0.0),
+            float(position.entry_price or 0.0),
+            float(position.current_price or 0.0),
+            float(position.pnl or 0.0),
+        )
+
+    def _positions_need_summary_refresh(self) -> bool:
+        for position in self.tracker.positions.values():
+            if float(position.entry_price or 0.0) <= 0:
+                return True
+            if float(getattr(position, "current_price", 0.0) or 0.0) <= 0:
+                return True
+            if float(position.take_profit_price or 0.0) <= 0:
+                return True
+        return False
 
     def _rebase_position_from_exchange_snapshot(
         self,
@@ -523,8 +680,8 @@ class SyncMixin:
                 )
                 continue
 
-            live_qty = float(live_pos.get("quantity", 0) or 0)
-            live_entry_price = float(live_pos.get("entry_price", position.entry_price) or position.entry_price)
+            live_qty = self._safe_float(live_pos.get("quantity", 0), 0.0)
+            live_entry_price = self._first_positive(live_pos.get("entry_price"), position.entry_price)
             if live_qty <= 0:
                 continue
 
@@ -534,6 +691,7 @@ class SyncMixin:
                 live_entry_price=live_entry_price,
                 source="rest_sync",
             ):
+                self._apply_live_position_snapshot(position, live_pos, source="rest_sync_rebase")
                 self._ensure_position_protection(position)
                 self._sync_protective_order_snapshot(position)
                 continue
@@ -544,10 +702,7 @@ class SyncMixin:
                 current_price = self.get_current_prices([symbol]).get(symbol, position.take_profit_price)
                 self._notify_partial_take_profit(position, reduced_qty, live_qty, current_price)
                 self._move_stop_to_breakeven(position, live_qty)
-            if live_entry_price > 0:
-                position.entry_price = live_entry_price
-            position.quantity = live_qty
-            position.last_synced_quantity = live_qty
+            self._apply_live_position_snapshot(position, live_pos, source="rest_sync")
             self._ensure_position_protection(position)
             self._sync_protective_order_snapshot(position)
 
@@ -600,8 +755,21 @@ class SyncMixin:
                     "symbol": pos.get("symbol", ""),
                     "side": side,
                     "quantity": abs(position_amt),
-                    "entry_price": float(pos.get("entryPrice", 0) or 0),
-                    "unrealized_pnl": float(pos.get("unRealizedProfit", 0) or 0),
+                    "entry_price": self._first_positive(
+                        pos.get("entryPrice"),
+                        pos.get("breakEvenPrice"),
+                        pos.get("avgPrice"),
+                    ),
+                    "break_even_price": self._first_positive(pos.get("breakEvenPrice")),
+                    "current_price": self._first_positive(
+                        pos.get("markPrice"),
+                        pos.get("lastPrice"),
+                    ),
+                    "mark_price": self._first_positive(pos.get("markPrice")),
+                    "unrealized_pnl": self._safe_float(
+                        pos.get("unRealizedProfit", pos.get("unrealizedProfit", 0)),
+                        0.0,
+                    ),
                 }
             )
         return [p for p in live_positions if p["symbol"]]
@@ -684,6 +852,7 @@ class SyncMixin:
                 take_profit_order_ids=take_profit_order_ids,
                 leverage=restored_leverage,
             )
+            self._apply_live_position_snapshot(restored, live_pos, source="startup_restore")
             self._adopt_existing_protection(restored)
             self.tracker.add_position(restored)
             logger.warning(f"♻️ 已恢复持仓：{restored.symbol} {restored.side} session={session_id}")

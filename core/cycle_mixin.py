@@ -381,6 +381,9 @@ class CycleMixin:
         self._record_latency_step(latency_steps, "execute_entries", step_started)
 
         step_started = time.perf_counter()
+        if self._positions_need_summary_refresh():
+            with self._state_lock:
+                self._sync_positions_with_exchange()
         summary = self._enrich_summary_with_db(self.tracker.get_summary())
         daily_report = self._get_daily_report_snapshot()
         monitor_event = build_monitor_event(

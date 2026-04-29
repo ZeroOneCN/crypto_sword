@@ -128,8 +128,104 @@ class BinanceApiClient:
             raise RuntimeError("Failed to fetch Binance account information")
 
         # Keep the existing code path compatible with account-information-v2.
-        if "positions" not in account:
-            account["positions"] = self.position_risk()
+        account = self._merge_position_risk_snapshot(account)
+        return account
+
+    @staticmethod
+    def _safe_float(value: Any, default: float = 0.0) -> float:
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return default
+
+    @classmethod
+    def _position_key(cls, position: dict[str, Any]) -> tuple[str, str]:
+        symbol = str(position.get("symbol", "") or "")
+        amount = cls._safe_float(position.get("positionAmt", 0))
+        side = str(position.get("positionSide", "") or "")
+        if not side or side == "BOTH":
+            if amount > 0:
+                side = "LONG"
+            elif amount < 0:
+                side = "SHORT"
+            else:
+                side = "BOTH"
+        return symbol, side
+
+    @classmethod
+    def _missing_or_zero(cls, value: Any) -> bool:
+        if value in (None, ""):
+            return True
+        return cls._safe_float(value, 0.0) == 0.0
+
+    def _merge_position_risk_snapshot(self, account: dict[str, Any]) -> dict[str, Any]:
+        """Enrich account positions with mark price and risk fields.
+
+        Binance account endpoints can omit markPrice or return zero-ish entry
+        fields in some environments. positionRisk is the authoritative fallback
+        for open-position summary data.
+        """
+        try:
+            risk_positions = self.position_risk()
+        except Exception as exc:
+            logger.debug(f"Position risk merge skipped: {exc}")
+            if "positions" not in account:
+                account["positions"] = []
+            return account
+
+        if not risk_positions:
+            account.setdefault("positions", [])
+            return account
+
+        risk_by_key = {self._position_key(item): item for item in risk_positions if item.get("symbol")}
+        account_positions = account.get("positions") or []
+        if not account_positions:
+            account["positions"] = risk_positions
+            return account
+
+        merged_positions: list[dict[str, Any]] = []
+        seen_keys: set[tuple[str, str]] = set()
+        prefer_risk_fields = {
+            "markPrice",
+            "unRealizedProfit",
+            "unrealizedProfit",
+            "notional",
+            "liquidationPrice",
+        }
+        fill_if_missing_fields = {
+            "entryPrice",
+            "breakEvenPrice",
+            "positionAmt",
+            "positionSide",
+            "leverage",
+            "isolatedMargin",
+        }
+
+        for position in account_positions:
+            key = self._position_key(position)
+            seen_keys.add(key)
+            risk = risk_by_key.get(key)
+            if not risk:
+                merged_positions.append(position)
+                continue
+
+            merged = dict(position)
+            for field in prefer_risk_fields:
+                if field in risk:
+                    merged[field] = risk[field]
+            for field in fill_if_missing_fields:
+                risk_value = risk.get(field)
+                if field in risk and self._missing_or_zero(merged.get(field)) and not self._missing_or_zero(risk_value):
+                    merged[field] = risk_value
+            merged_positions.append(merged)
+
+        for key, risk in risk_by_key.items():
+            if key in seen_keys:
+                continue
+            if abs(self._safe_float(risk.get("positionAmt", 0))) > 0:
+                merged_positions.append(risk)
+
+        account["positions"] = merged_positions
         return account
 
     def position_risk(self, symbol: str | None = None) -> list[dict[str, Any]]:
