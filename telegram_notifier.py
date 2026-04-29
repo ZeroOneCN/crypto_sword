@@ -291,6 +291,32 @@ def _format_component_label(component: str) -> str:
     return component_map.get(component, component)
 
 
+def _format_protection_failure_detail(detail: str) -> str:
+    """Translate protection failure internals into user-facing Chinese text."""
+    raw = str(detail or "").strip()
+    lower = raw.lower()
+
+    if "stop_loss" in lower and "status=error" in lower and "id=0" in lower:
+        return "止损保护单创建失败"
+    if "stop_loss" in lower and "missing" in lower:
+        return "止损保护单缺失"
+    if "tp" in lower and "status=error" in lower and "id=0" in lower:
+        return "止盈保护单创建失败"
+    if "take_profit" in lower and "missing" in lower:
+        return "止盈保护单缺失"
+    if "protection_deferred" in lower:
+        return "保护单被延后创建"
+    if "reduceonly" in lower or "reduce only" in lower:
+        return "交易所拒绝 reduce-only 参数"
+    if "immediately trigger" in lower:
+        return "保护单价格会立即触发"
+    if "min notional" in lower or "notional" in lower:
+        return "名义价值低于交易所最低要求"
+    if "precision" in lower:
+        return "价格或数量精度不符合交易所规则"
+    return raw or "未知保护单失败"
+
+
 def format_open_position_msg(
     symbol: str,
     direction: str,
@@ -846,7 +872,7 @@ def format_daily_report_msg(report: dict[str, Any]) -> str:
         if failed_by_detail:
             top_details = list(failed_by_detail.items())[:3]
             detail_text = ", ".join(
-                f"{_escape(str(detail))}:{int(count or 0)}"
+                f"{_escape(_format_protection_failure_detail(str(detail)))}:{int(count or 0)}"
                 for detail, count in top_details
             )
             msg += f"\n失败原因  <code>{_escape(detail_text)}</code>"
