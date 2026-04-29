@@ -208,7 +208,11 @@ def _fmt_num(value: Any, decimals: int = 6) -> str:
         return str(value)
 
 
-def _format_take_profit_targets(targets: list[dict[str, Any]] | None) -> str:
+def _format_take_profit_targets(
+    targets: list[dict[str, Any]] | None,
+    entry_price: float = 0.0,
+    direction: str = "LONG",
+) -> str:
     """Format staged take-profit targets for Telegram."""
     if not targets:
         return ""
@@ -221,10 +225,17 @@ def _format_take_profit_targets(targets: list[dict[str, Any]] | None) -> str:
         ratio = float(target.get("ratio", 0) or 0) * 100
         quantity = float(target.get("quantity", 0) or 0)
         level = int(target.get("level", len(lines) + 1) or (len(lines) + 1))
+        expected_pnl = 0.0
+        if entry_price > 0 and price > 0 and quantity > 0:
+            if direction == "LONG":
+                expected_pnl = (price - entry_price) * quantity
+            else:
+                expected_pnl = (entry_price - price) * quantity
+        expected_text = f" | 预计 +${expected_pnl:,.2f}" if expected_pnl > 0 else ""
         lines.append(
             f"TP{level}: "
             f"<code>{price_move_pct:.2f}% 价格 / {roi_pct:.2f}% ROI</code> →<code>${price:,.4f}</code> "
-            f"({ratio:.0f}% / {_fmt_num(quantity)})"
+            f"({ratio:.0f}% / {_fmt_num(quantity)}){expected_text}"
         )
     return "\n".join(lines)
 
@@ -343,6 +354,17 @@ def format_open_position_msg(
     sl_pct = abs(entry_price - stop_loss) / entry_price * 100 if entry_price else 0.0
     tp_pct = abs(take_profit - entry_price) / entry_price * 100 if entry_price else 0.0
     notional_value = entry_price * quantity
+    expected_sl_loss = abs(entry_price - stop_loss) * quantity if entry_price > 0 and stop_loss > 0 else risk_amount
+    expected_tp_total = 0.0
+    for target in take_profit_targets or []:
+        target_price = float(target.get("price", 0) or 0)
+        target_quantity = float(target.get("quantity", 0) or 0)
+        if target_price <= 0 or target_quantity <= 0:
+            continue
+        if direction == "LONG":
+            expected_tp_total += max(0.0, (target_price - entry_price) * target_quantity)
+        else:
+            expected_tp_total += max(0.0, (entry_price - target_price) * target_quantity)
 
     msg = f"""{direction_emoji} <b>宙斯交易中枢 | 开仓成功</b>
 
@@ -351,7 +373,7 @@ def format_open_position_msg(
 <b>入场</b>  <code>${entry_price:,.4f}</code>
 <b>杠杆</b>  {leverage}x
 <b>仓位</b>  <code>{_fmt_num(quantity)}</code>  |  名义 <code>{notional_value:,.2f} USDT</code>
-<b>止损</b>  <code>${stop_loss:,.4f}</code>  ({sl_pct:.2f}%)
+<b>止损</b>  <code>${stop_loss:,.4f}</code>  ({sl_pct:.2f}%) | 预计 <code>-${expected_sl_loss:.2f}</code>
 <b>止盈</b>  <code>${take_profit:,.4f}</code>  ({tp_pct:.2f}%)
 <b>风险</b>  <code>${risk_amount:.2f}</code>  |  {risk_pct:.2f}%"""
 
@@ -365,7 +387,9 @@ def format_open_position_msg(
     if price_move_pct > 0:
         msg += f"\n<b>实际价格目标</b>  <code>{price_move_pct:.2f}%</code>"
     if take_profit_targets:
-        msg += f"\n<b>分批止盈</b>\n{_format_take_profit_targets(take_profit_targets)}"
+        if expected_tp_total > 0:
+            msg += f"\n<b>预计止盈</b>  <code>+${expected_tp_total:,.2f}</code>"
+        msg += f"\n<b>分批止盈</b>\n{_format_take_profit_targets(take_profit_targets, entry_price, direction)}"
 
     if score > 0:
         confidence = "极高" if score >= 80 else ("高" if score >= 60 else ("中" if score >= 40 else "低"))

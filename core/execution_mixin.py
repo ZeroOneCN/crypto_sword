@@ -727,6 +727,9 @@ class ExecutionMixin:
             if not execution_service.should_trade(trading_signal):
                 return None
 
+            score_data = signal.get("score") or {}
+            score = float(score_data.get("total_score", score_data.get("total", 0)) if isinstance(score_data, dict) else score_data or 0)
+
             step_started = time.perf_counter()
             try:
                 balance_hint = signal.get("_balance_hint")
@@ -1012,7 +1015,6 @@ class ExecutionMixin:
 
             from telegram_notifier import format_open_position_msg
 
-            score = signal.get("score", {}).get("total_score", 0) if signal.get("score") else 0
             leverage_applied = int(result.get("leverage_applied", self.config.leverage) or self.config.leverage)
             msg = format_open_position_msg(
                 symbol=symbol,
