@@ -645,6 +645,9 @@ class ExecutionMixin:
             position.exchange_realized_pnl += float(exchange_realized_pnl)
             position.exchange_realized_exit_value += price * reduced_qty
             position.exchange_realized_quantity += reduced_qty
+        position.last_partial_notify_qty = reduced_qty
+        position.last_partial_notify_price = price
+        position.last_partial_notify_ts = time.time()
         self.daily_pnl += pnl
         send_telegram_message(
             format_partial_take_profit_msg(

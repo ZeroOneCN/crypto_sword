@@ -222,6 +222,10 @@ class Position:
         self.exchange_realized_pnl = 0.0
         self.exchange_realized_exit_value = 0.0
         self.exchange_realized_quantity = 0.0
+        self.processed_tp_trade_keys: set[str] = set()
+        self.last_partial_notify_qty = 0.0
+        self.last_partial_notify_price = 0.0
+        self.last_partial_notify_ts = 0.0
         self.protection_failures = 0
         self.last_protection_error = ""
         self.highest_price: float = entry_price
@@ -264,14 +268,14 @@ class Position:
                 return "STOP_LOSS"
             if current_price >= self.take_profit_price:
                 if self.take_profit_order_ids:
-                    return "TAKE_PROFIT_LOCAL_FALLBACK"
+                    return None
                 return "TAKE_PROFIT"
         else:
             if current_price >= self.current_stop:
                 return "STOP_LOSS"
             if current_price <= self.take_profit_price:
                 if self.take_profit_order_ids:
-                    return "TAKE_PROFIT_LOCAL_FALLBACK"
+                    return None
                 return "TAKE_PROFIT"
         return None
 

@@ -109,9 +109,33 @@ class SyncMixin:
         filled_qty: float,
         fill_price: float,
         realized_pnl: float | None = None,
+        trade_key: str = "",
     ):
         if filled_qty <= 0:
             return
+        if trade_key and trade_key in position.processed_tp_trade_keys:
+            if order_id in position.take_profit_order_ids:
+                position.take_profit_order_ids = [oid for oid in position.take_profit_order_ids if oid != order_id]
+            logger.debug(f"{position.symbol} duplicate TP fill skipped: {trade_key}")
+            return
+        recent_ts = float(getattr(position, "last_partial_notify_ts", 0.0) or 0.0)
+        recent_qty = float(getattr(position, "last_partial_notify_qty", 0.0) or 0.0)
+        recent_price = float(getattr(position, "last_partial_notify_price", 0.0) or 0.0)
+        qty_close = recent_qty > 0 and abs(filled_qty - recent_qty) <= max(1e-9, recent_qty * 0.01)
+        price_close = (
+            recent_price > 0
+            and fill_price > 0
+            and abs(fill_price - recent_price) / recent_price <= 0.003
+        )
+        if recent_ts > 0 and time.time() - recent_ts <= 5.0 and qty_close and price_close:
+            if order_id in position.take_profit_order_ids:
+                position.take_profit_order_ids = [oid for oid in position.take_profit_order_ids if oid != order_id]
+            if trade_key:
+                position.processed_tp_trade_keys.add(trade_key)
+            logger.debug(f"{position.symbol} duplicate TP fill skipped by recent reduction: {trade_key or order_id}")
+            return
+        if trade_key:
+            position.processed_tp_trade_keys.add(trade_key)
         reduced_qty = min(filled_qty, position.quantity)
         remaining_qty = max(position.quantity - reduced_qty, 0.0)
         if order_id in position.take_profit_order_ids:
@@ -170,9 +194,11 @@ class SyncMixin:
         order_type = str(order.get("o", "") or "")
         realized_pnl = float(order.get("rp", 0) or 0)
         order_id = int(order.get("i", 0) or 0)
+        trade_id = str(order.get("t", "") or "")
         last_fill_qty = abs(float(order.get("l", 0) or 0))
         avg_price = float(order.get("ap", 0) or order.get("L", 0) or 0)
         position_side = str(order.get("ps", "") or "")
+        is_take_profit_order = "TAKE_PROFIT" in order_type.upper()
 
         if status in {"FILLED", "PARTIALLY_FILLED", "CANCELED", "EXPIRED"} or execution_type == "TRADE":
             logger.info(
@@ -190,13 +216,19 @@ class SyncMixin:
                             position.exchange_realized_quantity += last_fill_qty
                         self._request_state_sync_from_ws(f"{execution_type}/{status}", symbol)
                         return
-                    if order_id in position.take_profit_order_ids and execution_type == "TRADE":
+                    if (order_id in position.take_profit_order_ids or is_take_profit_order) and execution_type == "TRADE":
+                        tp_trade_key = (
+                            f"{order_id}:{trade_id}"
+                            if order_id > 0 and trade_id
+                            else f"{order_id}:{status}:{last_fill_qty:.12f}:{avg_price:.12f}"
+                        )
                         self._handle_ws_tp_fill(
                             position,
                             order_id,
                             last_fill_qty,
                             avg_price or position.take_profit_price,
                             realized_pnl,
+                            trade_key=tp_trade_key,
                         )
                         return
             self._request_state_sync_from_ws(f"{execution_type}/{status}", symbol)
