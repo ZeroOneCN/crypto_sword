@@ -148,8 +148,8 @@ class CryptoSword(ExecutionMixin, ScannerMixin, CycleMixin, SyncMixin, Confirmat
         return enriched
 
     def _enrich_daily_report_with_api(self, report: dict[str, Any], date_str: str) -> dict[str, Any]:
-        """Build daily report strictly from Binance API userTrades (no local DB metrics)."""
-        api_report: dict[str, Any] = {
+        """Build daily report from persisted closed-position records."""
+        daily_report: dict[str, Any] = {
             "date": date_str,
             "mode": self.config.mode,
             "closed_trades": 0,
@@ -176,156 +176,31 @@ class CryptoSword(ExecutionMixin, ScannerMixin, CycleMixin, SyncMixin, Confirmat
                 "failed_by_detail": {},
             },
         }
-        del report  # explicitly ignore local report data
+        del report  # explicitly ignore caller snapshot
         try:
-            api_report["entry_protection"] = feature_store.summarize_entry_protection(date_str, tz_offset_hours=8)
+            daily_report["entry_protection"] = feature_store.summarize_entry_protection(date_str, tz_offset_hours=8)
         except Exception as e:
             logger.debug(f"entry protection summary skipped [{date_str}]: {e}")
+
         try:
-            from binance_api_client import get_native_binance_client
-            from datetime import timezone, timedelta
-
-            client = get_native_binance_client()
-
-            tz_utc8 = timezone(timedelta(hours=8))
-            target_date = datetime.fromisoformat(date_str).replace(tzinfo=tz_utc8)
-            day_start_utc8 = target_date.replace(hour=0, minute=0, second=0, microsecond=0)
-            day_end_utc8 = day_start_utc8 + timedelta(days=1)
-            start_ms = int(day_start_utc8.timestamp() * 1000)
-            end_ms = int(day_end_utc8.timestamp() * 1000)
-
-            trades = client.get_trade_history(start_time=start_ms, end_time=end_ms, limit=1000)
-            order_stats: dict[tuple[str, int], dict[str, float | str]] = {}
-
-            for trade in trades:
-                pnl = float(trade.get("realizedPnl", 0) or 0)
-                if abs(pnl) <= 1e-12:
-                    continue
-
-                symbol = str(trade.get("symbol", "") or "")
-                order_id = int(trade.get("orderId", 0) or 0)
-                if not symbol or order_id <= 0:
-                    continue
-
-                price = float(trade.get("price", 0) or 0)
-                qty = abs(float(trade.get("qty", 0) or 0))
-                quote_qty = abs(float(trade.get("quoteQty", 0) or 0))
-                notional = quote_qty if quote_qty > 0 else abs(price * qty)
-
-                key = (symbol, order_id)
-                bucket = order_stats.setdefault(
-                    key,
-                    {
-                        "symbol": symbol,
-                        "pnl": 0.0,
-                        "close_notional": 0.0,
-                    },
-                )
-                bucket["pnl"] = float(bucket["pnl"]) + pnl
-                bucket["close_notional"] = float(bucket["close_notional"]) + notional
-
-            if not order_stats:
-                return api_report
-
-            symbols = sorted({str(key[0]) for key in order_stats.keys()})
-            order_meta_map: dict[tuple[str, int], dict[str, Any]] = {}
-            for symbol in symbols:
-                try:
-                    symbol_orders = client.all_orders(
-                        symbol=symbol,
-                        start_time=start_ms,
-                        end_time=end_ms,
-                        limit=1000,
-                    )
-                    for item in symbol_orders:
-                        oid = int(item.get("orderId", 0) or 0)
-                        if oid <= 0:
-                            continue
-                        order_meta_map[(symbol, oid)] = item
-                except Exception as sub_e:
-                    logger.debug(f"API all_orders skipped [{date_str}] {symbol}: {sub_e}")
-
-            reason_counts: dict[str, int] = {}
-
-            def _reason_from_order(order: dict[str, Any] | None) -> str:
-                if not order:
-                    return "FILLED"
-                status = str(order.get("status", "") or "").upper() or "FILLED"
-                order_type = str(order.get("type", "") or "").upper()
-                if order_type in {"STOP", "STOP_MARKET", "TRAILING_STOP_MARKET"}:
-                    return "STOP_LOSS"
-                if order_type in {"TAKE_PROFIT", "TAKE_PROFIT_MARKET"}:
-                    return "TAKE_PROFIT"
-                if status in {"PARTIALLY_FILLED", "FILLED", "CANCELED", "EXPIRED", "REJECTED"}:
-                    return status
-                return "UNKNOWN"
-
-            order_rows: list[dict[str, float | str]] = []
-            for key, row in order_stats.items():
-                pnl = float(row["pnl"])
-                close_notional = float(row["close_notional"])
-                pnl_pct = (pnl / close_notional * 100.0) if close_notional > 0 else 0.0
-                reason = _reason_from_order(order_meta_map.get(key))
-                reason_counts[reason] = reason_counts.get(reason, 0) + 1
-                order_rows.append(
-                    {
-                        "symbol": str(row["symbol"]),
-                        "pnl": pnl,
-                        "pnl_pct": pnl_pct,
-                        "close_notional": close_notional,
-                        "reason": reason,
-                    }
-                )
-
-            total_pnl = sum(float(item["pnl"]) for item in order_rows)
-            closed_count = len(order_rows)
-            winning_count = sum(1 for item in order_rows if float(item["pnl"]) > 0)
-            losing_count = sum(1 for item in order_rows if float(item["pnl"]) < 0)
-            gross_profit = sum(float(item["pnl"]) for item in order_rows if float(item["pnl"]) > 0)
-            gross_loss_abs = abs(sum(float(item["pnl"]) for item in order_rows if float(item["pnl"]) < 0))
-            avg_win = gross_profit / winning_count if winning_count else 0.0
-            avg_loss = -(gross_loss_abs / losing_count) if losing_count else 0.0
-            payoff_ratio = (avg_win / abs(avg_loss)) if avg_loss else (999.0 if avg_win > 0 else 0.0)
-            profit_factor = (gross_profit / gross_loss_abs) if gross_loss_abs > 0 else (999.0 if gross_profit > 0 else 0.0)
-            best_trade = max(order_rows, key=lambda item: float(item["pnl"]))
-            worst_trade = min(order_rows, key=lambda item: float(item["pnl"]))
-
-            api_report["closed_trades"] = closed_count
-            api_report["winning_trades"] = winning_count
-            api_report["losing_trades"] = losing_count
-            api_report["total_pnl"] = round(total_pnl, 2)
-            api_report["win_rate"] = round(winning_count / closed_count * 100, 2) if closed_count else 0.0
-            api_report["avg_pnl"] = round(total_pnl / closed_count, 2) if closed_count else 0.0
-            api_report["avg_win"] = round(avg_win, 2)
-            api_report["avg_loss"] = round(avg_loss, 2)
-            api_report["payoff_ratio"] = round(payoff_ratio, 2)
-            api_report["profit_factor"] = round(profit_factor, 2)
-            api_report["max_loss"] = round(min(0.0, float(worst_trade["pnl"])), 2)
-            api_report["best_trade"] = {
-                "symbol": str(best_trade["symbol"]),
-                "pnl": round(float(best_trade["pnl"]), 2),
-                "pnl_pct": round(float(best_trade["pnl_pct"]), 2),
-            }
-            api_report["worst_trade"] = {
-                "symbol": str(worst_trade["symbol"]),
-                "pnl": round(float(worst_trade["pnl"]), 2),
-                "pnl_pct": round(float(worst_trade["pnl_pct"]), 2),
-            }
-            api_report["reason_counts"] = reason_counts
-
+            db_report = self.db.get_daily_report(date_str, mode=self.config.mode)
+            if isinstance(db_report, dict):
+                entry_protection = daily_report.get("entry_protection", {})
+                daily_report.update(db_report)
+                daily_report["date"] = date_str
+                daily_report["mode"] = self.config.mode
+                daily_report["entry_protection"] = entry_protection
             logger.info(
-                f"Daily report from API [{date_str}] | orders={closed_count} "
-                f"pnl={float(api_report['total_pnl']):+,.2f} "
-                f"best={api_report['best_trade']['symbol']}({float(api_report['best_trade']['pnl']):+,.2f},"
-                f"{float(api_report['best_trade']['pnl_pct']):+,.2f}%) "
-                f"worst={api_report['worst_trade']['symbol']}({float(api_report['worst_trade']['pnl']):+,.2f},"
-                f"{float(api_report['worst_trade']['pnl_pct']):+,.2f}%) "
-                f"reasons={reason_counts}"
+                f"Daily report from DB [{date_str}] | trades={int(daily_report.get('closed_trades', 0) or 0)} "
+                f"pnl={float(daily_report.get('total_pnl', 0) or 0):+,.2f} "
+                f"best={((daily_report.get('best_trade') or {}).get('symbol', '-'))} "
+                f"worst={((daily_report.get('worst_trade') or {}).get('symbol', '-'))} "
+                f"reasons={daily_report.get('reason_counts', {})}"
             )
         except Exception as e:
-            logger.debug(f"API daily report build failed [{date_str}]: {e}")
+            logger.warning(f"Daily report DB build failed [{date_str}]: {e}")
 
-        return api_report
+        return daily_report
 
     def _get_daily_report_snapshot(self, ttl_sec: float = 60.0, force: bool = False) -> dict[str, Any]:
         report_date = datetime.now().date().isoformat()

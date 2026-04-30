@@ -57,6 +57,35 @@ except Exception:
     get_native_binance_client = None
 
 
+def _tradifi_symbol_set(ttl_sec: float = 300.0) -> set[str]:
+    allow_tradifi = str(os.environ.get("HERMES_ALLOW_TRADIFI_PERPS", "") or "").strip().lower() in {"1", "true", "yes", "on"}
+    allow_tradifi = allow_tradifi or str(os.environ.get("BINANCE_ALLOW_TRADIFI_PERPS", "") or "").strip().lower() in {"1", "true", "yes", "on"}
+    if allow_tradifi:
+        return set()
+
+    cache_key = ("tradifi_symbol_set",)
+    cached = _cache_get(cache_key, ttl_sec)
+    if cached is not None:
+        return set(cached)
+
+    symbols: set[str] = set()
+    if not get_native_binance_client:
+        return symbols
+    try:
+        info = get_native_binance_client().exchange_info()
+        for item in info.get("symbols", []) if isinstance(info, dict) else []:
+            symbol = str(item.get("symbol", "") or "").upper()
+            if not symbol:
+                continue
+            contract_type = str(item.get("contractType", "") or "").upper()
+            subtypes = {str(x or "").strip().upper() for x in (item.get("underlyingSubType", []) or [])}
+            if contract_type == "TRADIFI_PERPETUAL" or "TRADIFI" in subtypes or "TRADFI" in subtypes:
+                symbols.add(symbol)
+    except Exception as e:
+        logger.debug(f"tradifi symbol refresh failed: {e}")
+    return _cache_set(cache_key, symbols, ttl_sec)
+
+
 def compute_change_pct(closes: list[float], lookback_candles: int) -> float:
     """Return percent change between the latest close and the close `lookback_candles` ago."""
     if lookback_candles <= 0:
@@ -580,6 +609,9 @@ def scan_symbols(symbols: list[str], min_stage: str | None = None, max_workers: 
     Returns:
         List of SymbolBreakoutResult for symbols matching criteria.
     """
+    blocked_symbols = _tradifi_symbol_set()
+    symbols = [symbol for symbol in symbols if str(symbol or "").upper() not in blocked_symbols]
+
     stage_priority = {
         "neutral": 0,
         "pre_break": 1,
@@ -646,9 +678,10 @@ def get_top_symbols_by_volume(limit: int = 20) -> list[str]:
     ticker = fetch_ticker_24hr()  # all symbols
     if isinstance(ticker, dict):
         ticker = [ticker]
+    blocked_symbols = _tradifi_symbol_set()
 
     sorted_tickers = sorted(
-        ticker,
+        [item for item in ticker if str(item.get("symbol", "") or "").upper() not in blocked_symbols],
         key=lambda x: float(x.get("quoteVolume", 0)),
         reverse=True,
     )[:limit]
@@ -676,6 +709,7 @@ def get_top_symbols_by_change(limit: int | None = None, min_change: float = 3.0)
     ticker = fetch_ticker_24hr()  # all symbols in ONE API call
     if isinstance(ticker, dict):
         ticker = [ticker]
+    blocked_symbols = _tradifi_symbol_set()
     
     # Filter: USDT perpetuals only, exclude stablecoins and leveraged tokens
     filtered = []
@@ -683,6 +717,8 @@ def get_top_symbols_by_change(limit: int | None = None, min_change: float = 3.0)
     for t in ticker:
         symbol = t.get("symbol", "")
         if not symbol.endswith('USDT'):
+            continue
+        if symbol.upper() in blocked_symbols:
             continue
         if any(p in symbol for p in exclude_patterns):
             continue

@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import time
 from dataclasses import dataclass, field
 from decimal import Decimal, ROUND_CEILING
@@ -266,6 +267,40 @@ def get_symbol_info(symbol: str) -> Optional[dict]:
             if s.get("symbol") == symbol:
                 return s
     return None
+
+
+def _env_flag(name: str, default: bool = False) -> bool:
+    value = str(os.environ.get(name, "") or "").strip().lower()
+    if not value:
+        return default
+    return value in {"1", "true", "yes", "on"}
+
+
+def is_tradifi_perpetual_symbol(symbol: str) -> bool:
+    sym_info = get_symbol_info(symbol)
+    if not sym_info:
+        return False
+    contract_type = str(sym_info.get("contractType", "") or "").upper()
+    if contract_type == "TRADIFI_PERPETUAL":
+        return True
+    for item in sym_info.get("underlyingSubType", []) or []:
+        subtype = str(item or "").strip().upper()
+        if subtype in {"TRADFI", "TRADIFI"}:
+            return True
+    return False
+
+
+def validate_symbol_tradeable(symbol: str) -> tuple[bool, str]:
+    allow_tradifi = _env_flag("HERMES_ALLOW_TRADIFI_PERPS") or _env_flag("BINANCE_ALLOW_TRADIFI_PERPS")
+    if not allow_tradifi and is_tradifi_perpetual_symbol(symbol):
+        return (
+            False,
+            (
+                f"{symbol} requires the Binance TradFi-Perps agreement "
+                "(contractType=TRADIFI_PERPETUAL); blocked before order submission"
+            ),
+        )
+    return True, ""
 
 
 def _truncate_to_step(value: float, step_size: float) -> float:
@@ -682,6 +717,18 @@ def place_market_order(
             )
         
         # 调整 quantity 精度，防止 LOT_SIZE 过滤失败
+        tradeable, reject_reason = validate_symbol_tradeable(symbol)
+        if not tradeable:
+            return OrderResult(
+                symbol=symbol,
+                side=side,
+                quantity=quantity,
+                executed_price=0,
+                order_id=0,
+                status="REJECTED",
+                message=reject_reason,
+            )
+
         quantity = adjust_quantity_precision(symbol, quantity, current_price)
 
         if not is_native_binance_configured() or not get_native_binance_client:
