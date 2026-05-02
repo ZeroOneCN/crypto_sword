@@ -29,7 +29,6 @@ class TradingConfig:
         max_open_positions: int = 3,
         max_daily_entries: int = 8,
         max_entries_per_cycle: int = 1,
-        symbol_cooldown_sec: int = 4 * 3600,
         min_signal_score_for_entry: float = 82.0,
         min_signal_score_defensive: float = 90.0,
         trailing_stop_pct: float = 5.0,
@@ -135,7 +134,6 @@ class TradingConfig:
         self.max_open_positions = max_open_positions
         self.max_daily_entries = max(1, int(max_daily_entries))
         self.max_entries_per_cycle = max(1, int(max_entries_per_cycle))
-        self.symbol_cooldown_sec = max(0, int(symbol_cooldown_sec))
         self.min_signal_score_for_entry = max(0.0, float(min_signal_score_for_entry))
         self.min_signal_score_defensive = max(self.min_signal_score_for_entry, float(min_signal_score_defensive))
         self.trailing_stop_pct = trailing_stop_pct

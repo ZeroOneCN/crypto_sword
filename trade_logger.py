@@ -228,6 +228,60 @@ class TradeDatabase:
         except Exception:
             return 0.0
 
+    def _session_key_for_trade(self, trade: TradeRecord) -> str:
+        notes = self._parse_notes(trade.notes or "")
+        session_id = notes.get("session_id", "").strip()
+        if session_id:
+            return f"session:{session_id}"
+        return f"trade:{trade.id or trade.symbol}:{trade.entry_time}"
+
+    def _aggregate_closed_trade_sessions(self, trades: List[TradeRecord]) -> List[Dict[str, Any]]:
+        """Aggregate split/partial close rows into one logical trade session."""
+        sessions: Dict[str, Dict[str, Any]] = {}
+        for trade in trades:
+            key = self._session_key_for_trade(trade)
+            notes = self._parse_notes(trade.notes or "")
+            item = sessions.get(key)
+            if item is None:
+                item = {
+                    "key": key,
+                    "session_id": notes.get("session_id", ""),
+                    "symbol": trade.symbol,
+                    "side": trade.side,
+                    "direction": trade.direction,
+                    "stage": trade.stage,
+                    "entry_price": float(trade.entry_price or 0.0),
+                    "quantity": 0.0,
+                    "entry_time": trade.entry_time,
+                    "exit_time": trade.exit_time or "",
+                    "exit_price": float(trade.exit_price or 0.0),
+                    "exit_reason": trade.exit_reason or "",
+                    "pnl": 0.0,
+                    "realized_pnl": 0.0,
+                    "pnl_pct": 0.0,
+                    "market_snapshot": trade.market_snapshot or {},
+                    "rows": 0,
+                }
+                sessions[key] = item
+
+            item["rows"] += 1
+            item["pnl"] = round(float(item["pnl"]) + float(trade.pnl or 0.0), 8)
+            item["realized_pnl"] = round(float(item["realized_pnl"]) + float(trade.realized_pnl or trade.pnl or 0.0), 8)
+            item["quantity"] = float(item.get("quantity", 0.0) or 0.0) + float(trade.quantity or 0.0)
+
+            trade_exit_time = trade.exit_time or ""
+            if trade_exit_time >= str(item.get("exit_time", "") or ""):
+                item["exit_time"] = trade_exit_time
+                item["exit_price"] = float(trade.exit_price or item.get("exit_price", 0.0) or 0.0)
+                item["exit_reason"] = trade.exit_reason or item.get("exit_reason", "")
+                if trade.market_snapshot:
+                    item["market_snapshot"] = trade.market_snapshot
+
+        for item in sessions.values():
+            entry_notional = abs(float(item.get("entry_price", 0.0) or 0.0) * float(item.get("quantity", 0.0) or 0.0))
+            item["pnl_pct"] = round(float(item.get("pnl", 0.0) or 0.0) / entry_notional * 100.0, 4) if entry_notional > 0 else 0.0
+        return list(sessions.values())
+
     @staticmethod
     def _trade_hold_hours(trade: TradeRecord) -> float:
         try:
@@ -451,63 +505,55 @@ class TradeDatabase:
         """获取交易统计"""
         conn = self._get_connection()
         cursor = conn.cursor()
-        
-        # 基础统计
         if mode:
-            cursor.execute("""
-                SELECT 
-                    COUNT(*) as total_trades,
-                    COUNT(CASE WHEN exit_price IS NOT NULL THEN 1 END) as closed_trades,
-                    COUNT(CASE WHEN exit_price IS NULL THEN 1 END) as open_trades,
-                    COALESCE(SUM(CASE WHEN pnl > 0 THEN 1 ELSE 0 END), 0) as winning_trades,
-                    COALESCE(SUM(CASE WHEN pnl < 0 THEN 1 ELSE 0 END), 0) as losing_trades,
-                    COALESCE(SUM(pnl), 0) as total_pnl,
-                    COALESCE(AVG(pnl), 0) as avg_pnl,
-                    COALESCE(MAX(pnl), 0) as max_pnl,
-                    COALESCE(MIN(pnl), 0) as min_pnl
+            cursor.execute(
+                """
+                SELECT
+                    COUNT(*) as total_rows,
+                    COUNT(CASE WHEN exit_price IS NULL THEN 1 END) as open_rows
                 FROM trades
                 WHERE mode = ?
                 AND (exit_time IS NULL OR datetime(exit_time) >= datetime('now', '-' || ? || ' days'))
-            """, (mode, days))
+                """,
+                (mode, days),
+            )
         else:
-            cursor.execute("""
-                SELECT 
-                    COUNT(*) as total_trades,
-                    COUNT(CASE WHEN exit_price IS NOT NULL THEN 1 END) as closed_trades,
-                    COUNT(CASE WHEN exit_price IS NULL THEN 1 END) as open_trades,
-                    COALESCE(SUM(CASE WHEN pnl > 0 THEN 1 ELSE 0 END), 0) as winning_trades,
-                    COALESCE(SUM(CASE WHEN pnl < 0 THEN 1 ELSE 0 END), 0) as losing_trades,
-                    COALESCE(SUM(pnl), 0) as total_pnl,
-                    COALESCE(AVG(pnl), 0) as avg_pnl,
-                    COALESCE(MAX(pnl), 0) as max_pnl,
-                    COALESCE(MIN(pnl), 0) as min_pnl
+            cursor.execute(
+                """
+                SELECT
+                    COUNT(*) as total_rows,
+                    COUNT(CASE WHEN exit_price IS NULL THEN 1 END) as open_rows
                 FROM trades
                 WHERE (exit_time IS NULL OR datetime(exit_time) >= datetime('now', '-' || ? || ' days'))
-            """, (days,))
-        
+                """,
+                (days,),
+            )
+
         row = cursor.fetchone()
-        
-        # 胜率
-        total_closed = row['closed_trades']
-        winning = row['winning_trades']
+        conn.close()
+
+        sessions = self._aggregate_closed_trade_sessions(self.get_closed_trades(days=days, mode=mode))
+        total_closed = len(sessions)
+        winning = sum(1 for item in sessions if float(item.get("pnl", 0.0) or 0.0) > 0)
+        losing = sum(1 for item in sessions if float(item.get("pnl", 0.0) or 0.0) < 0)
+        pnl_values = [float(item.get("pnl", 0.0) or 0.0) for item in sessions]
+        total_pnl = sum(pnl_values)
         win_rate = (winning / total_closed * 100) if total_closed > 0 else 0
-        
+
         stats = {
             'period_days': days,
             'mode': mode or 'all',
-            'total_trades': row['total_trades'],
+            'total_trades': total_closed + int(row['open_rows'] or 0),
             'closed_trades': total_closed,
-            'open_trades': row['open_trades'],
+            'open_trades': int(row['open_rows'] or 0),
             'winning_trades': winning,
-            'losing_trades': row['losing_trades'],
+            'losing_trades': losing,
             'win_rate': round(win_rate, 2),
-            'total_pnl': round(row['total_pnl'], 2),
-            'avg_pnl': round(row['avg_pnl'], 2),
-            'max_pnl': round(row['max_pnl'], 2),
-            'min_pnl': round(row['min_pnl'], 2),
+            'total_pnl': round(total_pnl, 2),
+            'avg_pnl': round(total_pnl / total_closed, 2) if total_closed else 0.0,
+            'max_pnl': round(max(pnl_values), 2) if pnl_values else 0.0,
+            'min_pnl': round(min(pnl_values), 2) if pnl_values else 0.0,
         }
-        
-        conn.close()
         return stats
 
     def get_daily_report(self, report_date: str, mode: str = None) -> Dict[str, Any]:
@@ -530,21 +576,22 @@ class TradeDatabase:
         trades = [self._row_to_trade(row) for row in cursor.fetchall()]
         conn.close()
 
-        closed_count = len(trades)
-        total_pnl = round(sum(float(t.pnl or 0) for t in trades), 2)
-        winning = [t for t in trades if float(t.pnl or 0) > 0]
-        losing = [t for t in trades if float(t.pnl or 0) < 0]
+        sessions = self._aggregate_closed_trade_sessions(trades)
+        closed_count = len(sessions)
+        total_pnl = round(sum(float(t.get("pnl", 0) or 0) for t in sessions), 2)
+        winning = [t for t in sessions if float(t.get("pnl", 0) or 0) > 0]
+        losing = [t for t in sessions if float(t.get("pnl", 0) or 0) < 0]
         avg_pnl = round(total_pnl / closed_count, 2) if closed_count else 0.0
         win_rate = round(len(winning) / closed_count * 100, 2) if closed_count else 0.0
-        gross_profit = sum(float(t.pnl or 0) for t in winning)
-        gross_loss_abs = abs(sum(float(t.pnl or 0) for t in losing))
+        gross_profit = sum(float(t.get("pnl", 0) or 0) for t in winning)
+        gross_loss_abs = abs(sum(float(t.get("pnl", 0) or 0) for t in losing))
         avg_win = round(gross_profit / len(winning), 2) if winning else 0.0
         avg_loss = round(-(gross_loss_abs / len(losing)), 2) if losing else 0.0
         payoff_ratio = round((avg_win / abs(avg_loss)), 2) if avg_loss else (999.0 if avg_win > 0 else 0.0)
         profit_factor = round((gross_profit / gross_loss_abs), 2) if gross_loss_abs > 0 else (999.0 if gross_profit > 0 else 0.0)
 
-        best_trade = max(trades, key=lambda t: float(t.pnl or 0), default=None)
-        worst_trade = min(trades, key=lambda t: float(t.pnl or 0), default=None)
+        best_trade = max(sessions, key=lambda t: float(t.get("pnl", 0) or 0), default=None)
+        worst_trade = min(sessions, key=lambda t: float(t.get("pnl", 0) or 0), default=None)
 
         reason_counts: Dict[str, int] = {}
         side_stats: Dict[str, Dict[str, Any]] = {
@@ -562,8 +609,8 @@ class TradeDatabase:
             "enhanced_avg_bonus": 0.0,
         }
         enhanced_bonus_values: list[float] = []
-        for trade in trades:
-            reason = (trade.exit_reason or "UNKNOWN").upper()
+        for trade in sessions:
+            reason = (trade.get("exit_reason") or "UNKNOWN").upper()
             if "TAKE_PROFIT" in reason:
                 reason_key = "TAKE_PROFIT"
             elif "STOP_LOSS" in reason:
@@ -576,30 +623,30 @@ class TradeDatabase:
                 reason_key = reason
             reason_counts[reason_key] = reason_counts.get(reason_key, 0) + 1
 
-            side_key = (trade.side or "").upper()
+            side_key = (trade.get("side") or "").upper()
             if side_key in side_stats:
                 side_stats[side_key]["count"] += 1
-                side_stats[side_key]["pnl"] = round(side_stats[side_key]["pnl"] + float(trade.pnl or 0), 2)
+                side_stats[side_key]["pnl"] = round(side_stats[side_key]["pnl"] + float(trade.get("pnl", 0) or 0), 2)
 
-            stage_key = trade.stage or "UNKNOWN"
+            stage_key = trade.get("stage") or "UNKNOWN"
             if stage_key not in stage_stats:
                 stage_stats[stage_key] = {"count": 0, "pnl": 0.0}
             stage_stats[stage_key]["count"] += 1
-            stage_stats[stage_key]["pnl"] = round(stage_stats[stage_key]["pnl"] + float(trade.pnl or 0), 2)
+            stage_stats[stage_key]["pnl"] = round(stage_stats[stage_key]["pnl"] + float(trade.get("pnl", 0) or 0), 2)
 
             funding_rate = 0.0
             oi_24h = 0.0
-            snapshot = trade.market_snapshot or {}
+            snapshot = trade.get("market_snapshot") or {}
             oi_funding = snapshot.get("_oi_funding") if isinstance(snapshot, dict) else {}
             if not isinstance(oi_funding, dict):
                 oi_funding = {}
             oi_bonus = float(oi_funding.get("score_bonus", 0) or 0)
             if oi_bonus > 0:
                 oi_funding_stats["enhanced_trades"] += 1
-                if float(trade.pnl or 0) > 0:
+                if float(trade.get("pnl", 0) or 0) > 0:
                     oi_funding_stats["enhanced_wins"] += 1
                 oi_funding_stats["enhanced_total_pnl"] = round(
-                    float(oi_funding_stats["enhanced_total_pnl"]) + float(trade.pnl or 0),
+                    float(oi_funding_stats["enhanced_total_pnl"]) + float(trade.get("pnl", 0) or 0),
                     2,
                 )
                 enhanced_bonus_values.append(oi_bonus)
@@ -633,17 +680,17 @@ class TradeDatabase:
             if pattern_key not in loss_patterns:
                 loss_patterns[pattern_key] = {"count": 0, "pnl": 0.0}
             loss_patterns[pattern_key]["count"] += 1
-            loss_patterns[pattern_key]["pnl"] = round(loss_patterns[pattern_key]["pnl"] + float(trade.pnl or 0), 2)
+            loss_patterns[pattern_key]["pnl"] = round(loss_patterns[pattern_key]["pnl"] + float(trade.get("pnl", 0) or 0), 2)
 
-        def _trade_summary(trade: Optional[TradeRecord]) -> Optional[Dict[str, Any]]:
+        def _trade_summary(trade: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
             if not trade:
                 return None
             return {
-                "symbol": trade.symbol,
-                "side": trade.side,
-                "pnl": round(float(trade.pnl or 0), 2),
-                "pnl_pct": round(float(trade.pnl_pct or 0), 2),
-                "exit_reason": trade.exit_reason or "",
+                "symbol": trade.get("symbol", ""),
+                "side": trade.get("side", ""),
+                "pnl": round(float(trade.get("pnl", 0) or 0), 2),
+                "pnl_pct": round(float(trade.get("pnl_pct", 0) or 0), 2),
+                "exit_reason": trade.get("exit_reason", "") or "",
             }
 
         if oi_funding_stats["enhanced_trades"] > 0:
@@ -673,7 +720,7 @@ class TradeDatabase:
             "avg_loss": avg_loss,
             "payoff_ratio": payoff_ratio,
             "profit_factor": profit_factor,
-            "max_loss": round(min(0.0, float(worst_trade.pnl or 0) if worst_trade else 0.0), 2),
+            "max_loss": round(min(0.0, float(worst_trade.get("pnl", 0) or 0) if worst_trade else 0.0), 2),
             "best_trade": _trade_summary(best_trade),
             "worst_trade": _trade_summary(worst_trade),
             "reason_counts": reason_counts,
@@ -710,21 +757,6 @@ class TradeDatabase:
         count = int(cursor.fetchone()[0] or 0)
         conn.close()
         return count
-
-    def get_symbol_last_entry_time(self, symbol: str, mode: str = None) -> Optional[str]:
-        """Return the latest entry_time for a symbol, used by entry cooldowns."""
-        conn = self._get_connection()
-        cursor = conn.cursor()
-        sql = "SELECT entry_time FROM trades WHERE symbol = ?"
-        params: list[Any] = [symbol]
-        if mode:
-            sql += " AND mode = ?"
-            params.append(mode)
-        sql += " ORDER BY entry_time DESC LIMIT 1"
-        cursor.execute(sql, params)
-        row = cursor.fetchone()
-        conn.close()
-        return str(row[0]) if row and row[0] else None
 
     def export_to_csv(self, output_path: Path, days: int = 30):
         """导出交易记录到 CSV"""

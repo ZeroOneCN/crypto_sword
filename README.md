@@ -62,7 +62,6 @@ tail -f /root/.hermes/logs/crypto_sword.log
 | 总敞口上限 | `120%` | `run_live.py` 默认值，用于防止小资金过度铺仓。 |
 | 每日开仓上限 | `8` | 防止一天打几十笔，把胜率优势消耗掉。 |
 | 每轮开仓上限 | `1` | 每次深扫只允许最强的一笔进入执行。 |
-| 同币种冷却 | `4 小时` | 避免同一个妖币反复进出、连续打脸。 |
 | 入场最低评分 | `82` | 日内表现转弱时自动提高到 `90`。 |
 | 流动性门槛 | `200万 / 500万 USDT` | 过滤薄盘口，降低滑点和保护单异常。 |
 | 日内亏损熔断 | `关闭` | `max_daily_loss_pct=0`，目前通过资金分配器降档防守。 |
@@ -267,7 +266,6 @@ core/models.py -> TradingConfig
 - 🎯 `take_profit_pct`：基础止盈 ROI，默认 `30.0`，实际按 TP1/TP2/TP3 分批挂单。
 - 🧯 `max_daily_entries`：每日最多新开仓数，默认 `8`。
 - 🎯 `max_entries_per_cycle`：每轮最多新开仓数，默认 `1`。
-- 🧊 `symbol_cooldown_sec`：同币种开仓冷却，默认 `4 小时`。
 - 🧪 `min_signal_score_for_entry`：最低入场评分，默认 `82`，弱势日自动提高到 `90`。
 - 🏦 `capital_*`：复利资金分配器参数。
 - 📡 `scan_interval_sec` / `fast_scan_interval_sec`：深扫/快扫间隔。

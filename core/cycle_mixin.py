@@ -85,8 +85,6 @@ class CycleMixin:
             self._entry_watchlist.clear()
             if hasattr(self, "_entry_timestamps_today"):
                 self._entry_timestamps_today.clear()
-            if hasattr(self, "_symbol_entry_cooldowns"):
-                self._symbol_entry_cooldowns.clear()
             try:
                 balance_info = self._get_account_info_cached(ttl_sec=5.0, force=True)
                 self.day_start_balance = float(balance_info.get("availableBalance", self.day_start_balance or 0))
@@ -154,45 +152,8 @@ class CycleMixin:
             "payoff_ratio": payoff_ratio,
         }
 
-    def _symbol_cooldown_reason(self, symbol: str, now: float) -> str:
-        cooldown_sec = int(getattr(self.config, "symbol_cooldown_sec", 0) or 0)
-        if cooldown_sec <= 0:
-            return ""
-
-        cooldown_until = float(getattr(self, "_symbol_entry_cooldowns", {}).get(symbol, 0.0) or 0.0)
-        if cooldown_until > now:
-            minutes = int((cooldown_until - now + 59) // 60)
-            return f"同币种冷却中，还需约 {minutes} 分钟"
-
-        try:
-            last_entry = self.db.get_symbol_last_entry_time(symbol, mode=self.config.mode)
-        except Exception as exc:
-            logger.debug(f"symbol cooldown DB lookup skipped {symbol}: {exc}")
-            return ""
-        if not last_entry:
-            return ""
-
-        try:
-            entry_dt = datetime.fromisoformat(str(last_entry).replace("Z", "+00:00"))
-            if entry_dt.tzinfo is not None:
-                age_sec = (datetime.now(entry_dt.tzinfo) - entry_dt).total_seconds()
-            else:
-                age_sec = (datetime.now() - entry_dt).total_seconds()
-        except Exception:
-            return ""
-
-        remaining = cooldown_sec - age_sec
-        if remaining > 0:
-            if hasattr(self, "_symbol_entry_cooldowns"):
-                self._symbol_entry_cooldowns[symbol] = now + remaining
-            minutes = int((remaining + 59) // 60)
-            return f"同币种冷却中，还需约 {minutes} 分钟"
-        return ""
-
     def _entry_throttle_reason(self, signal: dict[str, Any], snapshot: dict[str, Any]) -> str:
         """Reject marginal entries before order execution to stop over-trading."""
-        symbol = str(signal.get("symbol", "") or "").upper()
-        now = time.time()
         daily_entries = int(snapshot.get("daily_entries", 0) or 0)
         max_daily_entries = int(getattr(self.config, "max_daily_entries", 8) or 8)
 
@@ -206,10 +167,6 @@ class CycleMixin:
                 f"盈亏比={float(snapshot.get('payoff_ratio', 0) or 0):.2f}"
             )
 
-        cooldown_reason = self._symbol_cooldown_reason(symbol, now)
-        if cooldown_reason:
-            return cooldown_reason
-
         score = self._signal_score_value(signal)
         min_score = float(getattr(self.config, "min_signal_score_for_entry", 82.0) or 82.0)
         if snapshot.get("weak_day"):
@@ -219,13 +176,10 @@ class CycleMixin:
 
         return ""
 
-    def _mark_entry_accepted(self, symbol: str, snapshot: dict[str, Any]) -> None:
+    def _mark_entry_accepted(self, _symbol: str, snapshot: dict[str, Any]) -> None:
         now = time.time()
         if hasattr(self, "_entry_timestamps_today"):
             self._entry_timestamps_today.append(now)
-        cooldown_sec = int(getattr(self.config, "symbol_cooldown_sec", 0) or 0)
-        if cooldown_sec > 0 and hasattr(self, "_symbol_entry_cooldowns"):
-            self._symbol_entry_cooldowns[str(symbol).upper()] = now + cooldown_sec
         snapshot["daily_entries"] = int(snapshot.get("daily_entries", 0) or 0) + 1
 
     def _send_position_summary(self, summary: dict):

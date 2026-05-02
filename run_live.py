@@ -28,7 +28,6 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--max-total-exposure", type=float, default=120.0, help="Max total notional exposure (%% of balance)")
     parser.add_argument("--max-daily-entries", type=int, default=8, help="Max new entries per day")
     parser.add_argument("--max-entries-per-cycle", type=int, default=1, help="Max new entries per scan cycle")
-    parser.add_argument("--symbol-cooldown-hours", type=float, default=4.0, help="Same-symbol entry cooldown hours")
     parser.add_argument("--scan-top-n", type=int, default=50, help="Top N symbols per deep scan")
     parser.add_argument("--scan-interval", type=int, default=300, help="Deep scan interval seconds")
     parser.add_argument("--fast-interval", type=int, default=60, help="Fast scan interval seconds")
@@ -50,7 +49,6 @@ def main() -> None:
         max_open_positions=args.max_positions,
         max_daily_entries=args.max_daily_entries,
         max_entries_per_cycle=args.max_entries_per_cycle,
-        symbol_cooldown_sec=int(max(0.0, args.symbol_cooldown_hours) * 3600),
         scan_top_n=args.scan_top_n,
         scan_interval_sec=args.scan_interval,
         fast_scan_interval_sec=args.fast_interval,
