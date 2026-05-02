@@ -180,25 +180,25 @@ class ExecutionMixin:
             if self._is_strong_trend_signal(signal):
                 return {
                     "name": "强趋势",
-                    "take_profit_mode": "price",
-                    "take_profit_targets": [5.0, 10.0, 18.0],
+                    "take_profit_mode": "roi",
+                    "take_profit_targets": [15.0, 30.0, 50.0],
                     "take_profit_ratios": [0.25, 0.35, 0.40],
-                    "stop_loss_pct": 3.5,
+                    "stop_loss_pct": 4.0,
                 }
             return {
                 "name": "普通趋势",
-                "take_profit_mode": "price",
-                "take_profit_targets": [3.5, 7.0, 12.0],
+                "take_profit_mode": "roi",
+                "take_profit_targets": [10.0, 20.0, 35.0],
                 "take_profit_ratios": [0.25, 0.35, 0.40],
-                "stop_loss_pct": 2.8,
+                "stop_loss_pct": 3.2,
             }
         if strategy_line == "均线二启线":
             return {
                 "name": "均线二次启动",
-                "take_profit_mode": "price",
-                "take_profit_targets": [3.0, 6.0, 10.0],
+                "take_profit_mode": "roi",
+                "take_profit_targets": [8.0, 16.0, 28.0],
                 "take_profit_ratios": [0.25, 0.35, 0.40],
-                "stop_loss_pct": 2.5,
+                "stop_loss_pct": 2.8,
             }
 
         targets, ratios = self._build_take_profit_plan(strategy_line)
@@ -377,13 +377,13 @@ class ExecutionMixin:
 
     def _breakeven_offset_for_position(self, position: Position) -> float:
         """Lock profits faster after TP, with tighter rules for breakout entries."""
-        base_offset = max(float(self.config.breakeven_offset_pct), 0.05)
+        base_offset = max(float(self.config.breakeven_offset_pct), 0.3)
         tp_count = max(int(position.partial_tp_count), 1)
         if position.strategy_line == "趋势突破线":
             if tp_count <= 1:
-                return 0.05
-            return base_offset + 0.12 + 0.10 * (tp_count - 2)
-        return base_offset + 0.05 + 0.08 * (tp_count - 1)
+                return 0.3
+            return base_offset + 0.20 + 0.15 * (tp_count - 2)
+        return base_offset + 0.15 + 0.10 * (tp_count - 1)
 
     def _move_stop_to_breakeven(self, position: Position, remaining_qty: float) -> bool:
         """After first TP, move stop loss near breakeven so winners do not turn red."""
