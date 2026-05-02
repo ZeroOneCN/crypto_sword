@@ -64,10 +64,10 @@ class ConfirmationMixin:
         change_24h = abs(float(metrics.get("change_24h_pct", 0) or 0))
         oi_change = abs(float(metrics.get("oi_24h_pct", 0) or 0))
 
-        if score_total >= 78 and change_24h >= 18 and oi_change >= 45:
-            return max(1.2, self.config.shallow_pullback_pct - 0.6)
-        if score_total >= self.config.momentum_entry_score and change_24h >= 12 and oi_change >= self.config.momentum_entry_min_oi_pct:
+        if score_total >= 82 and change_24h >= 22 and oi_change >= 50:
             return max(1.5, self.config.shallow_pullback_pct)
+        if score_total >= self.config.momentum_entry_score and change_24h >= 15 and oi_change >= self.config.momentum_entry_min_oi_pct:
+            return max(2.0, self.config.shallow_pullback_pct + 0.5)
         if (
             getattr(self.config, "ma_reentry_enabled", True)
             and score_total >= getattr(self.config, "ma_reentry_score", 58.0)
@@ -85,9 +85,9 @@ class ConfirmationMixin:
         oi_change = abs(float(metrics.get("oi_24h_pct", 0) or 0))
         funding = float(metrics.get("funding_rate", 0) or 0)
         return (
-            score_total >= 62.0
-            and change_24h >= 12.0
-            and oi_change >= 14.0
+            score_total >= 70.0
+            and change_24h >= 15.0
+            and oi_change >= 20.0
             and abs(funding) < self.config.max_abs_funding_rate
         )
 
@@ -163,7 +163,7 @@ class ConfirmationMixin:
             and oi_change >= self.config.momentum_entry_min_oi_pct
         ):
             return "趋势突破线"
-        if score_total >= 64.0 and change_24h >= 12.0 and oi_change >= 24.0 and funding <= 0:
+        if score_total >= 70.0 and change_24h >= 15.0 and oi_change >= 28.0 and funding <= 0:
             return "趋势突破线"
         if self._is_accumulation_candidate(metrics, score_total):
             return "趋势突破线"
@@ -265,7 +265,7 @@ class ConfirmationMixin:
         change_24h = float(metrics.get("change_24h_pct", 0) or 0)
         oi_change = float(metrics.get("oi_24h_pct", 0) or 0)
         funding = abs(float(metrics.get("funding_rate", 0) or 0))
-        if score_total < 60 or abs(change_24h) < 8.0 or funding >= self.config.max_abs_funding_rate * 0.95:
+        if score_total < 65 or abs(change_24h) < 10.0 or funding >= self.config.max_abs_funding_rate * 0.95:
             return False, ""
         trend_1h = trend.get("1h", {}) or {}
         trend_15m = trend.get("15m", {}) or {}
@@ -318,7 +318,7 @@ class ConfirmationMixin:
         ma_alignment_1h = str(trend_1h.get("ma_alignment", "NEUTRAL") or "NEUTRAL")
         ma5_5m = float(trend_5m.get("ma5", 0) or 0)
         short_tf_ok = self._short_tf_breakout_ready(trend, direction, current_price)
-        if score_total < 64 or oi_change < 22:
+        if score_total < 70 or oi_change < 28:
             return False, ""
         if direction == "LONG":
             ready = (

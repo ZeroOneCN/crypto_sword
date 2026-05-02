@@ -159,12 +159,12 @@ class SignalScore:
 
         self.total_score = base_score + radar_bonus
 
-        # 确定置信度（降低阈值，更容易交易）
-        if self.total_score >= 70:
+        # 确定置信度（提高阈值，减少低质量信号）
+        if self.total_score >= 80:
             self.confidence = "极高"
-        elif self.total_score >= 50:
+        elif self.total_score >= 65:
             self.confidence = "高"
-        elif self.total_score >= 30:
+        elif self.total_score >= 45:
             self.confidence = "中"
         else:
             self.confidence = "低"
