@@ -205,7 +205,8 @@ class CapitalAllocator:
             max_position_multiplier = min(max_position_multiplier, 0.75)
             notes.append(f"评分偏普通 {score:.1f}")
 
-        if expected_rr < 1.70:
+        soft_rr_floor = max(1.70, float(getattr(config, "capital_min_expected_rr", 2.0) or 2.0) - 0.25)
+        if expected_rr < soft_rr_floor:
             risk_multiplier = min(risk_multiplier, 0.80)
             max_position_multiplier = min(max_position_multiplier, 0.85)
             notes.append(f"扣成本后盈亏比 {expected_rr:.2f}R")

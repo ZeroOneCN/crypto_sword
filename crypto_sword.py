@@ -112,6 +112,8 @@ class CryptoSword(ExecutionMixin, ScannerMixin, CycleMixin, SyncMixin, Confirmat
         self._last_position_sync_time: float = 0.0
         self._consecutive_losses: int = 0
         self._entry_watchlist: dict[str, dict[str, Any]] = {}
+        self._entry_timestamps_today: list[float] = []
+        self._symbol_entry_cooldowns: dict[str, float] = {}
         self._last_daily_report_sent_for: str = ""
         self._last_watch_monitor_time: float = 0.0
         self._market_style_mode: str = "balanced"
@@ -343,6 +345,11 @@ def main():
     parser.add_argument("--max-position-pct", type=float, default=25.0, help="Max notional position size (%% of balance)")
     parser.add_argument("--max-total-exposure", type=float, default=120.0, help="Max total notional exposure (%% of balance)")
     parser.add_argument("--max-daily-loss", type=float, default=0.0, help="Max daily loss (%%), 0 disables daily loss circuit breaker")
+    parser.add_argument("--max-daily-entries", type=int, default=8, help="Max new entries per day")
+    parser.add_argument("--max-entries-per-cycle", type=int, default=1, help="Max new entries per scan cycle")
+    parser.add_argument("--symbol-cooldown-hours", type=float, default=4.0, help="Same-symbol entry cooldown hours")
+    parser.add_argument("--min-entry-score", type=float, default=82.0, help="Minimum score for new entries")
+    parser.add_argument("--defensive-entry-score", type=float, default=90.0, help="Minimum score when daily stats are weak")
 
     parser.add_argument("--top", type=int, default=50, help="Top N symbols")
     parser.add_argument("--interval", "-i", type=int, default=300, help="Deep scan interval (seconds)")
@@ -355,13 +362,13 @@ def main():
     parser.add_argument("--no-entry-confirm", action="store_true", help="Disable entry confirmation")
     parser.add_argument("--entry-confirm-timeout", type=int, default=1800, help="Entry confirmation timeout (seconds)")
     parser.add_argument("--no-momentum-entry", action="store_true", help="Disable momentum entry")
-    parser.add_argument("--momentum-score", type=float, default=80.0, help="Momentum entry min score")
-    parser.add_argument("--accumulation-score", type=float, default=75.0, help="Accumulation entry min score")
+    parser.add_argument("--momentum-score", type=float, default=84.0, help="Momentum entry min score")
+    parser.add_argument("--accumulation-score", type=float, default=80.0, help="Accumulation entry min score")
     parser.add_argument("--accumulation-min-oi", type=float, default=12.0, help="Accumulation entry min OI change (%%)")
     parser.add_argument("--accumulation-max-change", type=float, default=16.0, help="Accumulation entry max 24h change (%%)")
     parser.add_argument("--max-abs-funding-rate", type=float, default=0.004, help="Max abs funding rate")
     parser.add_argument("--max-range-position", type=float, default=95.0, help="Max 24h range position (%%)")
-    parser.add_argument("--max-chase-change", type=float, default=20.0, help="Max chase 24h change (%%)")
+    parser.add_argument("--max-chase-change", type=float, default=18.0, help="Max chase 24h change (%%)")
     parser.add_argument("--no-daily-report", action="store_true", help="Disable daily report")
     parser.add_argument("--trailing", type=float, default=5.0, help="Trailing stop (%%)")
     parser.add_argument("--no-trailing", action="store_true", help="Disable trailing stop")
@@ -394,6 +401,11 @@ def main():
         max_total_exposure_pct=max(args.max_position_pct, args.max_total_exposure),
         max_daily_loss_pct=args.max_daily_loss,
         max_open_positions=args.max_positions,
+        max_daily_entries=args.max_daily_entries,
+        max_entries_per_cycle=args.max_entries_per_cycle,
+        symbol_cooldown_sec=int(max(0.0, args.symbol_cooldown_hours) * 3600),
+        min_signal_score_for_entry=args.min_entry_score,
+        min_signal_score_defensive=args.defensive_entry_score,
         trailing_stop_pct=args.trailing,
         trailing_stop_enabled=not args.no_trailing,
         scan_top_n=args.top,

@@ -54,7 +54,7 @@ class ExecutionMixin:
 
     def _strategy_take_profit_ratios(self, strategy_line: str, levels_count: int) -> list[float]:
         if strategy_line == "趋势突破线":
-            base_ratios = [0.25, 0.35, 0.40]
+            base_ratios = [0.20, 0.30, 0.50]
         elif strategy_line == "均线二启线":
             base_ratios = [0.20, 0.30, 0.50]
         else:
@@ -181,33 +181,32 @@ class ExecutionMixin:
                 return {
                     "name": "强趋势",
                     "take_profit_mode": "roi",
-                    "take_profit_targets": [15.0, 30.0, 50.0],
-                    "take_profit_ratios": [0.25, 0.35, 0.40],
-                    "stop_loss_pct": 4.0,
+                    "take_profit_targets": [20.0, 40.0, 70.0],
+                    "take_profit_ratios": [0.15, 0.30, 0.55],
+                    "stop_loss_pct": 3.6,
                 }
             return {
                 "name": "普通趋势",
                 "take_profit_mode": "roi",
-                "take_profit_targets": [10.0, 20.0, 35.0],
-                "take_profit_ratios": [0.25, 0.35, 0.40],
-                "stop_loss_pct": 3.2,
+                "take_profit_targets": [15.0, 30.0, 55.0],
+                "take_profit_ratios": [0.20, 0.30, 0.50],
+                "stop_loss_pct": 3.0,
             }
         if strategy_line == "均线二启线":
             return {
                 "name": "均线二次启动",
                 "take_profit_mode": "roi",
-                "take_profit_targets": [8.0, 16.0, 28.0],
-                "take_profit_ratios": [0.25, 0.35, 0.40],
+                "take_profit_targets": [12.0, 24.0, 45.0],
+                "take_profit_ratios": [0.20, 0.30, 0.50],
                 "stop_loss_pct": 2.8,
             }
 
-        targets, ratios = self._build_take_profit_plan(strategy_line)
         return {
             "name": "默认策略",
-            "take_profit_mode": self.config.take_profit_mode,
-            "take_profit_targets": targets,
-            "take_profit_ratios": ratios,
-            "stop_loss_pct": self._strategy_stop_loss_pct(strategy_line),
+            "take_profit_mode": "roi",
+            "take_profit_targets": [12.0, 24.0, 45.0],
+            "take_profit_ratios": [0.20, 0.30, 0.50],
+            "stop_loss_pct": 3.2,
         }
 
     def _strategy_stop_loss_pct(self, strategy_line: str = "") -> float:

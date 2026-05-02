@@ -697,6 +697,35 @@ class TradeDatabase:
             "oi_funding_stats": oi_funding_stats,
         }
 
+    def get_daily_entry_count(self, report_date: str, mode: str = None) -> int:
+        """Count entries opened on a natural day."""
+        conn = self._get_connection()
+        cursor = conn.cursor()
+        sql = "SELECT COUNT(*) FROM trades WHERE date(entry_time) = ?"
+        params: list[Any] = [report_date]
+        if mode:
+            sql += " AND mode = ?"
+            params.append(mode)
+        cursor.execute(sql, params)
+        count = int(cursor.fetchone()[0] or 0)
+        conn.close()
+        return count
+
+    def get_symbol_last_entry_time(self, symbol: str, mode: str = None) -> Optional[str]:
+        """Return the latest entry_time for a symbol, used by entry cooldowns."""
+        conn = self._get_connection()
+        cursor = conn.cursor()
+        sql = "SELECT entry_time FROM trades WHERE symbol = ?"
+        params: list[Any] = [symbol]
+        if mode:
+            sql += " AND mode = ?"
+            params.append(mode)
+        sql += " ORDER BY entry_time DESC LIMIT 1"
+        cursor.execute(sql, params)
+        row = cursor.fetchone()
+        conn.close()
+        return str(row[0]) if row and row[0] else None
+
     def export_to_csv(self, output_path: Path, days: int = 30):
         """导出交易记录到 CSV"""
         import csv

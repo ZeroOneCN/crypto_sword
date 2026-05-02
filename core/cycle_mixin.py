@@ -83,6 +83,10 @@ class CycleMixin:
             self._daily_loss_alert_sent = False
             self._consecutive_losses = 0
             self._entry_watchlist.clear()
+            if hasattr(self, "_entry_timestamps_today"):
+                self._entry_timestamps_today.clear()
+            if hasattr(self, "_symbol_entry_cooldowns"):
+                self._symbol_entry_cooldowns.clear()
             try:
                 balance_info = self._get_account_info_cached(ttl_sec=5.0, force=True)
                 self.day_start_balance = float(balance_info.get("availableBalance", self.day_start_balance or 0))
@@ -96,6 +100,133 @@ class CycleMixin:
             return False
         limit_amount = self.day_start_balance * (self.config.max_daily_loss_pct / 100.0)
         return self.daily_pnl <= -limit_amount
+
+    @staticmethod
+    def _signal_score_value(signal: dict[str, Any]) -> float:
+        score_data = signal.get("score") or {}
+        if isinstance(score_data, dict):
+            return float(score_data.get("total_score", score_data.get("total", 0)) or 0)
+        return float(score_data or 0)
+
+    def _build_entry_gate_snapshot(self) -> dict[str, Any]:
+        """Build daily throttle state before trying new entries."""
+        today = datetime.now().date().isoformat()
+        now = time.time()
+        if hasattr(self, "_entry_timestamps_today"):
+            self._entry_timestamps_today = [
+                ts for ts in self._entry_timestamps_today if now - float(ts or 0) < 24 * 3600
+            ]
+            local_entries = len(self._entry_timestamps_today)
+        else:
+            local_entries = 0
+
+        db_entries = 0
+        try:
+            db_entries = int(self.db.get_daily_entry_count(today, mode=self.config.mode) or 0)
+        except Exception as exc:
+            logger.debug(f"daily entry count skipped: {exc}")
+
+        report = {}
+        try:
+            report = self._get_daily_report_snapshot(ttl_sec=90.0)
+        except Exception as exc:
+            logger.debug(f"daily report for entry gate skipped: {exc}")
+
+        closed = int(report.get("closed_trades", 0) or 0)
+        total_pnl = float(report.get("total_pnl", 0) or 0)
+        profit_factor = float(report.get("profit_factor", 0) or 0)
+        payoff_ratio = float(report.get("payoff_ratio", 0) or 0)
+        weak_day = closed >= 5 and (
+            total_pnl < 0
+            or (0 < profit_factor < 1.0)
+            or (0 < payoff_ratio < 1.0)
+        )
+        defensive_cap = max(2, int(self.config.max_daily_entries * 0.5))
+
+        return {
+            "today": today,
+            "daily_entries": max(local_entries, db_entries),
+            "weak_day": weak_day,
+            "defensive_cap": defensive_cap,
+            "closed": closed,
+            "total_pnl": total_pnl,
+            "profit_factor": profit_factor,
+            "payoff_ratio": payoff_ratio,
+        }
+
+    def _symbol_cooldown_reason(self, symbol: str, now: float) -> str:
+        cooldown_sec = int(getattr(self.config, "symbol_cooldown_sec", 0) or 0)
+        if cooldown_sec <= 0:
+            return ""
+
+        cooldown_until = float(getattr(self, "_symbol_entry_cooldowns", {}).get(symbol, 0.0) or 0.0)
+        if cooldown_until > now:
+            minutes = int((cooldown_until - now + 59) // 60)
+            return f"同币种冷却中，还需约 {minutes} 分钟"
+
+        try:
+            last_entry = self.db.get_symbol_last_entry_time(symbol, mode=self.config.mode)
+        except Exception as exc:
+            logger.debug(f"symbol cooldown DB lookup skipped {symbol}: {exc}")
+            return ""
+        if not last_entry:
+            return ""
+
+        try:
+            entry_dt = datetime.fromisoformat(str(last_entry).replace("Z", "+00:00"))
+            if entry_dt.tzinfo is not None:
+                age_sec = (datetime.now(entry_dt.tzinfo) - entry_dt).total_seconds()
+            else:
+                age_sec = (datetime.now() - entry_dt).total_seconds()
+        except Exception:
+            return ""
+
+        remaining = cooldown_sec - age_sec
+        if remaining > 0:
+            if hasattr(self, "_symbol_entry_cooldowns"):
+                self._symbol_entry_cooldowns[symbol] = now + remaining
+            minutes = int((remaining + 59) // 60)
+            return f"同币种冷却中，还需约 {minutes} 分钟"
+        return ""
+
+    def _entry_throttle_reason(self, signal: dict[str, Any], snapshot: dict[str, Any]) -> str:
+        """Reject marginal entries before order execution to stop over-trading."""
+        symbol = str(signal.get("symbol", "") or "").upper()
+        now = time.time()
+        daily_entries = int(snapshot.get("daily_entries", 0) or 0)
+        max_daily_entries = int(getattr(self.config, "max_daily_entries", 8) or 8)
+
+        if daily_entries >= max_daily_entries:
+            return f"今日开仓数已达上限 {daily_entries}/{max_daily_entries}"
+
+        if snapshot.get("weak_day") and daily_entries >= int(snapshot.get("defensive_cap", 2) or 2):
+            return (
+                f"日内表现转弱，进入防守限单 "
+                f"PF={float(snapshot.get('profit_factor', 0) or 0):.2f} "
+                f"盈亏比={float(snapshot.get('payoff_ratio', 0) or 0):.2f}"
+            )
+
+        cooldown_reason = self._symbol_cooldown_reason(symbol, now)
+        if cooldown_reason:
+            return cooldown_reason
+
+        score = self._signal_score_value(signal)
+        min_score = float(getattr(self.config, "min_signal_score_for_entry", 82.0) or 82.0)
+        if snapshot.get("weak_day"):
+            min_score = max(min_score, float(getattr(self.config, "min_signal_score_defensive", 90.0) or 90.0))
+        if score < min_score:
+            return f"评分不足 {score:.1f} < {min_score:.1f}"
+
+        return ""
+
+    def _mark_entry_accepted(self, symbol: str, snapshot: dict[str, Any]) -> None:
+        now = time.time()
+        if hasattr(self, "_entry_timestamps_today"):
+            self._entry_timestamps_today.append(now)
+        cooldown_sec = int(getattr(self.config, "symbol_cooldown_sec", 0) or 0)
+        if cooldown_sec > 0 and hasattr(self, "_symbol_entry_cooldowns"):
+            self._symbol_entry_cooldowns[str(symbol).upper()] = now + cooldown_sec
+        snapshot["daily_entries"] = int(snapshot.get("daily_entries", 0) or 0) + 1
 
     def _send_position_summary(self, summary: dict):
         """发送持仓汇总通知"""
@@ -340,16 +471,28 @@ class CycleMixin:
         step_started = time.perf_counter()
         if deep_due:
             balance_hint = None
+            entries_opened_this_cycle = 0
+            entry_gate_snapshot = self._build_entry_gate_snapshot()
             try:
                 balance_info = self._get_account_info_cached(ttl_sec=3.0)
                 balance_hint = float(balance_info.get("availableBalance", 0) or 0)
             except Exception:
                 balance_hint = None
             for signal in signals:
+                if entries_opened_this_cycle >= int(getattr(self.config, "max_entries_per_cycle", 1) or 1):
+                    logger.info(
+                        f"Entry throttle: cycle entry cap reached "
+                        f"{entries_opened_this_cycle}/{self.config.max_entries_per_cycle}"
+                    )
+                    break
                 if self.tracker.get_open_count() >= self.config.max_open_positions:
                     logger.info(f"Max open positions reached ({self.config.max_open_positions})")
                     break
                 if signal.get("entry_status") != "ready":
+                    continue
+                throttle_reason = self._entry_throttle_reason(signal, entry_gate_snapshot)
+                if throttle_reason:
+                    logger.info(f"Entry throttle skip {signal.get('symbol', '')}: {throttle_reason}")
                     continue
                 signal_price = float(signal.get("price", 0) or 0)
                 score_conf = str((signal.get("score") or {}).get("confidence", "") or "")
@@ -373,6 +516,8 @@ class CycleMixin:
                     with self._state_lock:
                         self.tracker.add_position(position)
                         self.traded_symbols_today.add(signal["symbol"])
+                        entries_opened_this_cycle += 1
+                        self._mark_entry_accepted(signal["symbol"], entry_gate_snapshot)
                         self._mark_watch_in_position(
                             signal["symbol"],
                             getattr(position, "strategy_line", signal.get("strategy_line", "")),
