@@ -113,6 +113,7 @@ class CryptoSword(ExecutionMixin, ScannerMixin, CycleMixin, SyncMixin, Confirmat
         self._consecutive_losses: int = 0
         self._entry_watchlist: dict[str, dict[str, Any]] = {}
         self._entry_timestamps_today: list[float] = []
+        self._entry_exception_timestamps_today: list[float] = []
         self._last_daily_report_sent_for: str = ""
         self._last_watch_monitor_time: float = 0.0
         self._market_style_mode: str = "balanced"
@@ -346,6 +347,10 @@ def main():
     parser.add_argument("--max-daily-loss", type=float, default=0.0, help="Max daily loss (%%), 0 disables daily loss circuit breaker")
     parser.add_argument("--max-daily-entries", type=int, default=8, help="Max new entries per day")
     parser.add_argument("--max-entries-per-cycle", type=int, default=1, help="Max new entries per scan cycle")
+    parser.add_argument("--weak-daily-entries", type=int, default=4, help="Soft cap when daily stats are weak")
+    parser.add_argument("--hard-daily-entries", type=int, default=2, help="Soft cap in deep defensive mode")
+    parser.add_argument("--daily-exception-entries", type=int, default=2, help="Max A+ override entries after soft cap")
+    parser.add_argument("--exception-entry-score", type=float, default=95.0, help="A+ override min score")
     parser.add_argument("--min-entry-score", type=float, default=82.0, help="Minimum score for new entries")
     parser.add_argument("--defensive-entry-score", type=float, default=90.0, help="Minimum score when daily stats are weak")
 
@@ -401,6 +406,10 @@ def main():
         max_open_positions=args.max_positions,
         max_daily_entries=args.max_daily_entries,
         max_entries_per_cycle=args.max_entries_per_cycle,
+        weak_daily_entries=args.weak_daily_entries,
+        hard_daily_entries=args.hard_daily_entries,
+        daily_exception_entries=args.daily_exception_entries,
+        exception_entry_score=args.exception_entry_score,
         min_signal_score_for_entry=args.min_entry_score,
         min_signal_score_defensive=args.defensive_entry_score,
         trailing_stop_pct=args.trailing,

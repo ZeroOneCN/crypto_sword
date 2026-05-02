@@ -758,6 +758,20 @@ class TradeDatabase:
         conn.close()
         return count
 
+    def get_daily_exception_entry_count(self, report_date: str, mode: str = None) -> int:
+        """Count A+ override entries opened after the soft daily cap."""
+        conn = self._get_connection()
+        cursor = conn.cursor()
+        sql = "SELECT COUNT(*) FROM trades WHERE date(entry_time) = ? AND notes LIKE ?"
+        params: list[Any] = [report_date, "%entry_gate=soft_cap_override%"]
+        if mode:
+            sql += " AND mode = ?"
+            params.append(mode)
+        cursor.execute(sql, params)
+        count = int(cursor.fetchone()[0] or 0)
+        conn.close()
+        return count
+
     def export_to_csv(self, output_path: Path, days: int = 30):
         """导出交易记录到 CSV"""
         import csv

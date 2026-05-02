@@ -1460,6 +1460,8 @@ class ExecutionMixin:
 
             notes_parts = [
                 f"session_id={session_id}",
+                f"entry_gate={signal.get('_entry_gate_override') or 'normal'}",
+                f"entry_gate_note={signal.get('_entry_gate_note') or ''}",
                 f"strategy_line={strategy_line}",
                 f"exit_profile={exit_profile_name}",
                 f"risk_level={risk_level}",
@@ -1493,6 +1495,8 @@ class ExecutionMixin:
                     **(signal.get("metrics", {}) or {}),
                     "_oi_funding": oi_funding,
                     "_entry_score": signal.get("score", {}) or {},
+                    "_entry_gate": signal.get("_entry_gate_override") or "normal",
+                    "_entry_gate_note": signal.get("_entry_gate_note") or "",
                     "_leverage_applied": leverage_applied,
                     "_capital_plan": capital_plan.to_dict() if capital_plan else {},
                 },

@@ -85,6 +85,8 @@ class CycleMixin:
             self._entry_watchlist.clear()
             if hasattr(self, "_entry_timestamps_today"):
                 self._entry_timestamps_today.clear()
+            if hasattr(self, "_entry_exception_timestamps_today"):
+                self._entry_exception_timestamps_today.clear()
             try:
                 balance_info = self._get_account_info_cached(ttl_sec=5.0, force=True)
                 self.day_start_balance = float(balance_info.get("availableBalance", self.day_start_balance or 0))
@@ -117,12 +119,24 @@ class CycleMixin:
             local_entries = len(self._entry_timestamps_today)
         else:
             local_entries = 0
+        if hasattr(self, "_entry_exception_timestamps_today"):
+            self._entry_exception_timestamps_today = [
+                ts for ts in self._entry_exception_timestamps_today if now - float(ts or 0) < 24 * 3600
+            ]
+            local_exceptions = len(self._entry_exception_timestamps_today)
+        else:
+            local_exceptions = 0
 
         db_entries = 0
         try:
             db_entries = int(self.db.get_daily_entry_count(today, mode=self.config.mode) or 0)
         except Exception as exc:
             logger.debug(f"daily entry count skipped: {exc}")
+        db_exceptions = 0
+        try:
+            db_exceptions = int(self.db.get_daily_exception_entry_count(today, mode=self.config.mode) or 0)
+        except Exception as exc:
+            logger.debug(f"daily exception entry count skipped: {exc}")
 
         report = {}
         try:
@@ -139,18 +153,85 @@ class CycleMixin:
             or (0 < profit_factor < 1.0)
             or (0 < payoff_ratio < 1.0)
         )
-        defensive_cap = max(2, int(self.config.max_daily_entries * 0.5))
+        hard_day = closed >= 3 and total_pnl < 0 and (profit_factor < 0.70 or payoff_ratio < 0.70)
+        if hard_day:
+            soft_cap = min(self.config.max_daily_entries, int(getattr(self.config, "hard_daily_entries", 2) or 2))
+            cap_mode = "deep_defensive"
+        elif weak_day:
+            soft_cap = min(self.config.max_daily_entries, int(getattr(self.config, "weak_daily_entries", 4) or 4))
+            cap_mode = "defensive"
+        else:
+            soft_cap = int(self.config.max_daily_entries)
+            cap_mode = "standard"
 
         return {
             "today": today,
             "daily_entries": max(local_entries, db_entries),
+            "exception_entries": max(local_exceptions, db_exceptions),
             "weak_day": weak_day,
-            "defensive_cap": defensive_cap,
+            "hard_day": hard_day,
+            "soft_cap": max(1, soft_cap),
+            "cap_mode": cap_mode,
             "closed": closed,
             "total_pnl": total_pnl,
             "profit_factor": profit_factor,
             "payoff_ratio": payoff_ratio,
         }
+
+    def _soft_cap_override_reason(self, signal: dict[str, Any], snapshot: dict[str, Any]) -> str:
+        max_exceptions = int(getattr(self.config, "daily_exception_entries", 0) or 0)
+        used_exceptions = int(snapshot.get("exception_entries", 0) or 0)
+        if max_exceptions <= 0:
+            return ""
+        if used_exceptions >= max_exceptions:
+            return ""
+
+        score = self._signal_score_value(signal)
+        if score < float(getattr(self.config, "exception_entry_score", 95.0) or 95.0):
+            return ""
+
+        strategy_line = str(signal.get("strategy_line", "") or "")
+        if strategy_line != "趋势突破线":
+            return ""
+
+        metrics = signal.get("metrics") or {}
+        oi_funding = signal.get("oi_funding") or {}
+
+        def _metric(*keys: str) -> float:
+            for key in keys:
+                if key in metrics:
+                    try:
+                        return float(metrics.get(key, 0) or 0)
+                    except Exception:
+                        return 0.0
+                if key in oi_funding:
+                    try:
+                        return float(oi_funding.get(key, 0) or 0)
+                    except Exception:
+                        return 0.0
+            return 0.0
+
+        change_24h = abs(_metric("change_24h_pct", "price_change_pct"))
+        oi_change = abs(_metric("oi_24h_pct", "oi_change_pct"))
+        funding = abs(_metric("funding_rate", "funding_current"))
+
+        min_change = float(getattr(self.config, "exception_entry_min_change_pct", 8.0) or 8.0)
+        max_change = float(getattr(self.config, "exception_entry_max_change_pct", 35.0) or 35.0)
+        min_oi = float(getattr(self.config, "exception_entry_min_oi_pct", 20.0) or 20.0)
+        max_oi = float(getattr(self.config, "exception_entry_max_oi_pct", 85.0) or 85.0)
+        max_funding = float(getattr(self.config, "exception_entry_max_abs_funding_rate", 0.0025) or 0.0025)
+
+        if not (min_change <= change_24h <= max_change):
+            return ""
+        if not (min_oi <= oi_change <= max_oi):
+            return ""
+        if funding > max_funding:
+            return ""
+
+        return (
+            f"王炸破例 {used_exceptions + 1}/{max_exceptions} "
+            f"评分={score:.1f} 24h={change_24h:.1f}% OI={oi_change:.1f}% Funding={funding:.4%}"
+        )
 
     def _entry_throttle_reason(self, signal: dict[str, Any], snapshot: dict[str, Any]) -> str:
         """Reject marginal entries before order execution to stop over-trading."""
@@ -160,10 +241,17 @@ class CycleMixin:
         if daily_entries >= max_daily_entries:
             return f"今日开仓数已达上限 {daily_entries}/{max_daily_entries}"
 
-        if snapshot.get("weak_day") and daily_entries >= int(snapshot.get("defensive_cap", 2) or 2):
+        soft_cap = int(snapshot.get("soft_cap", max_daily_entries) or max_daily_entries)
+        if daily_entries >= soft_cap:
+            override_reason = self._soft_cap_override_reason(signal, snapshot)
+            if override_reason:
+                signal["_entry_gate_override"] = "soft_cap_override"
+                signal["_entry_gate_note"] = override_reason
+                logger.info(f"Entry soft cap override {signal.get('symbol', '')}: {override_reason}")
+                return ""
             return (
-                f"日内表现转弱，进入防守限单 "
-                f"PF={float(snapshot.get('profit_factor', 0) or 0):.2f} "
+                f"日内{snapshot.get('cap_mode', 'standard')}限单 {daily_entries}/{soft_cap}，"
+                f"仅王炸信号可破例 | PF={float(snapshot.get('profit_factor', 0) or 0):.2f} "
                 f"盈亏比={float(snapshot.get('payoff_ratio', 0) or 0):.2f}"
             )
 
@@ -176,10 +264,13 @@ class CycleMixin:
 
         return ""
 
-    def _mark_entry_accepted(self, _symbol: str, snapshot: dict[str, Any]) -> None:
+    def _mark_entry_accepted(self, signal: dict[str, Any] | str, snapshot: dict[str, Any]) -> None:
         now = time.time()
         if hasattr(self, "_entry_timestamps_today"):
             self._entry_timestamps_today.append(now)
+        if isinstance(signal, dict) and signal.get("_entry_gate_override") and hasattr(self, "_entry_exception_timestamps_today"):
+            self._entry_exception_timestamps_today.append(now)
+            snapshot["exception_entries"] = int(snapshot.get("exception_entries", 0) or 0) + 1
         snapshot["daily_entries"] = int(snapshot.get("daily_entries", 0) or 0) + 1
 
     def _send_position_summary(self, summary: dict):
@@ -471,7 +562,7 @@ class CycleMixin:
                         self.tracker.add_position(position)
                         self.traded_symbols_today.add(signal["symbol"])
                         entries_opened_this_cycle += 1
-                        self._mark_entry_accepted(signal["symbol"], entry_gate_snapshot)
+                        self._mark_entry_accepted(signal, entry_gate_snapshot)
                         self._mark_watch_in_position(
                             signal["symbol"],
                             getattr(position, "strategy_line", signal.get("strategy_line", "")),
