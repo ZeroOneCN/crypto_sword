@@ -589,6 +589,7 @@ def build_symbol_metrics(symbol: str) -> dict[str, Any] | None:
         "oi_value": oi_value,
         "quote_volume_24h": quote_volume,
         "last_price": last_price,
+        "market_cap_usd": quote_volume,  # 使用24h交易量作为市值代理，避免UNKNOWN
         "klines_1h": normalized_klines_1h,
     }
 

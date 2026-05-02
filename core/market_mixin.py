@@ -50,6 +50,7 @@ class MarketMixin:
                     "price_change_pct": float(metrics.get("change_24h_pct", metrics.get("price_change_pct", 0)) or 0),
                     "funding_rate": float(metrics.get("funding_rate", metrics.get("funding_current", 0)) or 0),
                     "market_cap": float((score or {}).get("market_cap_usd", metrics.get("market_cap_usd", 0)) or 0),
+                    "volume_24h": float(metrics.get("quote_volume_24h", 0) or 0),
                 }
             )
 
@@ -125,6 +126,9 @@ class MarketMixin:
                         price_change_pct=top_dark["price_change_pct"],
                         funding_rate=top_dark["funding_rate"],
                         market_cap=top_dark["market_cap"],
+                        volume_24h=top_dark.get("volume_24h", 0),
+                        dark_flow_score=top_dark["dark_flow"],
+                        score_total=top_dark["score_total"],
                     )
                 )
 

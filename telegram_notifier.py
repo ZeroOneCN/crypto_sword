@@ -968,19 +968,82 @@ def format_dark_flow_alert(
     price_change_pct: float,
     funding_rate: float,
     market_cap: float,
+    volume_24h: float = 0.0,
+    dark_flow_score: float = 0.0,
+    score_total: float = 0.0,
 ) -> str:
     """Format a 'dark flow' alert (OI up while price barely moves)."""
     funding_pct = funding_rate * 100 if abs(funding_rate) < 1 else funding_rate
-    cap_text = f"${market_cap/1e6:.1f}M" if market_cap > 0 else "UNKNOWN"
+    vol_text = f"${volume_24h/1e6:.1f}M" if volume_24h > 0 else (f"${market_cap/1e6:.1f}M" if market_cap > 0 else "N/A")
+    
+    # 动态解读：根据实际数据生成
+    interpretation = _generate_dark_flow_interpretation(
+        oi_change_pct, price_change_pct, funding_rate, dark_flow_score, score_total
+    )
+    
     return f"""🔄 <b>宙斯交易中枢 | 雷达暗流</b>
 
 <b>标的</b>  <code>{_escape(symbol)}</code>
 <b>OI 变化</b>  <code>{oi_change_pct:+.1f}%</code>
 <b>价格变化</b>  <code>{price_change_pct:+.1f}%</code>
 <b>资金费率</b>  <code>{funding_pct:+.4f}%</code>
-<b>市值</b>  <code>{cap_text}</code>
+<b>24h 交易量</b>  <code>{vol_text}</code>
+<b>暗流评分</b>  <code>{dark_flow_score:.1f}</code>
 
-📌 <b>解读</b>  OI 明显扩张但价格未充分释放，可能有资金提前埋伏；只作为雷达提醒，最终仍以主策略风控为准。"""
+📌 <b>解读</b>  {interpretation}"""
+
+
+def _generate_dark_flow_interpretation(
+    oi_change_pct: float,
+    price_change_pct: float,
+    funding_rate: float,
+    dark_flow_score: float,
+    score_total: float,
+) -> str:
+    """根据实际数据动态生成暗流解读。"""
+    parts = []
+    
+    # OI 方向判断
+    if oi_change_pct >= 20:
+        parts.append("OI 大幅扩张")
+    elif oi_change_pct >= 10:
+        parts.append("OI 明显增长")
+    elif oi_change_pct >= 5:
+        parts.append("OI 温和增长")
+    elif oi_change_pct <= -10:
+        parts.append("OI 大幅缩减")
+    else:
+        parts.append("OI 基本稳定")
+    
+    # 价格与OI的关系
+    if oi_change_pct >= 15 and abs(price_change_pct) <= 5:
+        parts.append("资金大量流入但价格未动，可能有主力吸筹")
+    elif oi_change_pct >= 15 and price_change_pct > 10:
+        parts.append("OI与价格同步上涨，趋势健康")
+    elif oi_change_pct >= 15 and price_change_pct < -5:
+        parts.append("OI增加但价格下跌，警惕空头加仓或多头被套")
+    elif oi_change_pct <= -15 and price_change_pct > 5:
+        parts.append("价格上涨但OI缩减，可能是空头回补推动")
+    elif oi_change_pct <= -15 and price_change_pct < -5:
+        parts.append("OI缩减+价格下跌，资金离场")
+    
+    # 资金费率判断
+    funding_pct = funding_rate * 100 if abs(funding_rate) < 1 else funding_rate
+    if funding_pct < -0.05:
+        parts.append("费率为负，空头付费，偏多信号")
+    elif funding_pct > 0.05:
+        parts.append("费率为正，多头付费，注意过热")
+    
+    # 评分判断
+    if dark_flow_score >= 60:
+        parts.append("暗流评分高，值得关注")
+    elif dark_flow_score >= 45:
+        parts.append("暗流评分中等，保持观察")
+    
+    if score_total >= 70:
+        parts.append("综合评分高，信号较强")
+    
+    return "；".join(parts) if parts else "OI 与价格变化正常，无明显暗流特征。"
 
 
 def format_accumulation_pool_report(pool: list, limit: int = 10) -> str:
