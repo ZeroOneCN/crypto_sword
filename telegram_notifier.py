@@ -208,6 +208,96 @@ def _fmt_num(value: Any, decimals: int = 6) -> str:
         return str(value)
 
 
+def format_direction_label(direction: Any) -> str:
+    """Translate internal side/direction codes into user-facing Chinese."""
+    key = str(direction or "").upper()
+    mapping = {
+        "LONG": "做多",
+        "BUY": "做多",
+        "CONSIDER_LONG": "偏多",
+        "SHORT": "做空",
+        "SELL": "做空",
+        "CONSIDER_SHORT": "偏空",
+    }
+    return mapping.get(key, str(direction or "未知方向"))
+
+
+def _format_close_reason_label(reason: Any) -> str:
+    """Translate close reason codes into concise Chinese labels."""
+    key = str(reason or "").upper()
+    mapping = {
+        "TAKE_PROFIT_TP_FULL_EXCHANGE": "TP1/TP2/TP3 全部成交｜交易所分批止盈完成",
+        "TAKE_PROFIT_EXCHANGE": "交易所止盈完成",
+        "TAKE_PROFIT_LOCAL_FALLBACK": "本地止盈兜底",
+        "TAKE_PROFIT": "止盈触发",
+        "STOP_LOSS_EXCHANGE": "交易所止损触发",
+        "STOP_LOSS": "止损触发",
+        "TRAILING_STOP": "追踪止损触发",
+        "TRAILING": "追踪止损触发",
+        "MANUAL": "手动平仓",
+        "ENTRY_PROTECTION_FAILED": "开仓保护失败回滚",
+        "EXCHANGE_REALIZED_EXCHANGE": "交易所已实现盈亏同步",
+        "EXCHANGE_REALIZED": "交易所已实现盈亏同步",
+        "FILLED": "完全成交",
+        "PARTIALLY_FILLED": "部分成交",
+        "CANCELED": "已撤销",
+        "EXPIRED": "已过期",
+        "REJECTED": "已拒绝",
+        "UNKNOWN": "未知原因",
+    }
+    if key in mapping:
+        return mapping[key]
+    if "TAKE_PROFIT" in key:
+        return "止盈触发"
+    if "STOP_LOSS" in key:
+        return "止损触发"
+    if "TRAIL" in key:
+        return "追踪止损触发"
+    if "EXCHANGE_REALIZED" in key:
+        return "交易所已实现盈亏同步"
+    return key if key else "未知原因"
+
+
+def format_entry_failure_detail(detail: Any) -> str:
+    """Translate common exchange/execution failures while preserving the raw clue."""
+    raw = str(detail or "").strip()
+    lower = raw.lower()
+    if not raw:
+        return "未提供具体失败原因"
+
+    reason = ""
+    if "leverage" in lower or "杠杆" in raw:
+        reason = "杠杆设置或复查失败，系统已拒绝继续开仓"
+    elif "min notional" in lower or "notional" in lower or "名义" in raw:
+        reason = "名义价值低于交易所最低下单要求"
+    elif "insufficient" in lower or "margin" in lower or "balance" in lower or "余额" in raw or "保证金" in raw:
+        reason = "可用余额或保证金不足"
+    elif "precision" in lower or "ticksize" in lower or "stepsize" in lower:
+        reason = "价格或数量精度不符合交易所规则"
+    elif "reduceonly" in lower or "reduce only" in lower:
+        reason = "交易所拒绝 reduce-only 参数"
+    elif "immediately trigger" in lower or "would immediately trigger" in lower:
+        reason = "保护单价格会立即触发，交易所拒绝挂单"
+    elif "connection reset" in lower or "errno 104" in lower:
+        reason = "网络连接被重置，请求未稳定完成"
+    elif "timeout" in lower or "timed out" in lower:
+        reason = "交易所请求超时"
+    elif "http 400" in lower:
+        reason = "交易所参数校验失败"
+    elif "liquidity" in lower or "流动性" in raw:
+        reason = "流动性过滤未通过"
+    elif "slippage" in lower or "滑点" in raw or "价格偏移" in raw:
+        reason = "下单前价格偏移或滑点超过阈值"
+    elif "risk" in lower or "风控" in raw or "敞口" in raw:
+        reason = "风控条件未通过"
+
+    if not reason:
+        return raw
+    if raw == reason:
+        return reason
+    return f"{reason}\n原始信息：{raw}"
+
+
 def _format_take_profit_targets(
     targets: list[dict[str, Any]] | None,
     entry_price: float = 0.0,
@@ -293,6 +383,7 @@ def _format_component_label(component: str) -> str:
         "loss_guard": "连亏熔断",
         "main_loop": "主循环",
         "protection_guard": "保护单风控",
+        "protection_cleanup": "保护条件单清理",
         "protection_reconcile": "保护单补挂",
         "risk_assessment": "风控评估",
         "risk_guard": "风险守卫",
@@ -300,6 +391,17 @@ def _format_component_label(component: str) -> str:
         "stop_loss_cleanup": "止损单清理",
     }
     return component_map.get(component, component)
+
+
+def _format_error_type_label(error_type: Any) -> str:
+    """Translate common legacy English error types."""
+    raw = str(error_type or "")
+    mapping = {
+        "startup health checks failed": "启动健康检查失败",
+        "Main loop exception": "主循环异常",
+        "main loop exception": "主循环异常",
+    }
+    return mapping.get(raw, raw)
 
 
 def _format_protection_failure_detail(detail: str) -> str:
@@ -328,6 +430,11 @@ def _format_protection_failure_detail(detail: str) -> str:
     return raw or "未知保护单失败"
 
 
+def format_protection_failure_detail(detail: Any) -> str:
+    """Public wrapper for protection failure translation."""
+    return _format_protection_failure_detail(str(detail or ""))
+
+
 def format_open_position_msg(
     symbol: str,
     direction: str,
@@ -350,7 +457,7 @@ def format_open_position_msg(
 ) -> str:
     """格式化开仓通知"""
     direction_emoji = _E if direction == "LONG" else _E2
-    direction_text = "做多 LONG" if direction == "LONG" else "做空 SHORT"
+    direction_text = format_direction_label(direction)
 
     sl_pct = abs(entry_price - stop_loss) / entry_price * 100 if entry_price else 0.0
     tp_pct = abs(take_profit - entry_price) / entry_price * 100 if entry_price else 0.0
@@ -414,16 +521,7 @@ def format_open_position_msg(
 
 
 def _humanize_close_reason(reason: str) -> str:
-    reason_key = (reason or "").upper()
-    if reason_key == "TAKE_PROFIT_TP_FULL_EXCHANGE":
-        return "TP1/TP2/TP3 全部成交｜交易所分批止盈完成"
-    if reason_key == "EXCHANGE_REALIZED_EXCHANGE":
-        return "交易所真实盈亏同步"
-    if reason_key == "TAKE_PROFIT_EXCHANGE":
-        return "交易所止盈完成"
-    if reason_key == "STOP_LOSS_EXCHANGE":
-        return "交易所止损触发"
-    return reason
+    return _format_close_reason_label(reason)
 
 
 def _format_duration_from_hours(duration_hours: float) -> str:
@@ -456,7 +554,7 @@ def format_close_position_msg(
     direction_emoji = _E if pnl >= 0 else _E2
     pnl_emoji = _E if pnl >= 0 else _E2
     pnl_sign = "+" if pnl >= 0 else ""
-    direction_text = "做多 LONG" if direction == "LONG" else "做空 SHORT"
+    direction_text = format_direction_label(direction)
 
     msg = f"""{direction_emoji} <b>宙斯交易中枢 | 平仓完成</b>
 
@@ -500,7 +598,7 @@ def format_partial_take_profit_msg(
     pnl_source: str = "",
 ) -> str:
     """格式化分批止盈成交通知"""
-    direction_text = "做多 LONG" if direction == "LONG" else "做空 SHORT"
+    direction_text = format_direction_label(direction)
     pnl_sign = "+" if pnl >= 0 else ""
     pnl_emoji = _E if pnl >= 0 else _E2
     level_text = f"TP{level}" if level else "部分止盈"
@@ -621,7 +719,7 @@ def format_summary_msg(
         pnl = float(pos.get("unrealized_pnl", 0) or 0)
         pnl_sign = "+" if pnl >= 0 else ""
         pnl_emoji = _E if pnl >= 0 else _E2
-        side = pos.get("side", "UNKNOWN")
+        side = format_direction_label(pos.get("side", "UNKNOWN"))
         current_price = float(pos.get("current_price", 0) or 0)
         take_profit_display = pos.get("take_profit_targets_text") or f"${float(pos.get('take_profit', 0) or 0):,.4f}"
         stop_suffix = " 估算" if pos.get("stop_loss_estimated") else ""
@@ -646,7 +744,7 @@ def format_error_msg(
     """格式化错误通知"""
     msg = f"""❌ <b>宙斯交易中枢 | 交易异常</b>
 
-<b>类型</b>  <code>{_escape(error_type)}</code>"""
+<b>类型</b>  <code>{_escape(_format_error_type_label(error_type))}</code>"""
     if component:
         msg += f"\n<b>组件</b>  <code>{_escape(_format_component_label(component))}</code>"
     if symbol:
@@ -711,6 +809,7 @@ def format_signal_message(signal: dict[str, Any], trade_result: dict[str, Any]) 
     trade = trade_result or {}
 
     direction_emoji = "🟢" if direction == "LONG" else "🔴" if direction == "SHORT" else "🟡"
+    direction_text = format_direction_label(direction)
     stage_emoji = {
         "pre_break": "⚡",
         "confirmed_breakout": "🚀",
@@ -740,7 +839,7 @@ def format_signal_message(signal: dict[str, Any], trade_result: dict[str, Any]) 
 
     msg = f"""{stage_emoji}{stage_emoji} <b>BREAKOUT SIGNAL</b> {stage_emoji}{stage_emoji}
 
-{direction_emoji} <b>{_escape(symbol)}</b>  <code>{_escape(direction)}</code>
+{direction_emoji} <b>{_escape(symbol)}</b>  <code>{_escape(direction_text)}</code>
 📊 <b>阶段</b>  <code>{_escape(stage)}</code>
 {action_emoji} <b>Action</b>  <code>{_escape(action)}</code>
 
@@ -886,25 +985,11 @@ def format_daily_report_msg(report: dict[str, Any]) -> str:
             f" / <code>{float(worst_trade.get('pnl_pct', 0) or 0):+,.2f}%</code>"
         )
 
-    def _reason_zh(reason: str) -> str:
-        key = str(reason or "").upper()
-        mapping = {
-            "TAKE_PROFIT": "止盈触发",
-            "STOP_LOSS": "止损触发",
-            "FILLED": "完全成交",
-            "PARTIALLY_FILLED": "部分成交",
-            "CANCELED": "已撤销",
-            "EXPIRED": "已过期",
-            "REJECTED": "已拒绝",
-            "UNKNOWN": "未知原因",
-        }
-        return mapping.get(key, key if key else "未知原因")
-
     reason_counts = report.get("reason_counts") or {}
     if reason_counts:
         msg += "\n\n<b>平仓原因</b>"
         for reason, count in sorted(reason_counts.items(), key=lambda item: (-int(item[1] or 0), str(item[0]))):
-            msg += f"\n•{_escape(_reason_zh(str(reason)))}  <code>{int(count or 0)}</code>"
+            msg += f"\n•{_escape(_format_close_reason_label(reason))}  <code>{int(count or 0)}</code>"
 
     protection = report.get("entry_protection") or {}
     protection_attempts = int(protection.get("attempts", 0) or 0)
@@ -920,9 +1005,8 @@ def format_daily_report_msg(report: dict[str, Any]) -> str:
 
         failed_by_direction = protection.get("failed_by_direction") or {}
         if failed_by_direction:
-            direction_map = {"LONG": "做多", "SHORT": "做空", "BUY": "做多", "SELL": "做空"}
             direction_text = ", ".join(
-                f"{_escape(direction_map.get(str(direction).upper(), str(direction)))}:{int(count or 0)}"
+                f"{_escape(format_direction_label(direction))}:{int(count or 0)}"
                 for direction, count in failed_by_direction.items()
             )
             msg += f"\n失败方向  <code>{_escape(direction_text)}</code>"

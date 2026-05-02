@@ -14,9 +14,12 @@ from binance_trading_executor import (
 from feature_store import build_trade_review, feature_store
 from speed_executor import quick_close_position
 from telegram_notifier import (
+    format_direction_label,
+    format_entry_failure_detail,
     format_close_position_msg,
     format_error_msg,
     format_partial_take_profit_msg,
+    format_protection_failure_detail,
     format_protection_status_msg,
     send_telegram_message,
 )
@@ -1051,17 +1054,33 @@ class ExecutionMixin:
             take_profit_mode_for_trade = str(exit_profile.get("take_profit_mode", self.config.take_profit_mode) or self.config.take_profit_mode)
             stop_loss_pct = float(exit_profile.get("stop_loss_pct", self._strategy_stop_loss_pct(strategy_line)) or self._strategy_stop_loss_pct(strategy_line))
             stop_trigger_buffer_pct = self._strategy_stop_trigger_buffer_pct(strategy_line)
+            score_data = signal.get("score") or {}
+            score = float(score_data.get("total_score", score_data.get("total", 0)) if isinstance(score_data, dict) else score_data or 0)
+            direction_label = format_direction_label(direction)
 
             if not execution_service.should_trade(trading_signal):
+                if score >= 85.0:
+                    send_telegram_message(
+                        format_error_msg(
+                            error_type="执行服务拒绝开仓",
+                            message=(
+                                "阶段：开仓前执行过滤\n"
+                                "原因：信号未满足执行服务的最终下单条件\n"
+                                f"方向：{direction_label}\n"
+                                f"策略：{strategy_line}｜{exit_profile_name}\n"
+                                f"评分：{score:.1f}"
+                            ),
+                            symbol=symbol,
+                            session_id=session_id,
+                            component="execute_entry",
+                        )
+                    )
                 return None
 
             if symbol not in self.tracker.positions:
                 step_started = time.perf_counter()
                 self._cancel_symbol_stale_protection(symbol, session_id=session_id, reason="before_new_entry")
                 self._record_latency_step(latency_steps, "stale_protection_cleanup", step_started)
-
-            score_data = signal.get("score") or {}
-            score = float(score_data.get("total_score", score_data.get("total", 0)) if isinstance(score_data, dict) else score_data or 0)
 
             step_started = time.perf_counter()
             try:
@@ -1076,7 +1095,13 @@ class ExecutionMixin:
                 send_telegram_message(
                     format_error_msg(
                         error_type="账户查询失败，拒绝开仓",
-                        message=str(e),
+                        message=(
+                            "阶段：账户余额查询\n"
+                            f"原因：{format_entry_failure_detail(e)}\n"
+                            f"方向：{direction_label}\n"
+                            f"策略：{strategy_line}｜{exit_profile_name}\n"
+                            f"评分：{score:.1f}"
+                        ),
                         symbol=symbol,
                         session_id=session_id,
                         component="account_query",
@@ -1097,6 +1122,25 @@ class ExecutionMixin:
                         f"🧊 {symbol} 下单前价格偏移过大，放弃开仓: signal={price:.8f}, latest={latest_price:.8f}, "
                         f"slippage={slippage_pct:.2f}%"
                     )
+                    if score >= 85.0:
+                        send_telegram_message(
+                            format_error_msg(
+                                error_type="价格偏移过大，拒绝开仓",
+                                message=(
+                                    "阶段：下单前价格复查\n"
+                                    f"原因：{format_entry_failure_detail('价格偏移过大')}\n"
+                                    f"方向：{direction_label}\n"
+                                    f"信号价：{price:.8f}\n"
+                                    f"最新价：{latest_price:.8f}\n"
+                                    f"偏移：{slippage_pct:.2f}% > {self.config.max_entry_slippage_pct:.2f}%\n"
+                                    f"策略：{strategy_line}｜{exit_profile_name}\n"
+                                    f"评分：{score:.1f}"
+                                ),
+                                symbol=symbol,
+                                session_id=session_id,
+                                component="execute_entry",
+                            )
+                        )
                     return None
                 if latest_price > 0:
                     price = latest_price
@@ -1104,6 +1148,22 @@ class ExecutionMixin:
             spike_reason = self._recent_spike_reversal_reason(symbol, direction, price)
             if spike_reason:
                 logger.warning(f"🧊 {symbol} 开仓前过滤：{spike_reason}")
+                if score >= 85.0:
+                    send_telegram_message(
+                        format_error_msg(
+                            error_type="短线插针风险，拒绝开仓",
+                            message=(
+                                "阶段：下单前K线复查\n"
+                                f"原因：{spike_reason}\n"
+                                f"方向：{direction_label}\n"
+                                f"策略：{strategy_line}｜{exit_profile_name}\n"
+                                f"评分：{score:.1f}"
+                            ),
+                            symbol=symbol,
+                            session_id=session_id,
+                            component="execute_entry",
+                        )
+                    )
                 return None
             self._record_latency_step(latency_steps, "price_recheck", step_started)
 
@@ -1156,10 +1216,14 @@ class ExecutionMixin:
                             format_error_msg(
                                 error_type="资本分配拒绝",
                                 message=(
-                                    f"{capital_plan.reason}\n"
-                                    f"评分={score:.1f} 策略={strategy_line} 方向={direction}\n"
-                                    f"资金档位={capital_plan.mode} 期望收益={capital_plan.expected_reward_pct:.2f}% "
-                                    f"止损={stop_loss_pct:.2f}%"
+                                    "阶段：资金分配\n"
+                                    f"原因：{capital_plan.reason}\n"
+                                    f"方向：{direction_label}\n"
+                                    f"策略：{strategy_line}｜{exit_profile_name}\n"
+                                    f"评分：{score:.1f}\n"
+                                    f"资金档位：{capital_plan.mode}\n"
+                                    f"期望收益：{capital_plan.expected_reward_pct:.2f}%\n"
+                                    f"止损：{stop_loss_pct:.2f}%"
                                 ),
                                 symbol=symbol,
                                 session_id=session_id,
@@ -1198,10 +1262,15 @@ class ExecutionMixin:
                         format_error_msg(
                             error_type="强信号风控拒绝",
                             message=(
-                                f"{'; '.join(str(item) for item in warnings) or '风控未通过'}\n"
-                                f"评分={score:.1f} 策略={strategy_line} 方向={direction}\n"
-                                f"资金档位={capital_plan.mode} 敞口上限={capital_plan.max_total_exposure_pct}% "
-                                f"相关仓={capital_plan.max_correlated_positions} | {capital_plan.reason}"
+                                "阶段：风控评估\n"
+                                f"原因：{'; '.join(str(item) for item in warnings) or '风控未通过'}\n"
+                                f"方向：{direction_label}\n"
+                                f"策略：{strategy_line}｜{exit_profile_name}\n"
+                                f"评分：{score:.1f}\n"
+                                f"资金档位：{capital_plan.mode}\n"
+                                f"敞口上限：{capital_plan.max_total_exposure_pct}%\n"
+                                f"相关仓上限：{capital_plan.max_correlated_positions}\n"
+                                f"说明：{capital_plan.reason}"
                             ),
                             symbol=symbol,
                             session_id=session_id,
@@ -1222,9 +1291,43 @@ class ExecutionMixin:
 
                 if quantity is not None and quantity <= 0:
                     logger.warning(f"🛡️ {symbol} 仓位计算失败")
+                    send_telegram_message(
+                        format_error_msg(
+                            error_type="仓位计算失败，拒绝开仓",
+                            message=(
+                                "阶段：风控仓位计算\n"
+                                "原因：计算出的下单数量小于等于 0，可能是余额、精度或最小名义价值限制导致\n"
+                                f"方向：{direction_label}\n"
+                                f"策略：{strategy_line}｜{exit_profile_name}\n"
+                                f"评分：{score:.1f}\n"
+                                f"余额：{balance:.2f} USDT\n"
+                                f"风险余额：{risk_balance:.2f} USDT"
+                            ),
+                            symbol=symbol,
+                            session_id=session_id,
+                            component="risk_assessment",
+                        )
+                    )
                     return None
 
                 if position_value > 0 and not self._passes_liquidity_filter(symbol, position_value):
+                    if score >= 85.0:
+                        send_telegram_message(
+                            format_error_msg(
+                                error_type="流动性过滤失败，拒绝开仓",
+                                message=(
+                                    "阶段：流动性检查\n"
+                                    f"原因：{format_entry_failure_detail('流动性过滤未通过')}\n"
+                                    f"方向：{direction_label}\n"
+                                    f"策略：{strategy_line}｜{exit_profile_name}\n"
+                                    f"评分：{score:.1f}\n"
+                                    f"计划名义仓位：{position_value:.2f} USDT"
+                                ),
+                                symbol=symbol,
+                                session_id=session_id,
+                                component="risk_assessment",
+                            )
+                        )
                     return None
 
                 logger.info(
@@ -1266,8 +1369,14 @@ class ExecutionMixin:
                     format_error_msg(
                         error_type="开仓下单失败",
                         message=(
-                            f"{failure_reason}\n"
-                            f"方向={direction} 数量={quantity} 杠杆={entry_leverage}x 策略={strategy_line}"
+                            "阶段：交易所下单\n"
+                            f"原因：{format_entry_failure_detail(failure_reason)}\n"
+                            f"方向：{direction_label}\n"
+                            f"数量：{quantity}\n"
+                            f"杠杆：{entry_leverage}x\n"
+                            f"策略：{strategy_line}｜{exit_profile_name}\n"
+                            f"评分：{score:.1f}\n"
+                            f"计划入场价：{price:.8f}"
                         ),
                         symbol=symbol,
                         session_id=session_id,
@@ -1292,7 +1401,15 @@ class ExecutionMixin:
                     send_telegram_message(
                         format_error_msg(
                             error_type="开仓部分成交异常",
-                            message=f"部分成交比例过低：请求数量={quantity}，实际成交={actual_quantity}",
+                            message=(
+                                "阶段：成交结果确认\n"
+                                "原因：部分成交比例过低，系统放弃继续持仓\n"
+                                f"方向：{direction_label}\n"
+                                f"请求数量：{quantity}\n"
+                                f"实际成交：{actual_quantity}\n"
+                                f"策略：{strategy_line}｜{exit_profile_name}\n"
+                                f"评分：{score:.1f}"
+                            ),
                             symbol=symbol,
                             session_id=session_id,
                             component="execute_entry",
@@ -1370,7 +1487,15 @@ class ExecutionMixin:
                 send_telegram_message(
                     format_error_msg(
                         error_type="开仓保护单失败已回滚",
-                        message=f"{symbol} {detail}",
+                        message=(
+                            "阶段：开仓后保护单确认\n"
+                            f"原因：{format_protection_failure_detail(detail)}\n"
+                            f"方向：{direction_label}\n"
+                            f"成交数量：{actual_quantity}\n"
+                            f"成交价：{executed_entry_price:.8f}\n"
+                            f"回滚结果：{'已尝试市价平仓' if flat_result else '未获得回滚结果'}\n"
+                            f"原始信息：{detail}"
+                        ),
                         symbol=symbol,
                         session_id=session_id,
                         component="entry_protection",
@@ -1526,10 +1651,17 @@ class ExecutionMixin:
 
         except Exception as e:
             logger.error(f"❌ {symbol} 开仓流程异常：{e}", exc_info=True)
+            score_text = f"{score:.1f}" if "score" in locals() else "未知"
             send_telegram_message(
                 format_error_msg(
                     error_type="开仓流程异常",
-                    message=str(e),
+                    message=(
+                        "阶段：开仓流程总异常\n"
+                        f"原因：{format_entry_failure_detail(e)}\n"
+                        f"方向：{format_direction_label(direction) if 'direction' in locals() else '未知方向'}\n"
+                        f"策略：{strategy_line if 'strategy_line' in locals() else '未知策略'}\n"
+                        f"评分：{score_text}"
+                    ),
                     symbol=symbol,
                     session_id=session_id if "session_id" in locals() else "",
                     component="execute_entry",
