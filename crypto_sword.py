@@ -136,6 +136,7 @@ class CryptoSword(ExecutionMixin, ScannerMixin, CycleMixin, SyncMixin, Confirmat
         self._daily_report_cache: Optional[dict[str, Any]] = None
         self._daily_report_cache_date: str = ""
         self._daily_report_cache_at: float = 0.0
+        self._last_daily_report_db_log_signature: str = ""
 
     def _new_session_id(self, symbol: str) -> str:
         return f"{symbol}-{datetime.now().strftime('%Y%m%d%H%M%S')}-{uuid4().hex[:8]}"
@@ -196,7 +197,19 @@ class CryptoSword(ExecutionMixin, ScannerMixin, CycleMixin, SyncMixin, Confirmat
                 daily_report["date"] = date_str
                 daily_report["mode"] = self.config.mode
                 daily_report["entry_protection"] = entry_protection
-            logger.info(
+            log_signature = "|".join(
+                [
+                    str(date_str),
+                    str(int(daily_report.get("closed_trades", 0) or 0)),
+                    f"{float(daily_report.get('total_pnl', 0) or 0):.4f}",
+                    str(daily_report.get("reason_counts", {})),
+                    str((daily_report.get("best_trade") or {}).get("symbol", "-")),
+                    str((daily_report.get("worst_trade") or {}).get("symbol", "-")),
+                ]
+            )
+            log = logger.info if log_signature != self._last_daily_report_db_log_signature else logger.debug
+            self._last_daily_report_db_log_signature = log_signature
+            log(
                 f"Daily report from DB [{date_str}] | trades={int(daily_report.get('closed_trades', 0) or 0)} "
                 f"pnl={float(daily_report.get('total_pnl', 0) or 0):+,.2f} "
                 f"best={((daily_report.get('best_trade') or {}).get('symbol', '-'))} "
