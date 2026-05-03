@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import threading
+import time
 from typing import Any
 
 from binance_trading_executor import (
@@ -18,13 +20,42 @@ from binance_trading_executor import (
 class OrderService:
     """Isolate direct order-operation dependency surface."""
 
+    _cache_lock = threading.RLock()
+    _open_orders_cache: dict[str, tuple[float, list[dict[str, Any]]]] = {}
+
+    @classmethod
+    def invalidate_symbol(cls, symbol: str):
+        with cls._cache_lock:
+            cls._open_orders_cache.pop(str(symbol or "").upper(), None)
+
+    @classmethod
+    def _fetch_open_orders_cached(cls, symbol: str, ttl_sec: float = 0.75) -> list[dict[str, Any]]:
+        symbol_key = str(symbol or "").upper()
+        now = time.time()
+        with cls._cache_lock:
+            cached = cls._open_orders_cache.get(symbol_key)
+            if cached and now - cached[0] < max(0.0, ttl_sec):
+                return [dict(item) for item in cached[1]]
+
+        orders = fetch_open_algo_orders(symbol_key) or []
+        normalized = [dict(item) for item in orders if isinstance(item, dict)]
+        with cls._cache_lock:
+            cls._open_orders_cache[symbol_key] = (now, normalized)
+        return [dict(item) for item in normalized]
+
     @staticmethod
     def cancel_stop_loss(symbol: str, order_id: int) -> bool:
-        return bool(cancel_stop_loss_order(symbol, order_id))
+        ok = bool(cancel_stop_loss_order(symbol, order_id))
+        if ok:
+            OrderService.invalidate_symbol(symbol)
+        return ok
 
     @staticmethod
     def cancel_protective(symbol: str, order_id: int) -> bool:
-        return bool(cancel_protective_order(symbol, order_id))
+        ok = bool(cancel_protective_order(symbol, order_id))
+        if ok:
+            OrderService.invalidate_symbol(symbol)
+        return ok
 
     @staticmethod
     def place_stop_loss(
@@ -36,7 +67,7 @@ class OrderService:
         position_side: str,
         reduce_only: bool = True,
     ):
-        return place_stop_loss_order(
+        result = place_stop_loss_order(
             symbol,
             side,
             quantity,
@@ -44,6 +75,8 @@ class OrderService:
             position_side=position_side,
             reduce_only=reduce_only,
         )
+        OrderService.invalidate_symbol(symbol)
+        return result
 
     @staticmethod
     def place_take_profit(
@@ -55,7 +88,7 @@ class OrderService:
         position_side: str,
         reduce_only: bool = True,
     ):
-        return place_take_profit_order(
+        result = place_take_profit_order(
             symbol,
             side,
             quantity,
@@ -63,6 +96,8 @@ class OrderService:
             position_side=position_side,
             reduce_only=reduce_only,
         )
+        OrderService.invalidate_symbol(symbol)
+        return result
 
     @staticmethod
     def place_market(
@@ -73,13 +108,15 @@ class OrderService:
         position_side: str,
         reduce_only: bool = True,
     ):
-        return place_market_order(
+        result = place_market_order(
             symbol,
             side,
             quantity,
             position_side=position_side,
             reduce_only=reduce_only,
         )
+        OrderService.invalidate_symbol(symbol)
+        return result
 
     @staticmethod
     def fetch_open(symbol: str):
@@ -160,12 +197,7 @@ class OrderService:
         take_profit_orders: list[dict[str, Any]] = []
         unknown_orders: list[dict[str, Any]] = []
 
-        orders: list[dict[str, Any]] = []
-        for fetcher in (self.fetch_open, self.fetch_open_algo):
-            try:
-                orders.extend(fetcher(symbol) or [])
-            except Exception:
-                continue
+        orders = self._fetch_open_orders_cached(symbol)
 
         close_side_upper = (close_side or "").upper()
         for order in orders:
@@ -211,12 +243,7 @@ class OrderService:
         canceled: list[int] = []
         failed: list[int] = []
 
-        orders: list[dict[str, Any]] = []
-        for fetcher in (self.fetch_open, self.fetch_open_algo):
-            try:
-                orders.extend(fetcher(symbol) or [])
-            except Exception:
-                continue
+        orders = self._fetch_open_orders_cached(symbol)
 
         for order in orders:
             if not isinstance(order, dict):
@@ -237,6 +264,57 @@ class OrderService:
             "canceled": canceled,
             "failed": failed,
         }
+
+    def prune_duplicate_protective_orders(
+        self,
+        symbol: str,
+        position_side: str | None = None,
+        close_side: str | None = None,
+    ) -> dict[str, Any]:
+        """Cancel exact duplicate protective orders while preserving TP ladders.
+
+        Duplicates are defined narrowly as same type/side/position side/trigger
+        price. Different TP prices are legitimate ladder orders and are kept.
+        """
+        close_side_upper = (close_side or "").upper()
+        orders = self._fetch_open_orders_cached(symbol, ttl_sec=0.0)
+        grouped: dict[tuple[str, str, str, str], list[dict[str, Any]]] = {}
+        checked = 0
+
+        for order in orders:
+            if not isinstance(order, dict):
+                continue
+            if not self._is_protective_order(order, position_side=position_side):
+                continue
+            order_side = str(order.get("side", "") or "").upper()
+            if close_side_upper and order_side and order_side != close_side_upper:
+                continue
+            order_id = self._order_id(order)
+            if order_id <= 0:
+                continue
+            checked += 1
+            order_type = self._order_type(order)
+            order_position_side = str(order.get("positionSide", order.get("position_side", "")) or "").upper()
+            price_key = f"{self._trigger_price(order):.12g}"
+            key = (order_type, order_side, order_position_side, price_key)
+            grouped.setdefault(key, []).append(order)
+
+        canceled: list[int] = []
+        failed: list[int] = []
+        for duplicates in grouped.values():
+            if len(duplicates) <= 1:
+                continue
+            duplicates.sort(key=lambda item: self._order_id(item), reverse=True)
+            for order in duplicates[1:]:
+                order_id = self._order_id(order)
+                if self.cancel_protective(symbol, order_id):
+                    canceled.append(order_id)
+                else:
+                    failed.append(order_id)
+
+        if canceled or failed:
+            self.invalidate_symbol(symbol)
+        return {"checked": checked, "canceled": canceled, "failed": failed}
 
 
 order_service = OrderService()

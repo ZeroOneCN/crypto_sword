@@ -18,6 +18,7 @@ import html
 import json
 import logging
 import os
+import queue
 import re
 import threading
 import time
@@ -31,6 +32,20 @@ logger = logging.getLogger(__name__)
 _telegram_lock = threading.Lock()
 _last_message_time = 0.0
 _min_message_interval = 0.5  # seconds (avoid hitting Telegram rate limits)
+
+
+def _int_env(name: str, default: int) -> int:
+    try:
+        return int(os.environ.get(name, str(default)) or default)
+    except Exception:
+        return default
+
+
+_telegram_queue: "queue.Queue[tuple[str, str | None]]" = queue.Queue(
+    maxsize=max(10, _int_env("TELEGRAM_QUEUE_SIZE", 1000))
+)
+_telegram_worker_started = False
+_telegram_worker_lock = threading.Lock()
 
 
 def _normalize_telegram_value(value: Any) -> str:
@@ -108,7 +123,73 @@ def get_telegram_config() -> dict[str, Any]:
     return config
 
 
-def send_telegram_message(message: str, parse_mode: str | None = "HTML") -> bool:
+def send_telegram_message(message: str, parse_mode: str | None = "HTML", async_send: bool | None = None) -> bool:
+    """Queue a Telegram message without blocking trading flows."""
+    if async_send is None:
+        async_send = os.environ.get("TELEGRAM_ASYNC_SEND", "1").strip().lower() not in {"0", "false", "no"}
+
+    if not async_send:
+        return _send_telegram_message_sync(message, parse_mode=parse_mode)
+
+    config = get_telegram_config()
+    token = _normalize_telegram_value(config.get("bot_token", ""))
+    chat_id = _normalize_telegram_value(config.get("chat_id", ""))
+    if not _telegram_config_usable(token, chat_id):
+        logger.info(f"[TG] {message}")
+        return False
+
+    _ensure_telegram_worker()
+    try:
+        _telegram_queue.put_nowait((message, parse_mode))
+        return True
+    except queue.Full:
+        logger.error("Telegram queue full - dropping notification to keep trading loop non-blocking")
+        return False
+
+
+def _ensure_telegram_worker():
+    global _telegram_worker_started
+    if _telegram_worker_started:
+        return
+    with _telegram_worker_lock:
+        if _telegram_worker_started:
+            return
+        thread = threading.Thread(target=_telegram_worker_loop, name="telegram-notifier", daemon=True)
+        thread.start()
+        _telegram_worker_started = True
+
+
+def _telegram_worker_loop():
+    while True:
+        message, parse_mode = _telegram_queue.get()
+        try:
+            _send_telegram_message_sync(message, parse_mode=parse_mode)
+        except Exception as exc:
+            logger.error(f"Telegram worker unexpected failure: {exc}")
+        finally:
+            _telegram_queue.task_done()
+
+
+def _telegram_config_usable(token: str, chat_id: str) -> bool:
+    if not token or not chat_id:
+        logger.warning("Telegram not configured - skipping notification")
+        return False
+    if _looks_like_placeholder(token) or _looks_like_placeholder(chat_id):
+        logger.error(
+            "Telegram config uses placeholder values. "
+            "Please set real TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID or config/telegram.json."
+        )
+        return False
+    if not _is_valid_bot_token(token):
+        logger.error(
+            f"Telegram bot token format invalid: {_sanitize_token_preview(token)} "
+            "(expected <digits>:<secret>)"
+        )
+        return False
+    return True
+
+
+def _send_telegram_message_sync(message: str, parse_mode: str | None = "HTML") -> bool:
     """Send a message to Telegram (thread-safe with simple rate limiting)."""
     global _last_message_time
 
@@ -116,23 +197,8 @@ def send_telegram_message(message: str, parse_mode: str | None = "HTML") -> bool
     token = _normalize_telegram_value(config.get("bot_token", ""))
     chat_id = _normalize_telegram_value(config.get("chat_id", ""))
 
-    if not token or not chat_id:
-        logger.warning("Telegram not configured - skipping notification")
+    if not _telegram_config_usable(token, chat_id):
         logger.info(f"[TG] {message}")
-        return False
-
-    if _looks_like_placeholder(token) or _looks_like_placeholder(chat_id):
-        logger.error(
-            "Telegram config uses placeholder values. "
-            "Please set real TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID or config/telegram.json."
-        )
-        return False
-
-    if not _is_valid_bot_token(token):
-        logger.error(
-            f"Telegram bot token format invalid: {_sanitize_token_preview(token)} "
-            "(expected <digits>:<secret>)"
-        )
         return False
 
     with _telegram_lock:

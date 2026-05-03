@@ -484,6 +484,32 @@ class BinanceAllMarketTickerWebSocketClient:
         fresh.sort(key=lambda ticker: abs(ticker.price_change_pct), reverse=True)
         return [ticker.symbol for ticker in fresh[:limit]]
 
+    def get_price(self, symbol: str, max_age_sec: float = 10.0) -> float:
+        """Return the latest all-market ticker price from memory."""
+        symbol_key = str(symbol or "").upper()
+        now = time.time()
+        with self._lock:
+            ticker = self.tickers.get(symbol_key)
+            if not ticker or now - ticker.last_update > max_age_sec:
+                return 0.0
+            return float(ticker.price or 0.0)
+
+    def get_ticker(self, symbol: str, max_age_sec: float = 30.0) -> dict[str, float | str]:
+        """Return a compact in-memory ticker snapshot."""
+        symbol_key = str(symbol or "").upper()
+        now = time.time()
+        with self._lock:
+            ticker = self.tickers.get(symbol_key)
+            if not ticker or now - ticker.last_update > max_age_sec:
+                return {}
+            return {
+                "symbol": ticker.symbol,
+                "price": float(ticker.price or 0.0),
+                "price_change_pct": float(ticker.price_change_pct or 0.0),
+                "quote_volume_24h": float(ticker.quote_volume_24h or 0.0),
+                "last_update": float(ticker.last_update or 0.0),
+            }
+
     @staticmethod
     def _is_excluded_symbol(symbol: str) -> bool:
         stable_bases = ("USDC", "FDUSD", "TUSD", "USDE", "BUSD")

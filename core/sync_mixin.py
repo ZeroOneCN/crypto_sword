@@ -67,6 +67,15 @@ class SyncMixin:
         except Exception:
             return 0.0
 
+    def _get_market_ws_price(self, symbol: str) -> float:
+        market_ws = getattr(self, "_market_ws_client", None)
+        if not market_ws or not hasattr(market_ws, "get_price"):
+            return 0.0
+        try:
+            return float(market_ws.get_price(symbol, max_age_sec=10) or 0)
+        except Exception:
+            return 0.0
+
     def _start_user_data_stream(self):
         """Start private WebSocket for order/account state updates."""
         if BinanceUserDataWebSocketClient is None:
@@ -917,10 +926,13 @@ class SyncMixin:
     def get_current_prices(self, symbols: List[str]) -> Dict[str, float]:
         """获取当前价格"""
         prices = {}
-        self._refresh_price_stream(symbols)
+        tracked_symbols = {str(symbol).upper() for symbol in getattr(self.tracker, "positions", {}).keys()}
+        stream_symbols = [symbol for symbol in symbols if str(symbol).upper() in tracked_symbols]
+        if stream_symbols:
+            self._refresh_price_stream(stream_symbols)
         for symbol in symbols:
             try:
-                ws_price = self._get_ws_price(symbol)
+                ws_price = self._get_ws_price(symbol) or self._get_market_ws_price(symbol)
                 if ws_price > 0:
                     prices[symbol] = ws_price
                     continue

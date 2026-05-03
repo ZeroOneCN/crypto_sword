@@ -55,7 +55,8 @@ class BootstrapService:
                     error_type="startup health checks failed",
                     message=str(e),
                     component="startup_checks",
-                )
+                ),
+                async_send=False,
             )
             raise
 
@@ -72,7 +73,8 @@ class BootstrapService:
                 take_profit_mode=self.trader.config.take_profit_mode,
                 trailing_stop_pct=self.trader.config.trailing_stop_pct,
                 trailing_enabled=self.trader.config.trailing_stop_enabled,
-            )
+            ),
+            async_send=False,
         )
         if not startup_notified:
             message = "Telegram notification unavailable: startup message not delivered"
@@ -91,7 +93,8 @@ class BootstrapService:
                 closed_trades=summary["closed_today"],
                 realized_pnl=summary["realized_pnl"],
                 unrealized_pnl=summary["total_unrealized_pnl"],
-            )
+            ),
+            async_send=False,
         )
         if not shutdown_notified:
             self.logger.error("Telegram notification unavailable: shutdown summary not delivered")

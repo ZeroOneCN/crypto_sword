@@ -7,6 +7,7 @@ import hmac
 import json
 import logging
 import os
+import threading
 import time
 import urllib.error
 import urllib.parse
@@ -17,11 +18,18 @@ from typing import Any
 from exchange_client import ExchangeClient
 from hermes_paths import hermes_config_dir
 
+try:
+    import requests
+except Exception:  # pragma: no cover - optional runtime dependency fallback
+    requests = None
+
 
 logger = logging.getLogger(__name__)
 
 MAINNET_BASE_URL = "https://fapi.binance.com"
 DEFAULT_REQUEST_TIMEOUT_SEC = 10.0
+DEFAULT_REQUEST_MAX_RETRIES = 2
+TRANSIENT_HTTP_CODES = {408, 425, 429, 500, 502, 503, 504}
 
 
 class BinanceApiClient:
@@ -34,12 +42,15 @@ class BinanceApiClient:
         base_url: str = "",
         recv_window: int = 5000,
         request_timeout_sec: float = DEFAULT_REQUEST_TIMEOUT_SEC,
+        request_max_retries: int = DEFAULT_REQUEST_MAX_RETRIES,
     ):
         self.api_key = api_key
         self.api_secret = api_secret
         self.base_url = (base_url or MAINNET_BASE_URL).rstrip("/")
         self.recv_window = recv_window
         self.request_timeout_sec = max(float(request_timeout_sec or DEFAULT_REQUEST_TIMEOUT_SEC), 1.0)
+        self.request_max_retries = max(int(request_max_retries or 0), 0)
+        self._session_local = threading.local()
 
     @classmethod
     def from_environment(cls) -> "BinanceApiClient":
@@ -64,6 +75,10 @@ class BinanceApiClient:
                 or config.get("http_timeout_sec")
                 or config.get("timeout_sec"),
                 DEFAULT_REQUEST_TIMEOUT_SEC,
+            ),
+            request_max_retries=int(
+                os.environ.get("BINANCE_REQUEST_MAX_RETRIES")
+                or config.get("request_max_retries", DEFAULT_REQUEST_MAX_RETRIES)
             ),
         )
 
@@ -478,9 +493,17 @@ class BinanceApiClient:
         signed: bool = False,
         api_key: bool = False,
     ) -> Any:
+        """Send one REST request.
+
+        Non-order requests use a small retry budget for transient network or
+        exchange gateway failures. Order placement is intentionally not retried:
+        if the request reached Binance but the response was lost, a blind retry
+        could duplicate an entry/protection order.
+        """
         params = {k: v for k, v in (params or {}).items() if v is not None}
         headers = {"Content-Type": "application/json"}
         query = ""
+        method_upper = method.upper()
 
         if signed:
             if not self.is_configured():
@@ -506,19 +529,109 @@ class BinanceApiClient:
         if query:
             url = f"{url}?{query}"
 
-        request = urllib.request.Request(url, method=method.upper(), headers=headers)
+        retry_budget = self.request_max_retries if self._is_retry_safe(method_upper, path) else 0
+        last_error: Exception | None = None
+        for attempt in range(retry_budget + 1):
+            try:
+                return self._send_http(method_upper, url, headers)
+            except RuntimeError as exc:
+                last_error = exc
+                if attempt >= retry_budget or not self._is_transient_error_text(str(exc)):
+                    raise
+                delay = min(0.25 * (2 ** attempt), 1.0)
+                logger.debug(f"Binance REST transient failure, retrying in {delay:.2f}s: {exc}")
+                time.sleep(delay)
+        if last_error:
+            raise last_error
+        raise RuntimeError(f"Binance API request failed | {method_upper} {self._redact_url(url)}")
+
+    def _send_http(self, method: str, url: str, headers: dict[str, str]) -> Any:
+        if requests is not None:
+            return self._send_http_requests(method, url, headers)
+        return self._send_http_urllib(method, url, headers)
+
+    def _send_http_requests(self, method: str, url: str, headers: dict[str, str]) -> Any:
+        session = self._get_session()
+        try:
+            response = session.request(method, url, headers=headers, timeout=self.request_timeout_sec)
+            raw = response.text or ""
+            if response.status_code >= 400:
+                raise RuntimeError(
+                    f"Binance API HTTP {response.status_code} | {method} {self._redact_url(url)} | {raw[:300]}"
+                )
+            return json.loads(raw) if raw else {}
+        except requests.RequestException as exc:  # type: ignore[union-attr]
+            raise RuntimeError(
+                f"Binance API request failed | {method} {self._redact_url(url)} | "
+                f"timeout={self.request_timeout_sec:.1f}s | {exc}"
+            ) from exc
+
+    def _send_http_urllib(self, method: str, url: str, headers: dict[str, str]) -> Any:
+        request = urllib.request.Request(url, method=method, headers=headers)
         try:
             with urllib.request.urlopen(request, timeout=self.request_timeout_sec) as response:
                 raw = response.read().decode("utf-8")
                 return json.loads(raw) if raw else {}
         except urllib.error.HTTPError as e:
             body = e.read().decode("utf-8", errors="replace")
-            raise RuntimeError(f"Binance API HTTP {e.code} | {method.upper()} {url} | {body[:300]}") from e
+            raise RuntimeError(f"Binance API HTTP {e.code} | {method} {self._redact_url(url)} | {body[:300]}") from e
         except urllib.error.URLError as e:
             reason = getattr(e, "reason", e)
             raise RuntimeError(
-                f"Binance API request failed | {method.upper()} {url} | timeout={self.request_timeout_sec:.1f}s | {reason}"
+                f"Binance API request failed | {method} {self._redact_url(url)} | "
+                f"timeout={self.request_timeout_sec:.1f}s | {reason}"
             ) from e
+
+    def _get_session(self):
+        session = getattr(self._session_local, "session", None)
+        if session is None:
+            if requests is None:
+                return None
+            session = requests.Session()
+            session.headers.update({"User-Agent": "HermesTrader/1.0"})
+            self._session_local.session = session
+        return session
+
+    @staticmethod
+    def _is_retry_safe(method: str, path: str) -> bool:
+        if method in {"GET", "DELETE", "PUT"}:
+            return True
+        if method == "POST" and path in {"/fapi/v1/listenKey", "/fapi/v1/leverage"}:
+            return True
+        return False
+
+    @staticmethod
+    def _is_transient_error_text(text: str) -> bool:
+        lowered = text.lower()
+        if any(f"http {code}" in lowered for code in TRANSIENT_HTTP_CODES):
+            return True
+        return any(
+            token in lowered
+            for token in (
+                "connection reset",
+                "connection aborted",
+                "remote end closed",
+                "timed out",
+                "timeout",
+                "temporarily unavailable",
+                "502",
+                "503",
+                "504",
+            )
+        )
+
+    @staticmethod
+    def _redact_url(url: str) -> str:
+        parsed = urllib.parse.urlsplit(url)
+        if not parsed.query:
+            return url
+        pairs = urllib.parse.parse_qsl(parsed.query, keep_blank_values=True)
+        redacted = []
+        for key, value in pairs:
+            if key.lower() in {"signature", "timestamp"}:
+                value = "***"
+            redacted.append((key, value))
+        return urllib.parse.urlunsplit(parsed._replace(query=urllib.parse.urlencode(redacted, doseq=True)))
 
 
 def _format_decimal(value: float) -> str:

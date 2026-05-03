@@ -9,6 +9,11 @@ import urllib.parse
 import urllib.request
 from typing import Any
 
+try:
+    import requests
+except Exception:  # pragma: no cover - optional runtime dependency fallback
+    requests = None
+
 
 class OiFundingService:
     """Batch-evaluate funding turn + OI expansion and return score bonuses."""
@@ -18,9 +23,21 @@ class OiFundingService:
         self._funding_snapshot: dict[str, float] = {}
         self._funding_cache: tuple[float, dict[str, float]] | None = None
         self._oi_cache: dict[str, tuple[float, dict[str, Any]]] = {}
+        self._session_local = threading.local()
 
-    @staticmethod
-    def _http_json(url: str, params: dict[str, Any] | None = None, timeout: float = 8.0) -> Any:
+    def _session(self):
+        session = getattr(self._session_local, "session", None)
+        if session is None and requests is not None:
+            session = requests.Session()
+            session.headers.update({"User-Agent": "HermesTrader/1.0"})
+            self._session_local.session = session
+        return session
+
+    def _http_json(self, url: str, params: dict[str, Any] | None = None, timeout: float = 8.0) -> Any:
+        if requests is not None:
+            resp = self._session().get(url, params=params or {}, timeout=timeout)
+            resp.raise_for_status()
+            return resp.json()
         if params:
             query = urllib.parse.urlencode(params)
             url = f"{url}?{query}"
@@ -121,7 +138,7 @@ class OiFundingService:
         bonus_cap = float(getattr(config, "oi_funding_bonus_cap", 12.0))
         cache_sec = float(getattr(config, "oi_funding_cache_sec", 120.0))
 
-        funding_now = self._fetch_funding_map(cache_sec=cache_sec)
+        funding_now = self._fetch_funding_map(cache_sec=max(cache_sec, 300.0))
         with self._lock:
             funding_prev = dict(self._funding_snapshot)
 

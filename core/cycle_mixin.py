@@ -459,6 +459,8 @@ class CycleMixin:
         trace_started = time.perf_counter()
         latency_steps: list[tuple[str, float]] = []
         now = time.time()
+        if hasattr(self, "_begin_cycle_account_snapshot"):
+            self._begin_cycle_account_snapshot()
         deep_due = self._last_deep_scan_time <= 0 or now - self._last_deep_scan_time >= self._current_scan_interval
 
         step_started = time.perf_counter()

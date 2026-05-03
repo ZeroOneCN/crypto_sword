@@ -130,6 +130,8 @@ class CryptoSword(ExecutionMixin, ScannerMixin, CycleMixin, SyncMixin, Confirmat
         self._last_watch_monitor_order: dict[str, int] = {}
         self._account_info_cache: Optional[dict[str, Any]] = None
         self._account_info_cache_at: float = 0.0
+        self._cycle_account_info_cache: Optional[dict[str, Any]] = None
+        self._cycle_account_info_cache_at: float = 0.0
         self._market_style_trade_marker: tuple[int, str] = (0, "")
         self._daily_report_cache: Optional[dict[str, Any]] = None
         self._daily_report_cache_date: str = ""
@@ -244,11 +246,15 @@ class CryptoSword(ExecutionMixin, ScannerMixin, CycleMixin, SyncMixin, Confirmat
 
     def _get_account_info_cached(self, ttl_sec: float = 3.0, force: bool = False) -> dict[str, Any]:
         now = time.time()
+        if not force and self._cycle_account_info_cache is not None:
+            return self._cycle_account_info_cache
         if (
             not force
             and self._account_info_cache is not None
             and now - self._account_info_cache_at < max(0.0, ttl_sec)
         ):
+            self._cycle_account_info_cache = self._account_info_cache
+            self._cycle_account_info_cache_at = self._account_info_cache_at
             return self._account_info_cache
 
         try:
@@ -266,8 +272,14 @@ class CryptoSword(ExecutionMixin, ScannerMixin, CycleMixin, SyncMixin, Confirmat
         if isinstance(account_info, dict):
             self._account_info_cache = account_info
             self._account_info_cache_at = now
+            self._cycle_account_info_cache = account_info
+            self._cycle_account_info_cache_at = now
             return account_info
         raise RuntimeError("??????????")
+
+    def _begin_cycle_account_snapshot(self):
+        self._cycle_account_info_cache = None
+        self._cycle_account_info_cache_at = 0.0
 
     def _emit_latency_trace(
         self,
@@ -326,9 +338,19 @@ class CryptoSword(ExecutionMixin, ScannerMixin, CycleMixin, SyncMixin, Confirmat
                     token in error_text
                     for token in (
                         "Connection reset by peer",
+                        "Connection aborted",
                         "Remote end closed connection",
                         "timed out",
+                        "timeout",
                         "Temporary failure",
+                        "temporarily unavailable",
+                        "HTTP 408",
+                        "HTTP 425",
+                        "HTTP 429",
+                        "HTTP 500",
+                        "HTTP 502",
+                        "HTTP 503",
+                        "HTTP 504",
                     )
                 )
                 if transient_network_error:

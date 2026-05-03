@@ -485,6 +485,16 @@ class ExecutionMixin:
         close_side = "SELL" if position.side == "BUY" else "BUY"
         position_side = "LONG" if position.side == "BUY" else "SHORT"
         try:
+            prune_result = order_service.prune_duplicate_protective_orders(
+                position.symbol,
+                position_side=position_side,
+                close_side=close_side,
+            )
+            if prune_result.get("canceled") or prune_result.get("failed"):
+                logger.info(
+                    f"🧹 {position.symbol} 保护单去重："
+                    f"撤销={prune_result.get('canceled', [])} 失败={prune_result.get('failed', [])}"
+                )
             snapshot = order_service.list_symbol_protective_orders(
                 position.symbol,
                 position_side=position_side,
