@@ -228,6 +228,18 @@ class TradeDatabase:
         except Exception:
             return 0.0
 
+    @staticmethod
+    def _normalize_strategy_label(value: Any, stage: str = "") -> str:
+        strategy = str(value or "").strip()
+        if strategy and strategy.upper() != "UNKNOWN":
+            return strategy
+        stage_key = str(stage or "").strip().lower()
+        if stage_key in {"pre_break", "confirmed_breakout", "breakout"}:
+            return "趋势突破线（历史推断）"
+        if stage_key in {"pullback", "reclaim", "ma_reentry"}:
+            return "回踩确认线（历史推断）"
+        return "历史未标记策略"
+
     def _session_key_for_trade(self, trade: TradeRecord) -> str:
         notes = self._parse_notes(trade.notes or "")
         session_id = notes.get("session_id", "").strip()
@@ -241,6 +253,7 @@ class TradeDatabase:
         for trade in trades:
             key = self._session_key_for_trade(trade)
             notes = self._parse_notes(trade.notes or "")
+            strategy_label = self._normalize_strategy_label(notes.get("strategy_line", ""), trade.stage)
             item = sessions.get(key)
             if item is None:
                 item = {
@@ -250,7 +263,7 @@ class TradeDatabase:
                     "side": trade.side,
                     "direction": trade.direction,
                     "stage": trade.stage,
-                    "strategy_line": notes.get("strategy_line", "") or "UNKNOWN",
+                    "strategy_line": strategy_label,
                     "entry_price": float(trade.entry_price or 0.0),
                     "quantity": 0.0,
                     "entry_time": trade.entry_time,
@@ -275,7 +288,10 @@ class TradeDatabase:
                 item["exit_time"] = trade_exit_time
                 item["exit_price"] = float(trade.exit_price or item.get("exit_price", 0.0) or 0.0)
                 item["exit_reason"] = trade.exit_reason or item.get("exit_reason", "")
-                item["strategy_line"] = notes.get("strategy_line", item.get("strategy_line", "UNKNOWN")) or "UNKNOWN"
+                item["strategy_line"] = self._normalize_strategy_label(
+                    notes.get("strategy_line", item.get("strategy_line", "")),
+                    trade.stage or item.get("stage", ""),
+                )
                 if trade.market_snapshot:
                     item["market_snapshot"] = trade.market_snapshot
 

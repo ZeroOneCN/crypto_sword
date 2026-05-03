@@ -1088,6 +1088,8 @@ def _format_strategy_line(item: dict[str, Any] | None) -> str:
     if not item:
         return "无"
     name = str(item.get("name", "") or "未知策略")
+    if name.upper() == "UNKNOWN":
+        name = "历史未标记策略"
     count = int(item.get("count", 0) or 0)
     pnl = float(item.get("pnl", 0) or 0)
     wins = int(item.get("wins", 0) or 0)
