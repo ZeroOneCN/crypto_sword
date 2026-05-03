@@ -34,13 +34,31 @@ _last_message_time = 0.0
 _min_message_interval = 0.5  # seconds (avoid hitting Telegram rate limits)
 
 
+def _fmt_price(price: float) -> str:
+    """Smart price formatting: BTC-like → 2 dec, mid → 4 dec, cheap → 6-8 dec."""
+    if price <= 0:
+        return "0"
+    if price >= 1000:
+        return f"{price:,.2f}"
+    if price >= 1:
+        return f"{price:,.4f}"
+    if price >= 0.01:
+        return f"{price:,.4f}"
+    if price >= 0.0001:
+        return f"{price:,.6f}"
+    return f"{price:,.8f}"
+
+
+def _fmt_price_code(price: float) -> str:
+    """Like _fmt_price but wrapped in <code> tags."""
+    return f"<code>{_fmt_price(price)}</code>"
+
+
 def _int_env(name: str, default: int) -> int:
     try:
         return int(os.environ.get(name, str(default)) or default)
     except Exception:
         return default
-
-
 _telegram_queue: "queue.Queue[tuple[str, str | None]]" = queue.Queue(
     maxsize=max(10, _int_env("TELEGRAM_QUEUE_SIZE", 1000))
 )
@@ -390,7 +408,7 @@ def _format_take_profit_targets(
         expected_text = f" | 预计 +${expected_pnl:,.2f}" if expected_pnl > 0 else ""
         lines.append(
             f"TP{level}: "
-            f"<code>{price_move_pct:.2f}% 价格 / {roi_pct:.2f}% ROI</code> →<code>${price:,.4f}</code> "
+            f"<code>{price_move_pct:.2f}% 价格 / {roi_pct:.2f}% ROI</code> →<code>{_fmt_price(price)}</code> "
             f"({ratio:.0f}% / {_fmt_num(quantity)}){expected_text}"
         )
     return "\n".join(lines)
@@ -543,10 +561,10 @@ def format_open_position_msg(
     msg = f"""🟢 <b>宙斯交易中枢 | 开仓成功</b>
 
 <b>标的</b>  <code>{_escape(symbol)}</code>  {direction_text}
-<b>入场</b>  <code>${entry_price:,.4f}</code>  {leverage}x
+<b>入场</b>  <code>{_fmt_price(entry_price)}</code>  {leverage}x
 <b>数量</b>  <code>{_fmt_num(quantity)}</code>  |  名义 <code>{notional_value:,.2f} USDT</code>
-<b>止损</b>  <code>${stop_loss:,.4f}</code>  ({sl_pct:.1f}%)  |  预计 <code>-${expected_sl_loss:.2f}</code>
-<b>止盈</b>  <code>${take_profit:,.4f}</code>  ({tp_pct:.1f}%)
+<b>止损</b>  <code>{_fmt_price(stop_loss)}</code>  ({sl_pct:.1f}%)  |  预计 <code>-${expected_sl_loss:.2f}</code>
+<b>止盈</b>  <code>{_fmt_price(take_profit)}</code>  ({tp_pct:.1f}%)
 <b>风险</b>  <code>${risk_amount:.2f}</code>  |  {risk_pct:.1f}%"""
 
     if strategy_line:
@@ -626,7 +644,7 @@ def format_close_position_msg(
     msg = f"""{emoji} <b>宙斯交易中枢 | 平仓</b>
 
 <b>{_escape(symbol)}</b>  {direction_text}
-<b>入场</b>  <code>${entry_price:,.4f}</code>  →  <b>出场</b>  <code>${exit_price:,.4f}</code>
+<b>入场</b>  <code>{_fmt_price(entry_price)}</code>  →  <b>出场</b>  <code>{_fmt_price(exit_price)}</code>
 <b>盈亏</b>  {pnl_emoji} <b>{pnl_sign}${pnl:,.2f}</b>  ({pnl_sign}{pnl_pct:.2f}%)
 <b>原因</b>  <code>{_escape(_humanize_close_reason(reason))}</code>"""
 
@@ -666,7 +684,7 @@ def format_partial_take_profit_msg(
     pnl_sign = "+" if pnl >= 0 else ""
     pnl_emoji = _E if pnl >= 0 else _E2
     level_text = f"TP{level}" if level else "部分止盈"
-    entry_text = f"${entry_price:,.4f}" if entry_price > 0 else "待同步"
+    entry_text = f"{_fmt_price(entry_price)}" if entry_price > 0 else "待同步"
     pnl_pct_text = f"({pnl_sign}{pnl_pct:.2f}%)" if entry_price > 0 else "(比例待同步)"
 
     pnl_pct_text = f"({pnl_sign}{pnl_pct:.2f}%)"
@@ -675,7 +693,7 @@ def format_partial_take_profit_msg(
     msg = f"""{emoji} <b>宙斯交易中枢 | 分批止盈</b>
 
 <b>{_escape(symbol)}</b>  {direction_text}  |  <b>{_escape(level_text)}</b> ✅
-<b>入场</b>  <code>{_escape(entry_text)}</code>  →  <b>成交</b>  <code>${exit_price:,.4f}</code>
+<b>入场</b>  <code>{_escape(entry_text)}</code>  →  <b>成交</b>  <code>{_fmt_price(exit_price)}</code>
 <b>本次</b>  {pnl_emoji} <b>{pnl_sign}${pnl:,.2f}</b>  {pnl_pct_text}  |  止盈 <code>{_fmt_num(quantity)}</code>
 <b>剩余</b>  <code>{_fmt_num(remaining_quantity)}</code>  继续持有"""
 
@@ -784,14 +802,14 @@ def format_summary_msg(
         pnl_emoji = _E if pnl >= 0 else _E2
         side = format_direction_label(pos.get("side", "UNKNOWN"))
         current_price = float(pos.get("current_price", 0) or 0)
-        take_profit_display = pos.get("take_profit_targets_text") or f"${float(pos.get('take_profit', 0) or 0):,.4f}"
+        take_profit_display = pos.get("take_profit_targets_text") or f"{_fmt_price(float(pos.get('take_profit', 0) or 0))}"
         stop_suffix = " 估算" if pos.get("stop_loss_estimated") else ""
 
         msg += f"""
 
 <b>{i}.</b> <code>{_escape(pos.get('symbol', 'UNKNOWN'))}</code>  {side}
-入场 <code>${float(pos.get('entry_price', 0) or 0):,.4f}</code>  |  现价 <code>${current_price:,.4f}</code>
-止损 <code>${float(pos.get('stop_loss', 0) or 0):,.4f}</code>{stop_suffix}  |  止盈 <code>{_escape(take_profit_display)}</code>
+入场 <code>{_fmt_price(float(pos.get('entry_price', 0) or 0))}</code>  |  现价 <code>{_fmt_price(current_price)}</code>
+止损 <code>{_fmt_price(float(pos.get('stop_loss', 0) or 0))}</code>{stop_suffix}  |  止盈 <code>{_escape(take_profit_display)}</code>
 盈亏 {pnl_emoji} <code>{pnl_sign}${pnl:,.2f}</code>  ({float(pos.get('unrealized_pnl_pct', 0) or 0):+.2f}%)"""
 
     return msg
