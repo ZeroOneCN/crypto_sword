@@ -528,6 +528,12 @@ class ConfirmationMixin:
                 initial_note = "首次发现，等待趋势延续确认"
             elif strategy_line == "均线二启线":
                 initial_note = "首次发现，等待回踩守住均线后二次启动"
+            # P0: 超高评分信号直通入场（跳过复杂确认）
+            # 评分≥90极高信噪比，直接开仓避免错过行情
+            if score_total >= 90.0:
+                signal["entry_status"] = "ready"; signal["entry_status_text"] = "神级信号直通入场"; signal["strategy_line"] = strategy_line; signal["watch_stage"] = "神级直通"; signal["entry_note"] = f"评分 {score_total:.1f}，极高信噪比"; signal["confirmation_trend"] = trend; return signal
+            if score_total >= 85.0 and strategy_line == "趋势突破线":
+                signal["entry_status"] = "ready"; signal["entry_status_text"] = "强信号直通入场"; signal["strategy_line"] = strategy_line; signal["watch_stage"] = "强信号直通"; signal["entry_note"] = f"评分 {score_total:.1f}，强动量直通"; signal["confirmation_trend"] = trend; return signal
             if continuation_ready or momentum_ready or accumulation_ready:
                 signal["entry_status"] = "ready"; signal["entry_status_text"] = "突破确认入场"; signal["strategy_line"] = "趋势突破线"; signal["watch_stage"] = "首发现直通"; signal["entry_note"] = accumulation_note or momentum_note or continuation_note; signal["confirmation_trend"] = trend; return signal
             if strategy_line == "均线二启线" and ma_reentry_ready:

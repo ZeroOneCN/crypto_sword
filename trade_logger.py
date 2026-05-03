@@ -477,7 +477,27 @@ class TradeDatabase:
         conn.close()
         
         return [self._row_to_trade(row) for row in rows]
-    
+
+    def get_recent_trades_by_symbol(self, symbol: str, limit: int = 10) -> list[dict]:
+        """获取某个币种最近的已平仓交易（按exit_time降序），用于连胜分析。"""
+        conn = self._get_connection()
+        try:
+            conn.row_factory = sqlite3.Row
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT pnl, exit_reason, exit_time
+                FROM trades
+                WHERE symbol = ? AND exit_time IS NOT NULL
+                ORDER BY exit_time DESC
+                LIMIT ?
+            """, (symbol.upper(), limit))
+            return [dict(row) for row in cursor.fetchall()]
+        except Exception as e:
+            logger.debug(f"get_recent_trades_by_symbol failed for {symbol}: {e}")
+            return []
+        finally:
+            conn.close()
+
     def get_closed_trades(self, days: int = 7, mode: str = None) -> List[TradeRecord]:
         """获取已平仓交易（最近 N 天）"""
         conn = self._get_connection()

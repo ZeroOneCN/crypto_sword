@@ -111,6 +111,8 @@ class CryptoSword(ExecutionMixin, ScannerMixin, CycleMixin, SyncMixin, Confirmat
         self._last_deep_scan_time: float = 0.0
         self._last_position_sync_time: float = 0.0
         self._consecutive_losses: int = 0
+        self._idle_alert_sent: bool = False
+        self._last_entry_or_signal_time: float = time.time()
         self._entry_watchlist: dict[str, dict[str, Any]] = {}
         self._entry_timestamps_today: list[float] = []
         self._entry_exception_timestamps_today: list[float] = []
@@ -339,7 +341,27 @@ class CryptoSword(ExecutionMixin, ScannerMixin, CycleMixin, SyncMixin, Confirmat
         while self.running:
             try:
                 self.run_scan_cycle()
-                sleep_sec = max(10, min(self.config.fast_scan_interval_sec, self._current_scan_interval))
+                # P2: 空仓时降低扫描频率，减少API调用和Telegram噪音
+                open_count = self.tracker.get_open_count()
+                if open_count > 0 and self._entry_timestamps_today:
+                    sleep_sec = max(10, min(self.config.fast_scan_interval_sec, self._current_scan_interval))
+                elif open_count > 0:
+                    sleep_sec = max(30, min(self.config.fast_scan_interval_sec, self._current_scan_interval))
+                else:
+                    sleep_sec = max(120, min(self.config.fast_scan_interval_sec * 2, self._current_scan_interval))
+                # P5: 空仓超时提醒 - 连续6小时无交易发Telegram
+                idle_sec = time.time() - self._last_entry_or_signal_time
+                if open_count == 0 and idle_sec >= 21600 and not self._idle_alert_sent:
+                    send_telegram_message(
+                        format_error_msg(
+                            error_type="空仓超时提醒",
+                            message=f"已连续 {idle_sec/3600:.0f} 小时未开仓，系统在运行但无信号转为挂单",
+                            component="idle_guard",
+                        )
+                    )
+                    self._idle_alert_sent = True
+                elif open_count > 0 or idle_sec < 21600:
+                    self._idle_alert_sent = False
                 logger.info(f"Wait {sleep_sec}s before next scan cycle")
                 time.sleep(sleep_sec)
             except KeyboardInterrupt:

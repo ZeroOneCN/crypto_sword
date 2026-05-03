@@ -595,24 +595,32 @@ class CycleMixin:
             with self._state_lock:
                 self._sync_positions_with_exchange()
         summary = self._enrich_summary_with_db(self.tracker.get_summary())
+        open_count = summary["open_positions"]
         daily_report = self._get_daily_report_snapshot()
-        monitor_event = build_monitor_event(
-            open_positions=summary["open_positions"],
-            max_positions=self.config.max_open_positions,
-            unrealized_pnl=summary["total_unrealized_pnl"],
-            realized_pnl=summary["realized_pnl"],
-            closed_today=summary["closed_today"],
-            entry_protection=daily_report.get("entry_protection") if isinstance(daily_report, dict) else None,
-        )
-        logger.info(f"monitor_event {message_signature(monitor_event)}")
-        feature_store.append_event(monitor_event)
-        logger.info(
-            f"Position summary: {summary['open_positions']} open | "
-            f"unrealized PnL=${summary['total_unrealized_pnl']:.2f} | "
-            f"realized today=${summary['realized_pnl']:.2f} | "
-            f"closed today={summary['closed_today']}"
-        )
-
+        # P2: 空仓时每隔5次fast cycle才发monitor日志，减少噪音
+        # 有持仓时每次都发
+        if open_count > 0:
+            _should_log_monitor = True
+        else:
+            _should_log_monitor = (getattr(self, '_flat_monitor_counter', 0) % 5 == 0)
+            self._flat_monitor_counter = getattr(self, '_flat_monitor_counter', 0) + 1
+        if _should_log_monitor:
+            monitor_event = build_monitor_event(
+                open_positions=open_count,
+                max_positions=self.config.max_open_positions,
+                unrealized_pnl=summary["total_unrealized_pnl"],
+                realized_pnl=summary["realized_pnl"],
+                closed_today=summary["closed_today"],
+                entry_protection=daily_report.get("entry_protection") if isinstance(daily_report, dict) else None,
+            )
+            logger.info(f"monitor_event {message_signature(monitor_event)}")
+            feature_store.append_event(monitor_event)
+            logger.info(
+                f"Position summary: {open_count} open | "
+                f"unrealized PnL=${summary['total_unrealized_pnl']:.2f} | "
+                f"realized today=${summary['realized_pnl']:.2f} | "
+                f"closed today={summary['closed_today']}"
+            )
         self._send_hourly_position_summary_if_due(summary)
         self._record_latency_step(latency_steps, "summary_notify", step_started)
 

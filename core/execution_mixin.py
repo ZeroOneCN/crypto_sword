@@ -1657,6 +1657,8 @@ class ExecutionMixin:
             feature_store.append_event(entry_event)
             self._record_latency_step(latency_steps, "db_write", step_started)
             self._emit_latency_trace("execute_entry", trace_started, latency_steps, symbol=symbol)
+            # P5: 更新最后交易时间，用于空仓超时提醒
+            self._last_entry_or_signal_time = time.time()
             return position
 
         except Exception as e:

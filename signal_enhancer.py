@@ -734,6 +734,30 @@ def score_signal(
     except Exception as e:
         logger.debug(f"radar score skipped for {symbol}: {e}")
 
+    # P4: 历史连胜记录加分 - 查询过去30天该币种交易表现
+    # 连续盈利3次以上给额外加分
+    try:
+        from trade_logger import TradeDatabase
+        db = TradeDatabase()
+        recent_trades = db.get_recent_trades_by_symbol(symbol=symbol, limit=10)
+        if recent_trades:
+            consecutive_wins = 0
+            for trade in recent_trades:
+                pnl = float(trade.get("pnl", 0) or 0)
+                if pnl > 0:
+                    consecutive_wins += 1
+                else:
+                    consecutive_wins = 0
+            if consecutive_wins >= 3:
+                bonus = min(15.0, consecutive_wins * 3.0)
+                score.chase_score = min(100.0, score.chase_score + bonus)
+                logger.info(f"🔥 {symbol} 连胜 {consecutive_wins} 次，加 {bonus:.0f} 分")
+            elif consecutive_wins >= 1:
+                bonus = min(5.0, consecutive_wins * 2.0)
+                score.chase_score = min(100.0, score.chase_score + bonus)
+    except Exception as e:
+        logger.debug(f"hot streak bonus skipped for {symbol}: {e}")
+
     score._calculate_total()
     
     return score
