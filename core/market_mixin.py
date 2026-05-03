@@ -8,17 +8,16 @@ from typing import Any
 
 from adapters.rest_gateway import load_market_overview
 from adapters.ws_gateway import get_all_market_ticker_client_class
-from telegram_notifier import format_dark_flow_alert, format_radar_summary, send_telegram_message
 
 logger = logging.getLogger(__name__)
 
 
 class MarketMixin:
     def _run_radar_background_scan(self, now: float):
-        """Send lightweight radar notifications from the in-memory watchlist.
+        """Log lightweight radar snapshots from the in-memory watchlist.
 
         This intentionally reuses symbols already scanned by the strategy loop so
-        radar alerts do not add another REST-heavy path or slow down entries.
+        radar checks do not add another REST-heavy path or slow down entries.
         """
         interval = max(900, int(getattr(self, "_radar_scan_interval", 3600) or 3600))
         if now - float(getattr(self, "_last_radar_scan_time", 0.0) or 0.0) < interval:
@@ -105,31 +104,22 @@ class MarketMixin:
                         f"{top_dark['symbol']} 评分 {top_dark['score_total']:.1f} | "
                         f"暗流 {top_dark['dark_flow']:.1f} | OI {top_dark['oi_change_pct']:+.1f}%"
                     )
-                send_telegram_message(
-                    format_radar_summary(
-                        pool_count=len(pool_items),
-                        oi_signals=len(oi_items),
-                        dark_flows=len(dark_items),
-                        short_fuel=len(short_fuel_items),
-                        top_dark_flow=top_text,
-                    )
+                logger.info(
+                    "Radar summary suppressed | "
+                    f"pool={len(pool_items)} oi={len(oi_items)} "
+                    f"dark={len(dark_items)} short_fuel={len(short_fuel_items)} "
+                    f"top={top_text or '-'}"
                 )
 
         if top_dark and top_dark["dark_flow"] >= 60.0 and top_dark["score_total"] >= 65.0:
             alert_signature = f"{top_dark['symbol']}:{int(top_dark['dark_flow'] // 5)}:{int(top_dark['oi_change_pct'] // 5)}"
             if alert_signature != getattr(self, "_last_radar_alert_signature", ""):
                 self._last_radar_alert_signature = alert_signature
-                send_telegram_message(
-                    format_dark_flow_alert(
-                        symbol=top_dark["symbol"],
-                        oi_change_pct=top_dark["oi_change_pct"],
-                        price_change_pct=top_dark["price_change_pct"],
-                        funding_rate=top_dark["funding_rate"],
-                        market_cap=top_dark["market_cap"],
-                        volume_24h=top_dark.get("volume_24h", 0),
-                        dark_flow_score=top_dark["dark_flow"],
-                        score_total=top_dark["score_total"],
-                    )
+                logger.info(
+                    "Radar dark-flow alert suppressed | "
+                    f"{top_dark['symbol']} dark={top_dark['dark_flow']:.1f} "
+                    f"score={top_dark['score_total']:.1f} oi={top_dark['oi_change_pct']:+.1f}% "
+                    f"price={top_dark['price_change_pct']:+.1f}%"
                 )
 
     def _refresh_market_profile(self):
