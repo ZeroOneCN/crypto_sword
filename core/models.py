@@ -63,7 +63,7 @@ class TradingConfig:
         max_oi_change_pct: float = 90.0,
         max_entry_slippage_pct: float = 0.35,
         spike_reversal_guard_enabled: bool = True,
-        spike_guard_min_runup_pct: float = 2.2,
+        spike_guard_min_runup_pct: float = 5.0,
         spike_guard_min_pullback_pct: float = 0.75,
         spike_guard_min_wick_ratio: float = 0.42,
         min_quote_volume_usdt: float = 2000000.0,

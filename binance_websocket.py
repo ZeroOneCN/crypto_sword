@@ -23,10 +23,26 @@ except Exception:
     def is_native_binance_configured() -> bool:
         return False
 
+# 强制加载 websocket-client（即使环境变量异常）
+import importlib
+_ws = None
 try:
-    import websocket  # pip install websocket-client
-except Exception:  # pragma: no cover - optional runtime dependency
-    websocket = None
+    _ws = importlib.import_module("websocket")
+except Exception:
+    try:
+        import sys
+        # 直接添加可能的site-packages路径
+        for _p in [
+            "/root/.hermes/hermes-agent/venv/lib/python3.11/site-packages",
+            "/usr/local/lib/python3.12/dist-packages",
+            "/usr/lib/python3/dist-packages",
+        ]:
+            if _p not in sys.path:
+                sys.path.insert(0, _p)
+        _ws = importlib.import_module("websocket")
+    except Exception:
+        _ws = None
+websocket = _ws
 
 logger = logging.getLogger(__name__)
 

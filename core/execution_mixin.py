@@ -1155,7 +1155,11 @@ class ExecutionMixin:
                 if latest_price > 0:
                     price = latest_price
                     trading_signal.entry_price = latest_price
-            spike_reason = self._recent_spike_reversal_reason(symbol, direction, price)
+            # 高分信号(>=90)跳过插针检查 - 强动量突破不应被短时震荡阻挡
+            if score >= 90.0:
+                spike_reason = ""
+            else:
+                spike_reason = self._recent_spike_reversal_reason(symbol, direction, price)
             if spike_reason:
                 logger.warning(f"🧊 {symbol} 开仓前过滤：{spike_reason}")
                 if score >= 85.0:
