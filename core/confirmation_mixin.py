@@ -17,15 +17,15 @@ class ConfirmationMixin:
         if not self._entry_watchlist:
             return
         now = time.time()
+        # 均线二启线和回踩确认线需要更长时间等待，超时设为60分钟
+        # 趋势突破线超时保持30分钟
         timeout_sec = max(300, int(self.config.entry_confirmation_timeout_sec))
-        expired_symbols = [
-            symbol
-            for symbol, item in self._entry_watchlist.items()
-            if now - float(item.get("first_seen_ts", now)) >= timeout_sec
-        ]
-        for symbol in expired_symbols:
-            self._entry_watchlist.pop(symbol, None)
-            logger.info(f"🗑️ {symbol} 候选观察超时，已淘汰")
+        for symbol, item in list(self._entry_watchlist.items()):
+            strategy_line = str(item.get("strategy_line", "") or "")
+            effective_timeout = timeout_sec * 2 if strategy_line in ("均线二启线", "回踩确认线") else timeout_sec
+            if now - float(item.get("first_seen_ts", now)) >= effective_timeout:
+                self._entry_watchlist.pop(symbol, None)
+                logger.info(f"🗑️ {symbol} 候选观察超时({int(effective_timeout/60)}分)，已淘汰")
 
     def _load_confirmation_trend(self, symbol: str) -> dict[str, Any]:
         """Reuse cached klines to confirm 1h trend and 15m reclaim."""
@@ -540,7 +540,7 @@ class ConfirmationMixin:
                 signal["entry_status"] = "ready"; signal["entry_status_text"] = "二启确认入场"; signal["strategy_line"] = "均线二启线"; signal["watch_stage"] = "均线二启"; signal["entry_note"] = ma_reentry_note; signal["confirmation_trend"] = trend; return signal
             self._entry_watchlist[symbol] = {"symbol": symbol,"direction": direction,"stage": signal.get("stage", ""),"first_seen_ts": now,"last_seen_ts": now,"first_price": current_price,"highest_price": current_price,"lowest_price": current_price,"score_total": score_total,"pullback_seen": False,"strategy_line": strategy_line,"watch_stage": "首发现","required_pullback_pct": required_pullback,"current_pullback_pct": 0.0,"entry_note": initial_note,"price": current_price,"metrics": signal.get("metrics", {}),"score": signal.get("score"),}
             signal["entry_status"] = "watch"; signal["entry_status_text"] = "观察中"; signal["strategy_line"] = self._entry_watchlist[symbol]["strategy_line"]; signal["watch_stage"] = "首发现"; signal["entry_note"] = initial_note; return signal
-        watch["last_seen_ts"] = now; watch["stage"] = signal.get("stage", watch.get("stage", "")); watch["score_total"] = score_total or float(watch.get("score_total", 0) or 0); watch["price"] = current_price; watch["metrics"] = signal.get("metrics", {}); watch["score"] = signal.get("score"); watch["strategy_line"] = self._strategy_line_for_signal(signal)
+        watch["last_seen_ts"] = now; watch["stage"] = signal.get("stage", watch.get("stage", "")); watch["score_total"] = score_total or float(watch.get("score_total", 0) or 0); watch["price"] = current_price; watch["metrics"] = signal.get("metrics", {}); watch["score"] = signal.get("score"); watch["strategy_line"] = watch.get("strategy_line") or self._strategy_line_for_signal(signal)
         if current_price > 0:
             watch["highest_price"] = max(float(watch.get("highest_price", current_price) or current_price), current_price)
             low_seed = float(watch.get("lowest_price", current_price) or current_price)
