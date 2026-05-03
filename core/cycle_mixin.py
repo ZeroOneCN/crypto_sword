@@ -397,30 +397,8 @@ class CycleMixin:
             logger.debug("scan monitor skipped: no material changes")
             return
         if not delta_items:
+            logger.debug("scan monitor skipped: delta empty")
             self._last_scan_monitor_snapshot = current_snapshot
-            if signals:
-                logger.debug("scan monitor skipped: delta empty")
-                return
-            empty_signature = "EMPTY_SCAN"
-            if (
-                self._last_scan_monitor_signature == empty_signature
-                and now - self._last_monitor_time < max(interval, self._current_scan_interval)
-            ):
-                logger.debug("scan monitor skipped: empty heartbeat throttled")
-                return
-            self._last_monitor_time = now
-            self._last_scan_monitor_signature = empty_signature
-            try:
-                msg = format_scan_monitor_msg(
-                    signals=[],
-                    scanned_count=self.config.scan_top_n,
-                    max_items=5,
-                    report_title="宙斯交易中枢 | 妖币扫描变化",
-                    count_label="扫描范围",
-                )
-                send_telegram_message(msg)
-            except Exception as e:
-                logger.debug(f"扫描空状态通知发送失败：{e}")
             return
         self._last_monitor_time = now
         self._last_scan_monitor_signature = signature
@@ -442,34 +420,11 @@ class CycleMixin:
         watch_items = self._watchlist_monitor_items()
         if not watch_items:
             self._last_watch_monitor_snapshot = {}
-            now = time.time()
-            empty_signature = "EMPTY_WATCH"
-            empty_interval = max(600, min(1800, self._current_scan_interval * 2))
-            if (
-                self._last_watch_monitor_signature == empty_signature
-                and now - self._last_watch_monitor_time < empty_interval
-            ):
-                logger.debug("watch monitor skipped: empty heartbeat throttled")
-                return
-            self._last_watch_monitor_time = now
-            self._last_watch_monitor_signature = empty_signature
-            try:
-                msg = format_scan_monitor_msg(
-                    signals=[],
-                    scanned_count=0,
-                    max_items=5,
-                    report_title="宙斯交易中枢 | 候选变化",
-                    count_label="候选范围",
-                )
-                send_telegram_message(msg)
-            except Exception as e:
-                logger.debug(f"候选空状态通知发送失败：{e}")
             return
         now = time.time()
         interval = self._watch_monitor_interval(watch_items)
         if now - self._last_watch_monitor_time < interval:
             return
-        force_interval = max(900, interval * 3)
         delta_items, current_snapshot = build_monitor_delta(
             watch_items,
             self._last_watch_monitor_snapshot,
@@ -481,13 +436,9 @@ class CycleMixin:
             logger.debug("watch monitor skipped: no material changes")
             return
         if not delta_items:
-            if now - self._last_watch_monitor_time < force_interval:
-                logger.debug("watch monitor skipped: delta empty")
-                self._last_watch_monitor_snapshot = current_snapshot
-                return
-            logger.info("watch monitor heartbeat: send full snapshot after quiet period")
-            delta_items = watch_items[:5]
+            logger.debug("watch monitor skipped: delta empty")
             self._last_watch_monitor_snapshot = current_snapshot
+            return
         self._last_watch_monitor_time = now
         self._last_watch_monitor_signature = signature
         self._last_watch_monitor_snapshot = current_snapshot
