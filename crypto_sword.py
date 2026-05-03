@@ -115,6 +115,8 @@ class CryptoSword(ExecutionMixin, ScannerMixin, CycleMixin, SyncMixin, Confirmat
         self._entry_timestamps_today: list[float] = []
         self._entry_exception_timestamps_today: list[float] = []
         self._last_daily_report_sent_for: str = ""
+        self._last_period_report_sent_for: str = ""
+        self._last_hourly_summary_sent_for: str = datetime.now().strftime("%Y-%m-%d %H")
         self._last_watch_monitor_time: float = 0.0
         self._market_style_mode: str = "balanced"
         self._market_style_stats: dict[str, Any] = {}
@@ -222,6 +224,23 @@ class CryptoSword(ExecutionMixin, ScannerMixin, CycleMixin, SyncMixin, Confirmat
             self._daily_report_cache_at = now
             return snapshot
         return {}
+
+    def _get_period_reports_snapshot(self) -> list[dict[str, Any]]:
+        reports: list[dict[str, Any]] = []
+        for days in (7, 30):
+            try:
+                report = self.db.get_period_report(days=days, mode=self.config.mode)
+                if isinstance(report, dict):
+                    reports.append(report)
+                    logger.info(
+                        f"Period report from DB [{days}d] | trades={int(report.get('closed_trades', 0) or 0)} "
+                        f"rows={int(report.get('source_rows', 0) or 0)} "
+                        f"pnl={float(report.get('total_pnl', 0) or 0):+,.2f} "
+                        f"PF={float(report.get('profit_factor', 0) or 0):.2f}"
+                    )
+            except Exception as e:
+                logger.warning(f"Period report DB build failed [{days}d]: {e}")
+        return reports
 
     def _get_account_info_cached(self, ttl_sec: float = 3.0, force: bool = False) -> dict[str, Any]:
         now = time.time()

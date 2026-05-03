@@ -12,6 +12,7 @@ from feature_store import feature_store
 from telegram_notifier import (
     format_daily_report_msg,
     format_error_msg,
+    format_period_report_msg,
     format_scan_monitor_msg,
     format_summary_msg,
     send_telegram_message,
@@ -44,6 +45,19 @@ class CycleMixin:
 
         send_telegram_message(format_daily_report_msg(report))
         self._last_daily_report_sent_for = today
+        self._send_period_report_if_due(today)
+
+    def _send_period_report_if_due(self, today: str | None = None):
+        if not self.config.daily_report_enabled:
+            return
+        today = today or datetime.now().date().isoformat()
+        if self._last_period_report_sent_for == today:
+            return
+        reports = self._get_period_reports_snapshot()
+        if not reports:
+            return
+        send_telegram_message(format_period_report_msg(reports))
+        self._last_period_report_sent_for = today
 
     def _select_deep_scan_symbols(self, candidates: list[str] | None = None) -> list[str]:
         """Pick symbols for expensive deep scan, preferring fresh fast-scan candidates."""
@@ -273,7 +287,7 @@ class CycleMixin:
             snapshot["exception_entries"] = int(snapshot.get("exception_entries", 0) or 0) + 1
         snapshot["daily_entries"] = int(snapshot.get("daily_entries", 0) or 0) + 1
 
-    def _send_position_summary(self, summary: dict):
+    def _send_position_summary(self, summary: dict, force: bool = False):
         """发送持仓汇总通知"""
         total_balance = 0.0
         available_balance = 0.0
@@ -297,7 +311,7 @@ class CycleMixin:
                 "worst_trade": daily_report.get("worst_trade"),
             }
         )
-        if signature == self._last_summary_signature:
+        if not force and signature == self._last_summary_signature:
             logger.debug("summary notify skipped: no material changes")
             return
         self._last_summary_signature = signature
@@ -327,6 +341,15 @@ class CycleMixin:
             )
         msg += f"\n\n<b>已平仓</b>  <code>{summary['closed_today']}</code> 笔"
         send_telegram_message(msg)
+
+    def _send_hourly_position_summary_if_due(self, summary: dict):
+        """Send position summary once per natural hour, on the first cycle after the hour rolls."""
+        hour_key = datetime.now().strftime("%Y-%m-%d %H")
+        if self._last_hourly_summary_sent_for == hour_key:
+            return
+        self._send_position_summary(summary, force=True)
+        self._last_hourly_summary_sent_for = hour_key
+        self._last_summary_time = time.time()
 
     def _watchlist_monitor_items(self) -> list[dict[str, Any]]:
         items: list[dict[str, Any]] = []
@@ -593,10 +616,7 @@ class CycleMixin:
             f"closed today={summary['closed_today']}"
         )
 
-        current_time = time.time()
-        if current_time - self._last_summary_time >= self._summary_interval:
-            self._send_position_summary(summary)
-            self._last_summary_time = current_time
+        self._send_hourly_position_summary_if_due(summary)
         self._record_latency_step(latency_steps, "summary_notify", step_started)
 
         self.last_scan_time = datetime.now()

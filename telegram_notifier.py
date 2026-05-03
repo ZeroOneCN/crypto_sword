@@ -949,6 +949,10 @@ def format_daily_report_msg(report: dict[str, Any]) -> str:
 <b>胜率</b>  <code>{win_rate:.2f}%</code>
 <b>平均盈亏</b>  <code>{avg_pnl:+,.2f} USDT</code>
 <b>胜 / 负</b>  <code>{winning}</code> / <code>{losing}</code>"""
+    source_rows = int(report.get("source_rows", closed_trades) or closed_trades)
+    split_rows = int(report.get("split_rows", 0) or 0)
+    if source_rows != closed_trades or split_rows > 0:
+        msg += f"\n<b>统计口径</b>  <code>{source_rows} 行平仓记录 → {closed_trades} 笔完整交易</code>"
 
     if closed_trades <= 0:
         return msg + "\n\n📭 昨日无已平仓交易，系统继续观察中。"
@@ -1043,6 +1047,117 @@ def format_daily_report_msg(report: dict[str, Any]) -> str:
             f"\n平均加分  <code>+{enhanced_avg_bonus:.2f}</code>"
         )
 
+    return msg
+
+
+def _format_ratio_value(value: Any) -> str:
+    try:
+        number = float(value or 0)
+    except Exception:
+        return "0.00"
+    return "∞" if number >= 999 else f"{number:.2f}"
+
+
+def _format_top_counts(counts: dict[str, Any], limit: int = 3) -> str:
+    if not counts:
+        return "无"
+    parts = []
+    for key, value in sorted(counts.items(), key=lambda item: (-int(item[1] or 0), str(item[0])))[:limit]:
+        parts.append(f"{_format_close_reason_label(key)} {int(value or 0)}")
+    return " / ".join(parts) if parts else "无"
+
+
+def _format_side_stats(stats: dict[str, Any]) -> str:
+    if not stats:
+        return "无"
+    parts = []
+    for side, item in stats.items():
+        if not isinstance(item, dict):
+            continue
+        count = int(item.get("count", 0) or 0)
+        if count <= 0:
+            continue
+        wins = int(item.get("wins", 0) or 0)
+        pnl = float(item.get("pnl", 0) or 0)
+        win_rate = wins / count * 100 if count else 0.0
+        parts.append(f"{format_direction_label(side)} {count}笔/{win_rate:.0f}%/{pnl:+.2f}")
+    return " / ".join(parts) if parts else "无"
+
+
+def _format_strategy_line(item: dict[str, Any] | None) -> str:
+    if not item:
+        return "无"
+    name = str(item.get("name", "") or "未知策略")
+    count = int(item.get("count", 0) or 0)
+    pnl = float(item.get("pnl", 0) or 0)
+    wins = int(item.get("wins", 0) or 0)
+    win_rate = wins / count * 100 if count else 0.0
+    return f"{name} {count}笔/{win_rate:.0f}%/{pnl:+.2f}"
+
+
+def _format_period_block(report: dict[str, Any]) -> str:
+    label = str(report.get("label") or f"近{int(report.get('period_days', 0) or 0)}天")
+    closed = int(report.get("closed_trades", 0) or 0)
+    source_rows = int(report.get("source_rows", closed) or closed)
+    split_rows = int(report.get("split_rows", 0) or 0)
+    total_pnl = float(report.get("total_pnl", 0) or 0)
+    pnl_emoji = _E if total_pnl >= 0 else _E2
+    best_trade = report.get("best_trade") or {}
+    worst_trade = report.get("worst_trade") or {}
+    best_day = report.get("best_day") or {}
+    worst_day = report.get("worst_day") or {}
+
+    lines = [
+        f"<b>{_escape(label)}</b>",
+        f"完整交易  <code>{closed}</code> 笔",
+    ]
+    if source_rows != closed or split_rows > 0:
+        lines.append(f"原始平仓记录  <code>{source_rows}</code> 行 | 已聚合分批 <code>{split_rows}</code> 行")
+    lines.extend(
+        [
+            f"总盈亏  <code>{total_pnl:+,.2f} USDT</code> {pnl_emoji}",
+            f"胜率  <code>{float(report.get('win_rate', 0) or 0):.2f}%</code>",
+            f"笔均  <code>{float(report.get('avg_pnl', 0) or 0):+,.2f} USDT</code>",
+            f"盈亏比  <code>{_format_ratio_value(report.get('payoff_ratio', 0))}</code> | 收益因子 <code>{_format_ratio_value(report.get('profit_factor', 0))}</code>",
+            f"均盈/均亏  <code>{float(report.get('avg_win', 0) or 0):+,.2f}</code> / <code>{float(report.get('avg_loss', 0) or 0):+,.2f}</code>",
+        ]
+    )
+    if best_trade.get("symbol"):
+        lines.append(
+            f"最佳  <code>{_escape(best_trade.get('symbol'))}</code> "
+            f"<code>{float(best_trade.get('pnl', 0) or 0):+,.2f}</code>"
+        )
+    if worst_trade.get("symbol"):
+        lines.append(
+            f"最差  <code>{_escape(worst_trade.get('symbol'))}</code> "
+            f"<code>{float(worst_trade.get('pnl', 0) or 0):+,.2f}</code>"
+        )
+    if best_day.get("date") or worst_day.get("date"):
+        lines.append(
+            f"最佳/最差日  <code>{_escape(best_day.get('date', '-'))} {float(best_day.get('pnl', 0) or 0):+,.2f}</code>"
+            f" / <code>{_escape(worst_day.get('date', '-'))} {float(worst_day.get('pnl', 0) or 0):+,.2f}</code>"
+        )
+    lines.append(f"方向表现  <code>{_escape(_format_side_stats(report.get('side_stats') or {}))}</code>")
+    lines.append(f"主要原因  <code>{_escape(_format_top_counts(report.get('reason_counts') or {}))}</code>")
+    lines.append(f"最好策略  <code>{_escape(_format_strategy_line(report.get('best_strategy')))}</code>")
+    lines.append(f"最差策略  <code>{_escape(_format_strategy_line(report.get('worst_strategy')))}</code>")
+    return "\n".join(lines)
+
+
+def format_period_report_msg(reports: list[dict[str, Any]]) -> str:
+    """Format rolling 7d/30d performance review for Telegram."""
+    now_text = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    msg = f"""📈 <b>宙斯交易中枢 | 周期复盘</b>
+<code>{now_text}</code>
+
+<b>统计口径</b>  <code>按流水号聚合，TP1/TP2/TP3 分批止盈只算 1 笔完整交易</code>"""
+
+    valid_reports = [report for report in reports if isinstance(report, dict)]
+    if not valid_reports:
+        return msg + "\n\n📭 暂无区间交易数据。"
+
+    for report in valid_reports:
+        msg += f"\n\n{_format_period_block(report)}"
     return msg
 
 

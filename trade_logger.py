@@ -250,6 +250,7 @@ class TradeDatabase:
                     "side": trade.side,
                     "direction": trade.direction,
                     "stage": trade.stage,
+                    "strategy_line": notes.get("strategy_line", "") or "UNKNOWN",
                     "entry_price": float(trade.entry_price or 0.0),
                     "quantity": 0.0,
                     "entry_time": trade.entry_time,
@@ -274,6 +275,7 @@ class TradeDatabase:
                 item["exit_time"] = trade_exit_time
                 item["exit_price"] = float(trade.exit_price or item.get("exit_price", 0.0) or 0.0)
                 item["exit_reason"] = trade.exit_reason or item.get("exit_reason", "")
+                item["strategy_line"] = notes.get("strategy_line", item.get("strategy_line", "UNKNOWN")) or "UNKNOWN"
                 if trade.market_snapshot:
                     item["market_snapshot"] = trade.market_snapshot
 
@@ -556,6 +558,118 @@ class TradeDatabase:
         }
         return stats
 
+    def get_period_report(self, days: int = 7, mode: str = None) -> Dict[str, Any]:
+        """Build a rolling-period report using one logical trade per session."""
+        trades = self.get_closed_trades(days=days, mode=mode)
+        sessions = self._aggregate_closed_trade_sessions(trades)
+        closed_count = len(sessions)
+        source_rows = len(trades)
+
+        pnl_values = [float(t.get("pnl", 0) or 0) for t in sessions]
+        total_pnl = round(sum(pnl_values), 2)
+        winning = [t for t in sessions if float(t.get("pnl", 0) or 0) > 0]
+        losing = [t for t in sessions if float(t.get("pnl", 0) or 0) < 0]
+        avg_pnl = round(total_pnl / closed_count, 2) if closed_count else 0.0
+        win_rate = round(len(winning) / closed_count * 100, 2) if closed_count else 0.0
+        gross_profit = sum(float(t.get("pnl", 0) or 0) for t in winning)
+        gross_loss_abs = abs(sum(float(t.get("pnl", 0) or 0) for t in losing))
+        avg_win = round(gross_profit / len(winning), 2) if winning else 0.0
+        avg_loss = round(-(gross_loss_abs / len(losing)), 2) if losing else 0.0
+        payoff_ratio = round((avg_win / abs(avg_loss)), 2) if avg_loss else (999.0 if avg_win > 0 else 0.0)
+        profit_factor = round((gross_profit / gross_loss_abs), 2) if gross_loss_abs > 0 else (999.0 if gross_profit > 0 else 0.0)
+
+        best_trade = max(sessions, key=lambda t: float(t.get("pnl", 0) or 0), default=None)
+        worst_trade = min(sessions, key=lambda t: float(t.get("pnl", 0) or 0), default=None)
+
+        reason_counts: Dict[str, int] = {}
+        side_stats: Dict[str, Dict[str, Any]] = {}
+        strategy_stats: Dict[str, Dict[str, Any]] = {}
+        daily_pnl: Dict[str, float] = {}
+
+        for trade in sessions:
+            pnl = float(trade.get("pnl", 0) or 0)
+            reason = (trade.get("exit_reason") or "UNKNOWN").upper()
+            if "TAKE_PROFIT" in reason:
+                reason_key = "TAKE_PROFIT"
+            elif "STOP_LOSS" in reason:
+                reason_key = "STOP_LOSS"
+            elif "TRAIL" in reason:
+                reason_key = "TRAILING"
+            elif "MANUAL" in reason:
+                reason_key = "MANUAL"
+            else:
+                reason_key = reason
+            reason_counts[reason_key] = reason_counts.get(reason_key, 0) + 1
+
+            side_key = (trade.get("side") or "UNKNOWN").upper()
+            if side_key not in side_stats:
+                side_stats[side_key] = {"count": 0, "wins": 0, "pnl": 0.0}
+            side_stats[side_key]["count"] += 1
+            side_stats[side_key]["wins"] += 1 if pnl > 0 else 0
+            side_stats[side_key]["pnl"] = round(float(side_stats[side_key]["pnl"]) + pnl, 2)
+
+            strategy_key = trade.get("strategy_line") or "UNKNOWN"
+            if strategy_key not in strategy_stats:
+                strategy_stats[strategy_key] = {"count": 0, "wins": 0, "pnl": 0.0}
+            strategy_stats[strategy_key]["count"] += 1
+            strategy_stats[strategy_key]["wins"] += 1 if pnl > 0 else 0
+            strategy_stats[strategy_key]["pnl"] = round(float(strategy_stats[strategy_key]["pnl"]) + pnl, 2)
+
+            exit_time = str(trade.get("exit_time", "") or "")
+            day_key = exit_time[:10] if len(exit_time) >= 10 else "UNKNOWN"
+            daily_pnl[day_key] = round(daily_pnl.get(day_key, 0.0) + pnl, 2)
+
+        def _trade_summary(trade: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+            if not trade:
+                return None
+            return {
+                "symbol": trade.get("symbol", ""),
+                "side": trade.get("side", ""),
+                "strategy_line": trade.get("strategy_line", ""),
+                "pnl": round(float(trade.get("pnl", 0) or 0), 2),
+                "pnl_pct": round(float(trade.get("pnl_pct", 0) or 0), 2),
+                "exit_reason": trade.get("exit_reason", "") or "",
+            }
+
+        best_day = max(daily_pnl.items(), key=lambda item: item[1], default=("", 0.0))
+        worst_day = min(daily_pnl.items(), key=lambda item: item[1], default=("", 0.0))
+        best_strategy = max(strategy_stats.items(), key=lambda item: item[1]["pnl"], default=("", {}))
+        worst_strategy = min(strategy_stats.items(), key=lambda item: item[1]["pnl"], default=("", {}))
+
+        return {
+            "period_days": days,
+            "label": f"近{days}天",
+            "mode": mode or "all",
+            "source_rows": source_rows,
+            "split_rows": max(0, source_rows - closed_count),
+            "closed_trades": closed_count,
+            "winning_trades": len(winning),
+            "losing_trades": len(losing),
+            "win_rate": win_rate,
+            "total_pnl": total_pnl,
+            "avg_pnl": avg_pnl,
+            "avg_win": avg_win,
+            "avg_loss": avg_loss,
+            "payoff_ratio": payoff_ratio,
+            "profit_factor": profit_factor,
+            "max_loss": round(min(0.0, float(worst_trade.get("pnl", 0) or 0) if worst_trade else 0.0), 2),
+            "best_trade": _trade_summary(best_trade),
+            "worst_trade": _trade_summary(worst_trade),
+            "reason_counts": reason_counts,
+            "side_stats": side_stats,
+            "strategy_stats": strategy_stats,
+            "best_day": {"date": best_day[0], "pnl": round(float(best_day[1]), 2)} if best_day[0] else None,
+            "worst_day": {"date": worst_day[0], "pnl": round(float(worst_day[1]), 2)} if worst_day[0] else None,
+            "best_strategy": {
+                "name": best_strategy[0],
+                **(best_strategy[1] if isinstance(best_strategy[1], dict) else {}),
+            } if best_strategy[0] else None,
+            "worst_strategy": {
+                "name": worst_strategy[0],
+                **(worst_strategy[1] if isinstance(worst_strategy[1], dict) else {}),
+            } if worst_strategy[0] else None,
+        }
+
     def get_daily_report(self, report_date: str, mode: str = None) -> Dict[str, Any]:
         """按自然日聚合已平仓交易，用于 Telegram 精简日报。"""
         conn = self._get_connection()
@@ -710,6 +824,8 @@ class TradeDatabase:
         return {
             "date": report_date,
             "mode": mode or "all",
+            "source_rows": len(trades),
+            "split_rows": max(0, len(trades) - closed_count),
             "closed_trades": closed_count,
             "winning_trades": len(winning),
             "losing_trades": len(losing),
