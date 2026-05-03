@@ -866,12 +866,7 @@ class SyncMixin:
             self.tracker.add_position(restored)
             logger.warning(f"♻️ 已恢复持仓：{restored.symbol} {restored.side} session={session_id}")
             send_telegram_message(
-                f"ℹ️ <b>宙斯交易中枢 | 启动持仓恢复</b>\n\n"
-                f"<b>标的</b>  <code>{restored.symbol}</code>\n"
-                f"<b>方向</b>  <code>{'LONG' if restored.side == 'BUY' else 'SHORT'}</code>\n"
-                f"<b>数量</b>  <code>{restored.quantity:.6f}</code>\n"
-                f"<b>开仓价</b>  <code>{restored.entry_price:.8f}</code>\n"
-                f"<b>说明</b>  <code>该仓位来自交易所现有持仓恢复，不是本轮新开仓</code>"
+                f"♻️ <b>宙斯交易中枢 | 持仓恢复</b>\n━━━━━━━━━━━━━━━━━━━\n<b>{restored.symbol}</b>  {'LONG' if restored.side == 'BUY' else 'SHORT'}\n<b>数量</b>  <code>{restored.quantity:.6f}</code>  |  <b>开仓</b>  <code>{restored.entry_price:.8f}</code>\n<code>交易所现有持仓恢复</code>"
             )
 
     def _run_health_checks(self) -> float:

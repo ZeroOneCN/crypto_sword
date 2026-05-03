@@ -540,16 +540,14 @@ def format_open_position_msg(
         else:
             expected_tp_total += max(0.0, (entry_price - target_price) * target_quantity)
 
-    msg = f"""{direction_emoji} <b>宙斯交易中枢 | 开仓成功</b>
-
-<b>标的</b>  <code>{_escape(symbol)}</code>
-<b>方向</b>  {direction_text}
-<b>入场</b>  <code>${entry_price:,.4f}</code>
-<b>杠杆</b>  {leverage}x
-<b>仓位</b>  <code>{_fmt_num(quantity)}</code>  |  名义 <code>{notional_value:,.2f} USDT</code>
-<b>止损</b>  <code>${stop_loss:,.4f}</code>  ({sl_pct:.2f}%) | 预计 <code>-${expected_sl_loss:.2f}</code>
-<b>止盈</b>  <code>${take_profit:,.4f}</code>  ({tp_pct:.2f}%)
-<b>风险</b>  <code>${risk_amount:.2f}</code>  |  {risk_pct:.2f}%"""
+    msg = f"""🟢 <b>宙斯交易中枢 | 开仓成功</b>
+━━━━━━━━━━━━━━━━━━━
+<b>标的</b>  <code>{_escape(symbol)}</code>  {direction_text}
+<b>入场</b>  <code>${entry_price:,.4f}</code>  {leverage}x
+<b>数量</b>  <code>{_fmt_num(quantity)}</code>  |  名义 <code>{notional_value:,.2f} USDT</code>
+<b>止损</b>  <code>${stop_loss:,.4f}</code>  ({sl_pct:.1f}%)  |  预计 <code>-${expected_sl_loss:.2f}</code>
+<b>止盈</b>  <code>${take_profit:,.4f}</code>  ({tp_pct:.1f}%)
+<b>风险</b>  <code>${risk_amount:.2f}</code>  |  {risk_pct:.1f}%"""
 
     if strategy_line:
         msg += f"\n<b>策略</b>  <code>{_escape(strategy_line)}</code>"
@@ -622,13 +620,13 @@ def format_close_position_msg(
     pnl_sign = "+" if pnl >= 0 else ""
     direction_text = format_direction_label(direction)
 
-    msg = f"""{direction_emoji} <b>宙斯交易中枢 | 平仓完成</b>
+    direction_text = format_direction_label(direction)
+    emoji = "🟢" if pnl >= 0 else "🔴"
 
-<b>标的</b>  <code>{_escape(symbol)}</code>
-<b>方向</b>  {direction_text}
-<b>入场</b>  <code>${entry_price:,.4f}</code>
-<b>出场</b>  <code>${exit_price:,.4f}</code>
-<b>数量</b>  <code>{_fmt_num(quantity)}</code>
+    msg = f"""{emoji} <b>宙斯交易中枢 | 平仓</b>
+━━━━━━━━━━━━━━━━━━━
+<b>{_escape(symbol)}</b>  {direction_text}
+<b>入场</b>  <code>${entry_price:,.4f}</code>  →  <b>出场</b>  <code>${exit_price:,.4f}</code>
 <b>盈亏</b>  {pnl_emoji} <b>{pnl_sign}${pnl:,.2f}</b>  ({pnl_sign}{pnl_pct:.2f}%)
 <b>原因</b>  <code>{_escape(_humanize_close_reason(reason))}</code>"""
 
@@ -671,16 +669,15 @@ def format_partial_take_profit_msg(
     entry_text = f"${entry_price:,.4f}" if entry_price > 0 else "待同步"
     pnl_pct_text = f"({pnl_sign}{pnl_pct:.2f}%)" if entry_price > 0 else "(比例待同步)"
 
-    msg = f"""🔄 <b>宙斯交易中枢 | 分批止盈成交</b>
+    pnl_pct_text = f"({pnl_sign}{pnl_pct:.2f}%)"
 
-<b>标的</b>  <code>{_escape(symbol)}</code>
-<b>方向</b>  {direction_text}
-<b>档位</b>  <code>{_escape(level_text)}</code>
-<b>入场</b>  <code>{_escape(entry_text)}</code>
-<b>成交价格</b>  <code>${exit_price:,.4f}</code>
-<b>止盈数量</b>  <code>{_fmt_num(quantity)}</code>
-<b>剩余数量</b>  <code>{_fmt_num(remaining_quantity)}</code>
-<b>本次盈亏</b>  {pnl_emoji} <b>{pnl_sign}${pnl:,.2f}</b>  {pnl_pct_text}"""
+    emoji = "🟢" if pnl >= 0 else "🔴"
+    msg = f"""{emoji} <b>宙斯交易中枢 | 分批止盈</b>
+━━━━━━━━━━━━━━━━━━━
+<b>{_escape(symbol)}</b>  {direction_text}  |  <b>{_escape(level_text)}</b> ✅
+<b>入场</b>  <code>{_escape(entry_text)}</code>  →  <b>成交</b>  <code>${exit_price:,.4f}</code>
+<b>本次</b>  {pnl_emoji} <b>{pnl_sign}${pnl:,.2f}</b>  {pnl_pct_text}  |  止盈 <code>{_fmt_num(quantity)}</code>
+<b>剩余</b>  <code>{_fmt_num(remaining_quantity)}</code>  继续持有"""
 
     if pnl_source:
         msg += f"\n<b>盈亏来源</b>  <code>{_escape(pnl_source)}</code>"
@@ -1008,13 +1005,12 @@ def format_daily_report_msg(report: dict[str, Any]) -> str:
     pnl_emoji = _E if total_pnl >= 0 else _E2
 
     msg = f"""📝 <b>宙斯交易中枢 | 每日复盘</b>
+━━━━━━━━━━━━━━━━━━━
 <code>{report_date}</code>
-
-<b>已平仓</b>  <code>{closed_trades}</code>
-<b>总盈亏</b>  <code>{total_pnl:+,.2f} USDT</code> {pnl_emoji}
-<b>胜率</b>  <code>{win_rate:.2f}%</code>
-<b>平均盈亏</b>  <code>{avg_pnl:+,.2f} USDT</code>
-<b>胜 / 负</b>  <code>{winning}</code> / <code>{losing}</code>"""
+━━━━━━━━━━━━━━━━━━━
+<b>已平仓</b>  <code>{closed_trades}</code>  |  <b>盈亏</b>  <code>{total_pnl:+,.2f} USDT</code> {pnl_emoji}
+<b>胜率</b>  <code>{win_rate:.1f}%</code>  |  <b>胜/负</b>  <code>{winning}</code>/<code>{losing}</code>
+<b>平均</b>  <code>{avg_pnl:+,.2f} USDT</code>"""
     source_rows = int(report.get("source_rows", closed_trades) or closed_trades)
     split_rows = int(report.get("split_rows", 0) or 0)
     if source_rows != closed_trades or split_rows > 0:
@@ -1031,35 +1027,33 @@ def format_daily_report_msg(report: dict[str, Any]) -> str:
     payoff_text = "∞" if payoff_ratio >= 999 else f"{payoff_ratio:.2f}"
     profit_factor_text = "∞" if profit_factor >= 999 else f"{profit_factor:.2f}"
     msg += (
-        "\n\n<b>风险质量</b>"
-        f"\n平均盈利  <code>{avg_win:+,.2f} USDT</code>"
-        f"\n平均亏损  <code>{avg_loss:+,.2f} USDT</code>"
-        f"\n盈亏比  <code>{payoff_text}</code>"
-        f"\n收益因子  <code>{profit_factor_text}</code>"
-        f"\n最大单亏  <code>{max_loss:+,.2f} USDT</code>"
+        "\n\n<b>质量</b>"
+        f"\n平均盈利  <code>{avg_win:+,.2f}</code>  |  亏损  <code>{avg_loss:+,.2f}</code>"
+        f"\n盈亏比  <code>{payoff_text}</code>  |  收益因子  <code>{profit_factor_text}</code>  |  最大亏  <code>{max_loss:+,.2f}</code>"
     )
 
     best_trade = report.get("best_trade") or {}
     if best_trade:
         msg += (
-            f"\n\n<b>最佳交易</b>  <code>{_escape(best_trade.get('symbol', ''))}</code>"
-            f"\n盈亏 <code>{float(best_trade.get('pnl', 0) or 0):+,.2f} USDT</code>"
-            f" / <code>{float(best_trade.get('pnl_pct', 0) or 0):+,.2f}%</code>"
+            f"\n\n<b>最佳</b>  <code>{_escape(best_trade.get('symbol', ''))}</code>"
+            f"  |  +${float(best_trade.get('pnl', 0) or 0):.2f}  "
+            f"(+{float(best_trade.get('pnl_pct', 0) or 0):.1f}%)"
         )
 
     worst_trade = report.get("worst_trade") or {}
     if worst_trade:
         msg += (
-            f"\n\n<b>最差交易</b>  <code>{_escape(worst_trade.get('symbol', ''))}</code>"
-            f"\n盈亏 <code>{float(worst_trade.get('pnl', 0) or 0):+,.2f} USDT</code>"
-            f" / <code>{float(worst_trade.get('pnl_pct', 0) or 0):+,.2f}%</code>"
+            f"\n<b>最差</b>  <code>{_escape(worst_trade.get('symbol', ''))}</code>"
+            f"  |  ${float(worst_trade.get('pnl', 0) or 0):+.2f}  "
+            f"({float(worst_trade.get('pnl_pct', 0) or 0):+.1f}%)"
         )
 
     reason_counts = report.get("reason_counts") or {}
     if reason_counts:
-        msg += "\n\n<b>平仓原因</b>"
+        parts = []
         for reason, count in sorted(reason_counts.items(), key=lambda item: (-int(item[1] or 0), str(item[0]))):
-            msg += f"\n•{_escape(_format_close_reason_label(reason))}  <code>{int(count or 0)}</code>"
+            parts.append(f"{_escape(_format_close_reason_label(reason))} <code>{int(count or 0)}</code>")
+        msg += f"\n<b>原因</b>  {'  |  '.join(parts)}"
 
     protection = report.get("entry_protection") or {}
     protection_attempts = int(protection.get("attempts", 0) or 0)
@@ -1068,9 +1062,7 @@ def format_daily_report_msg(report: dict[str, Any]) -> str:
         protection_failed = int(protection.get("failed", 0) or 0)
         protection_ok_rate = float(protection.get("ok_rate", 0) or 0)
         msg += (
-            "\n\n<b>开仓保护单</b>"
-            f"\n成功 / 失败  <code>{protection_ok}</code> / <code>{protection_failed}</code>"
-            f"\n成功率  <code>{protection_ok_rate:.2f}%</code>"
+            f"\n\n<b>保护单</b>  {protection_ok}/{protection_failed}  成功率 {protection_ok_rate:.1f}%"
         )
 
         failed_by_direction = protection.get("failed_by_direction") or {}
@@ -1184,10 +1176,8 @@ def _format_period_block(report: dict[str, Any]) -> str:
     lines.extend(
         [
             f"总盈亏  <code>{total_pnl:+,.2f} USDT</code> {pnl_emoji}",
-            f"胜率  <code>{float(report.get('win_rate', 0) or 0):.2f}%</code>",
-            f"笔均  <code>{float(report.get('avg_pnl', 0) or 0):+,.2f} USDT</code>",
-            f"盈亏比  <code>{_format_ratio_value(report.get('payoff_ratio', 0))}</code> | 收益因子 <code>{_format_ratio_value(report.get('profit_factor', 0))}</code>",
-            f"均盈/均亏  <code>{float(report.get('avg_win', 0) or 0):+,.2f}</code> / <code>{float(report.get('avg_loss', 0) or 0):+,.2f}</code>",
+            f"胜率  <code>{float(report.get('win_rate', 0) or 0):.1f}%</code>  |  笔均  <code>{float(report.get('avg_pnl', 0) or 0):+,.2f}</code>",
+            f"盈亏比  <code>{_format_ratio_value(report.get('payoff_ratio', 0))}</code>  |  收益因子  <code>{_format_ratio_value(report.get('profit_factor', 0))}</code>",
         ]
     )
     if best_trade.get("symbol"):
@@ -1216,9 +1206,8 @@ def format_period_report_msg(reports: list[dict[str, Any]]) -> str:
     """Format rolling 7d/30d performance review for Telegram."""
     now_text = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     msg = f"""📈 <b>宙斯交易中枢 | 周期复盘</b>
-<code>{now_text}</code>
-
-<b>统计口径</b>  <code>按流水号聚合，TP1/TP2/TP3 分批止盈只算 1 笔完整交易</code>"""
+━━━━━━━━━━━━━━━━━━━
+<code>{now_text}</code>"""
 
     valid_reports = [report for report in reports if isinstance(report, dict)]
     if not valid_reports:
