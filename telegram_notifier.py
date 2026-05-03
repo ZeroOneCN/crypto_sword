@@ -541,7 +541,7 @@ def format_open_position_msg(
             expected_tp_total += max(0.0, (entry_price - target_price) * target_quantity)
 
     msg = f"""🟢 <b>宙斯交易中枢 | 开仓成功</b>
-━━━━━━━━━━━━━━━━━━━
+
 <b>标的</b>  <code>{_escape(symbol)}</code>  {direction_text}
 <b>入场</b>  <code>${entry_price:,.4f}</code>  {leverage}x
 <b>数量</b>  <code>{_fmt_num(quantity)}</code>  |  名义 <code>{notional_value:,.2f} USDT</code>
@@ -624,7 +624,7 @@ def format_close_position_msg(
     emoji = "🟢" if pnl >= 0 else "🔴"
 
     msg = f"""{emoji} <b>宙斯交易中枢 | 平仓</b>
-━━━━━━━━━━━━━━━━━━━
+
 <b>{_escape(symbol)}</b>  {direction_text}
 <b>入场</b>  <code>${entry_price:,.4f}</code>  →  <b>出场</b>  <code>${exit_price:,.4f}</code>
 <b>盈亏</b>  {pnl_emoji} <b>{pnl_sign}${pnl:,.2f}</b>  ({pnl_sign}{pnl_pct:.2f}%)
@@ -673,7 +673,7 @@ def format_partial_take_profit_msg(
 
     emoji = "🟢" if pnl >= 0 else "🔴"
     msg = f"""{emoji} <b>宙斯交易中枢 | 分批止盈</b>
-━━━━━━━━━━━━━━━━━━━
+
 <b>{_escape(symbol)}</b>  {direction_text}  |  <b>{_escape(level_text)}</b> ✅
 <b>入场</b>  <code>{_escape(entry_text)}</code>  →  <b>成交</b>  <code>${exit_price:,.4f}</code>
 <b>本次</b>  {pnl_emoji} <b>{pnl_sign}${pnl:,.2f}</b>  {pnl_pct_text}  |  止盈 <code>{_fmt_num(quantity)}</code>
@@ -1005,9 +1005,9 @@ def format_daily_report_msg(report: dict[str, Any]) -> str:
     pnl_emoji = _E if total_pnl >= 0 else _E2
 
     msg = f"""📝 <b>宙斯交易中枢 | 每日复盘</b>
-━━━━━━━━━━━━━━━━━━━
+
 <code>{report_date}</code>
-━━━━━━━━━━━━━━━━━━━
+
 <b>已平仓</b>  <code>{closed_trades}</code>  |  <b>盈亏</b>  <code>{total_pnl:+,.2f} USDT</code> {pnl_emoji}
 <b>胜率</b>  <code>{win_rate:.1f}%</code>  |  <b>胜/负</b>  <code>{winning}</code>/<code>{losing}</code>
 <b>平均</b>  <code>{avg_pnl:+,.2f} USDT</code>"""
@@ -1206,7 +1206,7 @@ def format_period_report_msg(reports: list[dict[str, Any]]) -> str:
     """Format rolling 7d/30d performance review for Telegram."""
     now_text = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     msg = f"""📈 <b>宙斯交易中枢 | 周期复盘</b>
-━━━━━━━━━━━━━━━━━━━
+
 <code>{now_text}</code>"""
 
     valid_reports = [report for report in reports if isinstance(report, dict)]
