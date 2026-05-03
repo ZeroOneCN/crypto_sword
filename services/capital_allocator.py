@@ -9,7 +9,10 @@ very different market conditions.
 
 from __future__ import annotations
 
+import sqlite3
+import os
 from dataclasses import dataclass, field
+from datetime import datetime
 from typing import Any
 
 
@@ -41,6 +44,65 @@ def _normalize_ratios(ratios: list[float], count: int) -> list[float]:
     if total <= 0:
         return [1.0 / count for _ in range(count)]
     return [value / total for value in values]
+
+
+def _get_trade_db_path() -> str:
+    """Resolve trade_log.db path."""
+    for p in [
+        "/root/.hermes/logs/trade_log.db",
+        os.path.join(os.path.dirname(os.path.dirname(__file__)), "..", "logs", "trade_log.db"),
+        "trade_log.db",
+    ]:
+        if os.path.exists(p):
+            return p
+    return ""
+
+
+def _check_god_coin(symbol: str, min_trades: int = 3, min_winrate: float = 80.0) -> float:
+    """Check if a coin has exceptional historical performance.
+    Returns a risk multiplier (>1.0 means boost, 1.0 means normal)."""
+    db_path = _get_trade_db_path()
+    if not db_path or not symbol:
+        return 1.0
+    try:
+        conn = sqlite3.connect(db_path)
+        cur = conn.execute(
+            """SELECT COUNT(*),
+                      SUM(CASE WHEN realized_pnl > 0 THEN 1 ELSE 0 END) as wins
+               FROM trades
+               WHERE symbol = ? AND exit_time IS NOT NULL""",
+            (symbol.upper(),),
+        )
+        row = cur.fetchone()
+        conn.close()
+        if not row or row[0] < min_trades:
+            return 1.0
+        total, wins = row[0], row[1]
+        winrate = wins / total * 100
+        if winrate >= min_winrate:
+            return 1.40  # 神币加成40%
+        elif winrate >= 70:
+            return 1.20  # 准神币加成20%
+        return 1.0
+    except Exception:
+        return 1.0
+
+
+def _time_risk_multiplier() -> float:
+    """Return risk multiplier based on current hour.
+    0-6AM: +30% (best performing slot)
+    12-18PM: -20% (worst performing slot)
+    Others: neutral
+    """
+    try:
+        hour = datetime.now().hour
+    except Exception:
+        return 1.0
+    if 0 <= hour < 6:
+        return 1.30  # 凌晨加成30%
+    elif 12 <= hour < 18:
+        return 0.80  # 午盘减半20%
+    return 1.0
 
 
 @dataclass
@@ -218,6 +280,26 @@ class CapitalAllocator:
         elif market_style_mode == "alt" and signal.get("symbol", "").upper() in getattr(config, "major_symbols", []):
             risk_multiplier = min(risk_multiplier, 0.85)
             notes.append("市场风格偏山寨，主流仓降档")
+
+        # ⏰ 时间加权：凌晨冲下午缩
+        symbol = str(signal.get("symbol", "") or "")
+        time_mult = _time_risk_multiplier()
+        if time_mult > 1.0:
+            risk_multiplier = max(risk_multiplier, time_mult)
+            max_position_multiplier = max(max_position_multiplier, time_mult)
+            notes.append(f"凌晨黄金时段 x{time_mult:.1f}")
+        elif time_mult < 1.0:
+            risk_multiplier = min(risk_multiplier, time_mult)
+            max_position_multiplier = min(max_position_multiplier, time_mult)
+            notes.append(f"午盘横盘时段 x{time_mult:.1f}")
+
+        # 🃏 神币翻倍：历史胜率>80%的币种自动加成
+        if symbol:
+            god_mult = _check_god_coin(symbol)
+            if god_mult > 1.0:
+                risk_multiplier = max(risk_multiplier, god_mult)
+                max_position_multiplier = max(max_position_multiplier, god_mult * 0.9)
+                notes.append(f"神币加成 x{god_mult:.1f}")
 
         min_expected_rr = float(getattr(config, "capital_min_expected_rr", 1.18) or 1.18)
         if mode in {"防守复利", "深度防守"}:
