@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import datetime
 from logging import Logger
 from typing import Any
 
@@ -82,7 +83,19 @@ class BootstrapService:
             require_notify = bool(getattr(self.trader.config, "require_telegram_notify", True))
             if require_notify and str(getattr(self.trader.config, "mode", "")).lower() == "live":
                 raise RuntimeError(message)
+        self._send_startup_position_summary_once()
         self.trader._refresh_market_profile()
+
+    def _send_startup_position_summary_once(self):
+        try:
+            summary = self.trader._build_position_summary(force_exchange_sync=True)
+            if int(summary.get("open_positions", 0) or 0) <= 0:
+                return
+            self.trader._send_position_summary(summary, force=True)
+            self.trader._last_hourly_summary_sent_for = datetime.now().strftime("%Y-%m-%d %H")
+            self.trader._last_summary_time = 0.0
+        except Exception as exc:
+            self.logger.warning(f"Startup position summary skipped: {exc}")
 
     def shutdown(self, mode_text: str | None = None):
         final_mode = mode_text or self.mode_text()

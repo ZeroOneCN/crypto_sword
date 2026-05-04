@@ -370,7 +370,12 @@ class Position:
             return f"${self.take_profit_price:,.4f}"
 
         parts = []
-        for target in self.take_profit_targets:
+        targets = sorted(
+            self.take_profit_targets,
+            key=lambda item: float(item.get("price", 0) or 0),
+            reverse=self.side != "BUY",
+        )
+        for target in targets:
             roi_pct = float(target.get("target_roi_pct", 0) or 0)
             price = float(target.get("price", 0) or 0)
             parts.append(f"{roi_pct:.0f}%->${price:,.4f}")
@@ -407,8 +412,9 @@ class Position:
             "take_profit_targets_text": self._format_take_profit_targets_text(),
             "highest": round(self.highest_price, 4),
             "lowest": round(self.lowest_price, 4),
-            "unrealized_pnl": round(self.pnl, 2),
-            "unrealized_pnl_pct": round(self.pnl_pct, 2),
+            "unrealized_pnl": round(self.pnl, 6),
+            "unrealized_pnl_pct": round(self.pnl_pct, 4),
+            "unrealized_roi_pct": round(self.pnl_pct * max(int(self.leverage or 1), 1), 4),
             "session_id": self.session_id,
             "strategy_line": self.strategy_line,
             "oi_funding": self.oi_funding,

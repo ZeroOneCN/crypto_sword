@@ -288,6 +288,15 @@ class CycleMixin:
             snapshot["exception_entries"] = int(snapshot.get("exception_entries", 0) or 0) + 1
         snapshot["daily_entries"] = int(snapshot.get("daily_entries", 0) or 0) + 1
 
+    def _build_position_summary(self, force_exchange_sync: bool = False) -> dict:
+        if force_exchange_sync and self.tracker.get_open_count() > 0:
+            try:
+                with self._state_lock:
+                    self._sync_positions_with_exchange()
+            except Exception as exc:
+                logger.warning(f"持仓汇总刷新交易所快照失败，使用本地缓存：{exc}")
+        return self._enrich_summary_with_db(self.tracker.get_summary())
+
     def _send_position_summary(self, summary: dict, force: bool = False):
         total_balance = 0.0
         available_balance = 0.0
@@ -346,11 +355,12 @@ class CycleMixin:
         msg += f"\n\n<b>已平仓</b>  <code>{summary['closed_today']}</code> 笔"
         send_telegram_message(msg)
 
-    def _send_hourly_position_summary_if_due(self, summary: dict):
+    def _send_hourly_position_summary_if_due(self, summary: dict | None = None):
         """Send position summary once per natural hour, on the first cycle after the hour rolls."""
         hour_key = datetime.now().strftime("%Y-%m-%d %H")
         if self._last_hourly_summary_sent_for == hour_key:
             return
+        summary = self._build_position_summary(force_exchange_sync=True) if summary is None else summary
         self._send_position_summary(summary, force=True)
         self._last_hourly_summary_sent_for = hour_key
         self._last_summary_time = time.time()
@@ -598,7 +608,7 @@ class CycleMixin:
         if self._positions_need_summary_refresh():
             with self._state_lock:
                 self._sync_positions_with_exchange()
-        summary = self._enrich_summary_with_db(self.tracker.get_summary())
+        summary = self._build_position_summary()
         open_count = summary["open_positions"]
         daily_report = self._get_daily_report_snapshot()
         # P2: 空仓时每隔5次fast cycle才发monitor日志，减少噪音
@@ -625,8 +635,7 @@ class CycleMixin:
                 f"realized today=${summary['realized_pnl']:.2f} | "
                 f"closed today={summary['closed_today']}"
             )
-        # 数据变化时推送持仓汇总（内置 signature 去重）
-        self._send_position_summary(summary)
+        self._send_hourly_position_summary_if_due()
         self._record_latency_step(latency_steps, "summary_notify", step_started)
 
         self.last_scan_time = datetime.now()

@@ -52,15 +52,21 @@ def _fmt_price(price: float) -> str:
 def _fmt_usdt(amount: float) -> str:
     """Smart USDT amount formatting: big→2dp, medium→4dp, small→6dp.
     Balances, PnL, risk amounts that are USDT-denominated."""
-    if amount <= 0:
+    try:
+        value = float(amount)
+    except Exception:
+        value = 0.0
+    sign = "-" if value < 0 else ""
+    value = abs(value)
+    if value <= 0:
         return "0"
-    if amount >= 100:
-        return f"{amount:,.2f}"
-    if amount >= 1:
-        return f"{amount:,.4f}"
-    if amount >= 0.0001:
-        return f"{amount:,.6f}"
-    return f"{amount:,.8f}"
+    if value >= 100:
+        return f"{sign}{value:,.2f}"
+    if value >= 1:
+        return f"{sign}{value:,.4f}"
+    if value >= 0.0001:
+        return f"{sign}{value:,.6f}"
+    return f"{sign}{value:,.8f}"
 
 
 def _fmt_price_code(price: float) -> str:
@@ -826,6 +832,8 @@ def format_summary_msg(
         pnl_emoji = _E if pnl >= 0 else _E2
         side = format_direction_label(pos.get("side", "UNKNOWN"))
         current_price = float(pos.get("current_price", 0) or 0)
+        price_move_pct = float(pos.get("unrealized_pnl_pct", 0) or 0)
+        roi_pct = float(pos.get("unrealized_roi_pct", price_move_pct) or 0)
         take_profit_display = pos.get("take_profit_targets_text") or f"{_fmt_price(float(pos.get('take_profit', 0) or 0))}"
         stop_suffix = " 估算" if pos.get("stop_loss_estimated") else ""
 
@@ -834,7 +842,8 @@ def format_summary_msg(
 <b>{i}.</b> <code>{_escape(pos.get('symbol', 'UNKNOWN'))}</code>  {side}
 入场 <code>{_fmt_price(float(pos.get('entry_price', 0) or 0))}</code>  |  现价 <code>{_fmt_price(current_price)}</code>
 止损 <code>{_fmt_price(float(pos.get('stop_loss', 0) or 0))}</code>{stop_suffix}  |  止盈 <code>{_escape(take_profit_display)}</code>
-盈亏 {pnl_emoji} <code>{pnl_sign}{_fmt_usdt(pnl)} USDT</code>  ({float(pos.get('unrealized_pnl_pct', 0) or 0):+.2f}%)"""
+盈亏 {pnl_emoji} <code>{pnl_sign}{_fmt_usdt(pnl)} USDT</code>
+价格 <code>{price_move_pct:+.2f}%</code>  |  ROI <code>{roi_pct:+.2f}%</code>"""
 
     return msg
 
