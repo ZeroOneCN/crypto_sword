@@ -288,7 +288,6 @@ class CycleMixin:
         snapshot["daily_entries"] = int(snapshot.get("daily_entries", 0) or 0) + 1
 
     def _send_position_summary(self, summary: dict, force: bool = False):
-        """发送持仓汇总通知"""
         total_balance = 0.0
         available_balance = 0.0
         daily_report = self._get_daily_report_snapshot()
@@ -312,7 +311,6 @@ class CycleMixin:
             }
         )
         if not force and signature == self._last_summary_signature:
-            logger.debug("summary notify skipped: no material changes")
             return
         self._last_summary_signature = signature
         msg = format_summary_msg(
@@ -622,6 +620,8 @@ class CycleMixin:
                 f"closed today={summary['closed_today']}"
             )
         self._send_hourly_position_summary_if_due(summary)
+        # 数据变化时立即推送（去重逻辑在 _send_position_summary 内部）
+        self._send_position_summary(summary)
         self._record_latency_step(latency_steps, "summary_notify", step_started)
 
         self.last_scan_time = datetime.now()
