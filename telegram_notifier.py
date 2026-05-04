@@ -49,6 +49,20 @@ def _fmt_price(price: float) -> str:
     return f"{price:,.8f}"
 
 
+def _fmt_usdt(amount: float) -> str:
+    """Smart USDT amount formatting: big→2dp, medium→4dp, small→6dp.
+    Balances, PnL, risk amounts that are USDT-denominated."""
+    if amount <= 0:
+        return "0"
+    if amount >= 100:
+        return f"{amount:,.2f}"
+    if amount >= 1:
+        return f"{amount:,.4f}"
+    if amount >= 0.0001:
+        return f"{amount:,.6f}"
+    return f"{amount:,.8f}"
+
+
 def _fmt_price_code(price: float) -> str:
     """Like _fmt_price but wrapped in <code> tags."""
     return f"<code>{_fmt_price(price)}</code>"
@@ -405,7 +419,7 @@ def _format_take_profit_targets(
                 expected_pnl = (price - entry_price) * quantity
             else:
                 expected_pnl = (entry_price - price) * quantity
-        expected_text = f" | 预计 +${expected_pnl:,.2f}" if expected_pnl > 0 else ""
+        expected_text = f" | 预计 +{_fmt_usdt(expected_pnl)} USDT" if expected_pnl > 0 else ""
         lines.append(
             f"TP{level}: "
             f"<code>{price_move_pct:.2f}% 价格 / {roi_pct:.2f}% ROI</code> →<code>{_fmt_price(price)}</code> "
@@ -572,10 +586,10 @@ def format_open_position_msg(
 
 <b>标的</b>  <code>{_escape(symbol)}</code>  {direction_text}
 <b>入场</b>  <code>{_fmt_price(entry_price)}</code>  {leverage}x
-<b>数量</b>  <code>{_fmt_num(quantity)}</code>  |  名义 <code>{notional_value:,.2f} USDT</code>
-<b>止损</b>  <code>{_fmt_price(stop_loss)}</code>  ({sl_pct:.1f}%)  |  预计 <code>-${expected_sl_loss:.2f}</code>
+<b>数量</b>  <code>{_fmt_num(quantity)}</code>  |  名义 <code>{_fmt_usdt(notional_value)} USDT</code>
+<b>止损</b>  <code>{_fmt_price(stop_loss)}</code>  ({sl_pct:.1f}%)  |  预计 <code>-{_fmt_usdt(expected_sl_loss)} USDT</code>
 <b>止盈</b>  <code>{_fmt_price(take_profit)}</code>  ({tp_pct:.1f}%)
-<b>风险</b>  <code>${risk_amount:.2f}</code>  |  {risk_pct:.1f}%"""
+<b>风险</b>  <code>{_fmt_usdt(risk_amount)} USDT</code>  |  {risk_pct:.1f}%"""
 
     if strategy_line:
         msg += f"\n<b>策略</b>  <code>{_escape(strategy_line)}</code>"
@@ -595,10 +609,10 @@ def format_open_position_msg(
         )
         locked_profit = float(capital_plan.get("locked_profit", 0) or 0)
         if locked_profit > 0:
-            msg += f"\n<b>盈利锁仓</b>  <code>{locked_profit:,.2f} USDT</code>"
+            msg += f"\n<b>盈利锁仓</b>  <code>{_fmt_usdt(locked_profit)} USDT</code>"
     if take_profit_targets:
         if expected_tp_total > 0:
-            msg += f"\n<b>预计止盈</b>  <code>+${expected_tp_total:,.2f}</code>"
+            msg += f"\n<b>预计止盈</b>  <code>+{_fmt_usdt(expected_tp_total)} USDT</code>"
         msg += f"\n<b>分批止盈</b>\n{_format_take_profit_targets(take_profit_targets, entry_price, direction)}"
 
     if score > 0:
@@ -655,7 +669,7 @@ def format_close_position_msg(
 
 <b>{_escape(symbol)}</b>  {direction_text}
 <b>入场</b>  <code>{_fmt_price(entry_price)}</code>  →  <b>出场</b>  <code>{_fmt_price(exit_price)}</code>
-<b>盈亏</b>  {pnl_emoji} <b>{pnl_sign}${pnl:,.2f}</b>  ({pnl_sign}{pnl_pct:.2f}%)
+<b>盈亏</b>  {pnl_emoji} <b>{pnl_sign}{_fmt_usdt(pnl)} USDT</b>  ({pnl_sign}{pnl_pct:.2f}%)
 <b>原因</b>  <code>{_escape(_humanize_close_reason(reason))}</code>"""
 
     if strategy_line:
@@ -704,7 +718,7 @@ def format_partial_take_profit_msg(
 
 <b>{_escape(symbol)}</b>  {direction_text}  |  <b>{_escape(level_text)}</b> ✅
 <b>入场</b>  <code>{_escape(entry_text)}</code>  →  <b>成交</b>  <code>{_fmt_price(exit_price)}</code>
-<b>本次</b>  {pnl_emoji} <b>{pnl_sign}${pnl:,.2f}</b>  {pnl_pct_text}  |  止盈 <code>{_fmt_num(quantity)}</code>
+<b>本次</b>  {pnl_emoji} <b>{pnl_sign}{_fmt_usdt(pnl)} USDT</b>  {pnl_pct_text}  |  止盈 <code>{_fmt_num(quantity)}</code>
 <b>剩余</b>  <code>{_fmt_num(remaining_quantity)}</code>  继续持有"""
 
     if pnl_source:
@@ -795,12 +809,12 @@ def format_summary_msg(
     msg = f"""📊 <b>宙斯交易中枢 | 持仓汇总</b>
 
 <b>持仓数</b>  <code>{len(positions)}</code>
-<b>未实现</b>  <code>{total_pnl:+,.2f} USDT</code>
-<b>已实现</b>  <code>{realized_pnl:.2f} USDT</code>"""
+<b>未实现</b>  <code>{"+" if total_pnl >= 0 else "-"}{_fmt_usdt(abs(total_pnl))} USDT</code>
+<b>已实现</b>  <code>{"+" if realized_pnl >= 0 else "-"}{_fmt_usdt(abs(realized_pnl))} USDT</code>"""
     if total_balance > 0:
-        msg += f"\n<b>总余额</b>  <code>{total_balance:,.2f} USDT</code>"
+        msg += f"\n<b>总余额</b>  <code>{_fmt_usdt(total_balance)} USDT</code>"
     if available_balance > 0:
-        msg += f"\n<b>可用余额</b>  <code>{available_balance:,.2f} USDT</code>"
+        msg += f"\n<b>可用余额</b>  <code>{_fmt_usdt(available_balance)} USDT</code>"
 
     if not positions:
         msg += "\n\n📭 <b>当前无持仓</b>\n<code>系统保持待命，等待下一次高质量入场信号。</code>"
@@ -820,7 +834,7 @@ def format_summary_msg(
 <b>{i}.</b> <code>{_escape(pos.get('symbol', 'UNKNOWN'))}</code>  {side}
 入场 <code>{_fmt_price(float(pos.get('entry_price', 0) or 0))}</code>  |  现价 <code>{_fmt_price(current_price)}</code>
 止损 <code>{_fmt_price(float(pos.get('stop_loss', 0) or 0))}</code>{stop_suffix}  |  止盈 <code>{_escape(take_profit_display)}</code>
-盈亏 {pnl_emoji} <code>{pnl_sign}${pnl:,.2f}</code>  ({float(pos.get('unrealized_pnl_pct', 0) or 0):+.2f}%)"""
+盈亏 {pnl_emoji} <code>{pnl_sign}{_fmt_usdt(pnl)} USDT</code>  ({float(pos.get('unrealized_pnl_pct', 0) or 0):+.2f}%)"""
 
     return msg
 
@@ -887,8 +901,8 @@ def format_shutdown_msg(
 
 <b>模式</b>  <code>{_escape(mode_name)}</code>
 <b>已平仓</b>  <code>{closed_trades}</code> 笔
-<b>已实现</b>  <code>{realized_pnl:.2f} USDT</code>
-<b>未实现</b>  <code>{unrealized_pnl:.2f} USDT</code>"""
+<b>已实现</b>  <code>{"+" if realized_pnl >= 0 else "-"}{_fmt_usdt(abs(realized_pnl))} USDT</code>
+<b>未实现</b>  <code>{"+" if unrealized_pnl >= 0 else "-"}{_fmt_usdt(abs(unrealized_pnl))} USDT</code>"""
 
 
 def format_signal_message(signal: dict[str, Any], trade_result: dict[str, Any]) -> str:
