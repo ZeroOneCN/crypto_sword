@@ -10,6 +10,7 @@ from typing import Any
 from adapters.rest_gateway import get_top_symbols_by_change_rest, get_top_symbols_by_volume_rest
 from feature_store import feature_store
 from telegram_notifier import (
+    _fmt_usdt,
     format_daily_report_msg,
     format_error_msg,
     format_period_report_msg,
