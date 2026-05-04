@@ -151,7 +151,7 @@ class CryptoSword(ExecutionMixin, ScannerMixin, CycleMixin, SyncMixin, Confirmat
         try:
             daily_report = self._get_daily_report_snapshot()
             enriched["closed_today"] = int(daily_report.get("closed_trades", 0) or 0)
-            enriched["realized_pnl"] = round(float(daily_report.get("total_pnl", 0) or 0), 2)
+            enriched["realized_pnl"] = float(daily_report.get("total_pnl", 0) or 0)
         except Exception as e:
             logger.debug(f"summary api enrichment skipped: {e}")
         return enriched

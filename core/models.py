@@ -458,10 +458,10 @@ class PositionTracker:
         total_pnl = sum(p.pnl for p in self.positions.values())
         return {
             "open_positions": len(self.positions),
-            "total_unrealized_pnl": round(total_pnl, 2),
+            "total_unrealized_pnl": total_pnl,
             "positions": [p.to_dict() for p in self.positions.values()],
             "closed_today": len(self.closed_positions),
-            "realized_pnl": round(sum(p.pnl for p in self.closed_positions), 2),
+            "realized_pnl": sum(p.pnl for p in self.closed_positions),
         }
 
     def reset_daily_summary(self):

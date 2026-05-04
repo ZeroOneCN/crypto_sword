@@ -324,18 +324,23 @@ class CycleMixin:
         win_rate = float(daily_report.get("win_rate", 0) or 0)
         avg_pnl = float(daily_report.get("avg_pnl", 0) or 0)
         msg += f"\n<b>胜率</b>  <code>{win_rate:.1f}%</code>"
-        msg += f"\n<b>笔均</b>  <code>{avg_pnl:+,.2f} USDT</code>"
+        avg_sign = "+" if avg_pnl >= 0 else "-"
+        msg += f"\n<b>笔均</b>  <code>{avg_sign}{_fmt_usdt(abs(avg_pnl))} USDT</code>"
         best_trade = daily_report.get("best_trade") or {}
         if best_trade.get("symbol"):
+            best_pnl = float(best_trade.get("pnl", 0) or 0)
+            best_sign = "+" if best_pnl >= 0 else "-"
             msg += (
                 f"\n<b>最佳</b>  <code>{best_trade.get('symbol')}</code>"
-                f"  <code>{float(best_trade.get('pnl', 0) or 0):+,.2f} USDT</code>"
+                f"  <code>{best_sign}{_fmt_usdt(abs(best_pnl))} USDT</code>"
             )
         worst_trade = daily_report.get("worst_trade") or {}
         if worst_trade.get("symbol"):
+            worst_pnl = float(worst_trade.get("pnl", 0) or 0)
+            worst_sign = "+" if worst_pnl >= 0 else "-"
             msg += (
                 f"\n<b>最差</b>  <code>{worst_trade.get('symbol')}</code>"
-                f"  <code>{float(worst_trade.get('pnl', 0) or 0):+,.2f} USDT</code>"
+                f"  <code>{worst_sign}{_fmt_usdt(abs(worst_pnl))} USDT</code>"
             )
         msg += f"\n\n<b>已平仓</b>  <code>{summary['closed_today']}</code> 笔"
         send_telegram_message(msg)
@@ -619,8 +624,7 @@ class CycleMixin:
                 f"realized today=${summary['realized_pnl']:.2f} | "
                 f"closed today={summary['closed_today']}"
             )
-        self._send_hourly_position_summary_if_due(summary)
-        # 数据变化时立即推送（去重逻辑在 _send_position_summary 内部）
+        # 数据变化时推送持仓汇总（内置 signature 去重）
         self._send_position_summary(summary)
         self._record_latency_step(latency_steps, "summary_notify", step_started)
 
