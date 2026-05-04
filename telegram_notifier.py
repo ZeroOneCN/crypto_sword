@@ -423,19 +423,29 @@ def _format_oi_funding_brief(oi_funding: dict[str, Any] | None) -> str:
     funding_current = float(oi_funding.get("funding_current", 0) or 0)
     turned_negative = bool(oi_funding.get("turned_negative", False))
     oi_signal = bool(oi_funding.get("oi_signal", False))
+    oi_1h_surge = bool(oi_funding.get("oi_1h_surge", False))
+    oi_1h_change = float(oi_funding.get("oi_1h_change_pct", 0) or 0)
+    breakdown = oi_funding.get("bonus_breakdown") or []
 
     tags: list[str] = []
     if turned_negative:
         tags.append("费率转负")
     if oi_signal:
         tags.append("OI扩张")
+    if oi_1h_surge:
+        tags.append(f"OI1h骤升{oi_1h_change:+.1f}%")
     if not tags and bonus > 0:
         tags.append("评分加成")
     tag_text = " / ".join(tags) if tags else "无"
 
+    # bonus 明细
+    bonus_text = f"+{bonus:.1f}"
+    if breakdown:
+        bonus_text += " (" + " ".join(breakdown) + ")"
+
     return (
         f"<b>OI/Funding</b>  <code>{_escape(tag_text)}</code> | "
-        f"加分 <code>+{bonus:.1f}</code> | "
+        f"加分 <code>{_escape(bonus_text)}</code> | "
         f"OI <code>{oi_change:+.1f}%</code> | "
         f"Funding <code>{funding_current:+.4%}</code>"
     )

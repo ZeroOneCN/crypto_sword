@@ -96,6 +96,8 @@ class OiFundingService:
                 "oi_monotonic_up": False,
                 "segments": [],
                 "oi_signal": False,
+                "oi_1h_surge": False,       # OI 1h 骤升标志
+                "oi_1h_change_pct": 0.0,     # OI 最近1h变化率
             }
         else:
             seg_len = max(2, len(values) // 4)
@@ -112,12 +114,26 @@ class OiFundingService:
             oi_monotonic_up = all(segments[i + 1] >= segments[i] for i in range(len(segments) - 1))
             oi_signal = oi_change_pct >= min_oi_change_pct and oi_rising
 
+            # OI 1h 骤升：最近2根 vs 前2根 OI 的快速变化
+            oi_1h_surge = False
+            oi_1h_change_pct = 0.0
+            if len(values) >= 6:
+                recent_2 = values[-2:]  # 最近2小时
+                prior_2 = values[-6:-2]  # 往前4小时取最后2
+                avg_recent = sum(recent_2) / len(recent_2)
+                avg_prior = sum(prior_2) / len(prior_2)
+                if avg_prior > 0:
+                    oi_1h_change_pct = (avg_recent - avg_prior) / avg_prior * 100.0
+                    oi_1h_surge = oi_1h_change_pct >= 5.0  # 1h OI 增长 ≥5%
+
             profile = {
                 "oi_change_pct": oi_change_pct,
                 "oi_rising": oi_rising,
                 "oi_monotonic_up": oi_monotonic_up,
                 "segments": [round(seg, 2) for seg in segments],
                 "oi_signal": oi_signal,
+                "oi_1h_surge": oi_1h_surge,
+                "oi_1h_change_pct": round(oi_1h_change_pct, 2),
             }
 
         with self._lock:
@@ -158,10 +174,33 @@ class OiFundingService:
             )
 
             score_bonus = 0.0
+            bonus_breakdown: list[str] = []
+
+            # 1. 费率转负 → 原有加分
             if turned_negative:
                 score_bonus += turn_bonus
+                bonus_breakdown.append(f"费率转负+{turn_bonus:.0f}")
+
+            # 2. OI 24h 上升 → 原有加分
             if oi_profile.get("oi_signal"):
                 score_bonus += rising_bonus
+                bonus_breakdown.append(f"OI上升+{rising_bonus:.0f}")
+
+            # 3. 🆕 OI 1h 骤升 → 额外加分
+            if oi_profile.get("oi_1h_surge"):
+                oi_1h_bonus = 4.0
+                score_bonus += oi_1h_bonus
+                oi_1h_pct = oi_profile.get("oi_1h_change_pct", 0)
+                bonus_breakdown.append(f"OI1h骤升+{oi_1h_bonus:.0f}({oi_1h_pct:+.1f}%)")
+
+            # 4. 🆕 温和负费率强信号 → 额外加分
+            # 条件：费率在 -0.005%~-0.05% 之间 + OI 同时上升
+            mild_negative = -0.0005 <= current_funding <= -0.00005
+            if mild_negative and oi_profile.get("oi_rising"):
+                mild_bonus = 3.0
+                score_bonus += mild_bonus
+                bonus_breakdown.append(f"温和负费率+{mild_bonus:.0f}")
+
             score_bonus = min(max(0.0, score_bonus), max(0.0, bonus_cap))
 
             result[symbol] = {
@@ -173,7 +212,10 @@ class OiFundingService:
                 "oi_rising": bool(oi_profile.get("oi_rising", False)),
                 "oi_monotonic_up": bool(oi_profile.get("oi_monotonic_up", False)),
                 "oi_signal": bool(oi_profile.get("oi_signal", False)),
+                "oi_1h_surge": bool(oi_profile.get("oi_1h_surge", False)),
+                "oi_1h_change_pct": float(oi_profile.get("oi_1h_change_pct", 0.0) or 0.0),
                 "score_bonus": score_bonus,
+                "bonus_breakdown": bonus_breakdown,
             }
 
         with self._lock:
@@ -197,11 +239,9 @@ class OiFundingService:
             signal_score.confidence = "\u6781\u9ad8"
         elif total >= 50:
             signal_score.confidence = "\u9ad8"
-        elif total >= 30:
-            signal_score.confidence = "\u4e2d"
-        else:
-            signal_score.confidence = "\u4f4e"
+
         return bonus
 
 
+# Singleton
 oi_funding_service = OiFundingService()
