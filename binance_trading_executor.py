@@ -11,7 +11,7 @@ import logging
 import os
 import time
 from dataclasses import dataclass, field
-from decimal import Decimal, ROUND_CEILING
+from decimal import Decimal, ROUND_CEILING, ROUND_FLOOR
 from typing import Any, Optional
 
 try:
@@ -353,9 +353,37 @@ def _get_price_tick_size(symbol: str) -> float:
     return 0.00001
 
 
+def _get_price_filter(symbol: str) -> tuple[float, float, float]:
+    """Return tickSize/minPrice/maxPrice for a futures symbol."""
+    tick_size = 0.00001
+    min_price = tick_size
+    max_price = 0.0
+    try:
+        sym_info = get_symbol_info(symbol)
+        if sym_info:
+            for f in sym_info.get("filters", []):
+                if f.get("filterType") == "PRICE_FILTER":
+                    tick_size = float(f.get("tickSize", tick_size) or tick_size)
+                    min_price = float(f.get("minPrice", min_price) or min_price)
+                    max_price = float(f.get("maxPrice", 0) or 0)
+                    break
+    except Exception:
+        pass
+    if tick_size <= 0:
+        tick_size = 0.00001
+    if min_price <= 0:
+        min_price = tick_size
+    return tick_size, min_price, max_price
+
+
 def _is_precision_error(exc: Exception) -> bool:
     text = str(exc)
-    return "Precision is over the maximum defined for this asset" in text or '"code":-1111' in text
+    return (
+        "Precision is over the maximum defined for this asset" in text
+        or '"code":-1111' in text
+        or "Price less than min price" in text
+        or '"code":-4013' in text
+    )
 
 
 def get_symbol_min_notional(symbol: str, default: float = 5.0) -> float:
@@ -435,20 +463,33 @@ def adjust_quantity_precision(symbol: str, quantity: float, price: float = 0.0) 
     return quantity
 
 
-def adjust_price_precision(symbol: str, price: float) -> float:
+def adjust_price_precision(symbol: str, price: float, rounding: str = "floor") -> float:
     """Adjust price precision based on Binance symbol tickSize."""
     try:
-        sym_info = get_symbol_info(symbol)
-        if sym_info:
-            for f in sym_info.get("filters", []):
-                if f.get("filterType") == "PRICE_FILTER":
-                    tick_size = float(f.get("tickSize", "0.00001"))
-                    price = _truncate_to_step(price, tick_size)
-                    logger.info(f"🔧 {symbol} 价格精度：tickSize={tick_size}, 调整后 price={price}")
-                    return price
+        tick_size, min_price, max_price = _get_price_filter(symbol)
+        step = Decimal(str(tick_size))
+        value = Decimal(str(price if price and price > 0 else min_price))
+        mode = ROUND_CEILING if str(rounding).lower() in {"ceil", "ceiling", "up"} else ROUND_FLOOR
+        steps = (value / step).to_integral_value(rounding=mode)
+        adjusted = steps * step
+        min_decimal = Decimal(str(min_price))
+        if adjusted < min_decimal:
+            adjusted = min_decimal
+        if max_price > 0:
+            max_decimal = Decimal(str(max_price))
+            if adjusted > max_decimal:
+                adjusted = max_decimal
+        price = float(adjusted)
+        logger.info(
+            f"🔧 {symbol} 价格精度：tickSize={tick_size}, minPrice={min_price}, "
+            f"rounding={rounding}, 调整后 price={price}"
+        )
+        return price
     except Exception as e:
         logger.debug(f"获取 {symbol} 价格精度失败: {e}")
     # 默认 5 位小数
+    if str(rounding).lower() in {"ceil", "ceiling", "up"}:
+        return _ceil_to_step(price, 0.00001)
     return _truncate_to_step(price, 0.00001)
 
 
@@ -501,7 +542,7 @@ def calculate_position_size(
     return round(quantity, 3)
 
 
-def calculate_stop_loss(entry_price: float, stop_loss_pct: float, side: str) -> float:
+def calculate_stop_loss(entry_price: float, stop_loss_pct: float, side: str, symbol: Optional[str] = None) -> float:
     """Calculate stop loss price.
 
     Args:
@@ -513,9 +554,14 @@ def calculate_stop_loss(entry_price: float, stop_loss_pct: float, side: str) -> 
         Stop loss price
     """
     if side == "LONG":
-        return round(entry_price * (1 - stop_loss_pct / 100.0), 2)
+        price = entry_price * (1 - stop_loss_pct / 100.0)
+        rounding = "floor"
     else:  # SHORT
-        return round(entry_price * (1 + stop_loss_pct / 100.0), 2)
+        price = entry_price * (1 + stop_loss_pct / 100.0)
+        rounding = "ceil"
+    if symbol:
+        return adjust_price_precision(symbol, price, rounding=rounding)
+    return price
 
 
 def calculate_take_profit(
@@ -538,10 +584,12 @@ def calculate_take_profit(
     for tp_pct in take_profit_pcts:
         if side == "LONG":
             price = entry_price * (1 + tp_pct / 100.0)
+            rounding = "ceil"
         else:  # SHORT
             price = entry_price * (1 - tp_pct / 100.0)
+            rounding = "floor"
         if symbol:
-            price = adjust_price_precision(symbol, price)
+            price = adjust_price_precision(symbol, price, rounding=rounding)
         levels.append(price)
     return levels
 
@@ -577,10 +625,12 @@ def calculate_take_profit_prices_by_roi(
         price_move_pct = roi_pct / float(leverage)
         if side == "LONG":
             price = entry_price * (1 + price_move_pct / 100.0)
+            rounding = "ceil"
         else:
             price = entry_price * (1 - price_move_pct / 100.0)
+            rounding = "floor"
         if symbol:
-            price = adjust_price_precision(symbol, price)
+            price = adjust_price_precision(symbol, price, rounding=rounding)
         levels.append(price)
     return levels
 
@@ -804,14 +854,15 @@ def place_stop_loss_order(
             raise RuntimeError("Native Binance API is not configured; cannot place stop loss")
 
         quantity = adjust_quantity_precision(symbol, quantity)
-        stop_price = adjust_price_precision(symbol, stop_price)
+        stop_rounding = "floor" if side == "SELL" else "ceil"
+        stop_price = adjust_price_precision(symbol, stop_price, rounding=stop_rounding)
         trigger_price = stop_price
         if trigger_buffer_pct > 0:
             if side == "SELL":
                 trigger_price = stop_price * (1 - trigger_buffer_pct / 100.0)
             else:
                 trigger_price = stop_price * (1 + trigger_buffer_pct / 100.0)
-            trigger_price = adjust_price_precision(symbol, trigger_price)
+            trigger_price = adjust_price_precision(symbol, trigger_price, rounding=stop_rounding)
 
         result = get_native_binance_client().new_algo_order(  # type: ignore
             symbol=symbol,
@@ -842,9 +893,8 @@ def place_stop_loss_order(
         if _is_precision_error(e):
             try:
                 step = _get_lot_step_size(symbol)
-                tick = _get_price_tick_size(symbol)
                 quantity_retry = _truncate_to_step(max(quantity - step, step), step)
-                trigger_retry = _truncate_to_step(trigger_price, tick)
+                trigger_retry = adjust_price_precision(symbol, trigger_price, rounding=stop_rounding)
                 result = get_native_binance_client().new_algo_order(  # type: ignore
                     symbol=symbol,
                     side=side,
@@ -900,7 +950,8 @@ def place_take_profit_order(
             raise RuntimeError("Native Binance API is not configured; cannot place take profit")
 
         quantity = adjust_quantity_precision(symbol, quantity)
-        trigger_price = adjust_price_precision(symbol, trigger_price)
+        tp_rounding = "ceil" if side == "SELL" else "floor"
+        trigger_price = adjust_price_precision(symbol, trigger_price, rounding=tp_rounding)
 
         result = get_native_binance_client().new_algo_order(  # type: ignore
             symbol=symbol,
@@ -931,9 +982,8 @@ def place_take_profit_order(
         if _is_precision_error(e):
             try:
                 step = _get_lot_step_size(symbol)
-                tick = _get_price_tick_size(symbol)
                 quantity_retry = _truncate_to_step(max(quantity - step, step), step)
-                trigger_retry = _truncate_to_step(trigger_price, tick)
+                trigger_retry = adjust_price_precision(symbol, trigger_price, rounding=tp_rounding)
                 result = get_native_binance_client().new_algo_order(  # type: ignore
                     symbol=symbol,
                     side=side,
@@ -1073,7 +1123,7 @@ def execute_trade(
 
     # Calculate position size (use external values if provided)
     if stop_loss_price is None:
-        stop_loss_price = calculate_stop_loss(signal.entry_price, stop_loss_pct, signal.direction)
+        stop_loss_price = calculate_stop_loss(signal.entry_price, stop_loss_pct, signal.direction, symbol=signal.symbol)
     
     if quantity is None:
         quantity = calculate_position_size(

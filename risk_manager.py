@@ -181,6 +181,53 @@ def calculate_atr(klines: List[Dict], period: int = 14) -> float:
     return atr
 
 
+def _dynamic_price_round(price: float, reference_price: float) -> float:
+    reference = abs(reference_price or price or 0.0)
+    if reference < 0.001:
+        decimals = 8
+    elif reference < 0.01:
+        decimals = 7
+    elif reference < 0.1:
+        decimals = 6
+    elif reference < 1:
+        decimals = 5
+    else:
+        decimals = 4
+    return round(float(price), decimals)
+
+
+def _align_risk_price(symbol: str, entry_price: float, price: float, side: str, purpose: str) -> float:
+    """Align risk prices without destroying micro-price symbols by fixed 4-decimal rounding."""
+    if price <= 0:
+        return 0.0
+
+    if purpose == "stop_loss":
+        rounding = "floor" if side == "LONG" else "ceil"
+    else:
+        rounding = "ceil" if side == "LONG" else "floor"
+
+    try:
+        from binance_trading_executor import adjust_price_precision
+
+        adjusted = adjust_price_precision(symbol, price, rounding=rounding)
+    except Exception as exc:
+        logger.debug(f"{symbol} 风控价格精度适配失败，使用动态小数: {exc}")
+        adjusted = _dynamic_price_round(price, entry_price)
+
+    # Last sanity guard: never let precision alignment invert SL/TP around entry.
+    if purpose == "stop_loss":
+        if side == "LONG" and adjusted >= entry_price:
+            adjusted = _dynamic_price_round(price, entry_price)
+        elif side == "SHORT" and adjusted <= entry_price:
+            adjusted = _dynamic_price_round(price, entry_price)
+    else:
+        if side == "LONG" and adjusted <= entry_price:
+            adjusted = _dynamic_price_round(price, entry_price)
+        elif side == "SHORT" and adjusted >= entry_price:
+            adjusted = _dynamic_price_round(price, entry_price)
+    return adjusted
+
+
 def calculate_atr_stop_loss(
     symbol: str,
     entry_price: float,
@@ -212,7 +259,7 @@ def calculate_atr_stop_loss(
         
         return {
             "atr": 0,
-            "stop_loss": round(stop_loss, 4),
+            "stop_loss": _align_risk_price(symbol, entry_price, stop_loss, side, "stop_loss"),
             "stop_loss_pct": round(fallback_stop_pct, 2),
             "method": "FALLBACK",
         }
@@ -249,8 +296,8 @@ def calculate_atr_stop_loss(
         stop_loss_pct = max_stop_pct
     
     return {
-        "atr": round(atr, 4),
-        "stop_loss": round(stop_loss, 4),
+        "atr": _dynamic_price_round(atr, entry_price),
+        "stop_loss": _align_risk_price(symbol, entry_price, stop_loss, side, "stop_loss"),
         "stop_loss_pct": round(stop_loss_pct, 2),
         "method": "ATR",
         "is_wider": stop_loss_pct > 8.0,
@@ -266,6 +313,7 @@ def calculate_take_profit_levels(
     side: str,
     levels: List[float] = None,
     ratios: List[float] = None,
+    symbol: str = "",
 ) -> List[Dict[str, Any]]:
     """
     计算分级止盈
@@ -299,7 +347,7 @@ def calculate_take_profit_levels(
         tp_levels.append({
             "level": i + 1,
             "target_pct": level,
-            "price": round(tp_price, 4),
+            "price": _align_risk_price(symbol, entry_price, tp_price, side, "take_profit") if symbol else _dynamic_price_round(tp_price, entry_price),
             "ratio": ratio,
             "quantity_pct": round(ratio * 100, 1),
         })
@@ -635,6 +683,7 @@ def assess_trade_risk(
         entry_price, side,
         levels=config.take_profit_levels,
         ratios=config.take_profit_ratios,
+        symbol=symbol,
     )
     
     # 6. 风险回报比（放宽阈值：妖币波动大，1.0 即可）
