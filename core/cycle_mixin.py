@@ -506,6 +506,7 @@ class CycleMixin:
             for symbol, reason in exits.items():
                 logger.info(f"Exit trigger {symbol}: {reason}")
                 self.execute_exit(symbol, reason)
+            self._manage_sideways_positions()
             self._record_latency_step(latency_steps, "manage_open_positions", step_started)
 
         step_started = time.perf_counter()
@@ -564,9 +565,6 @@ class CycleMixin:
                         f"{entries_opened_this_cycle}/{self.config.max_entries_per_cycle}"
                     )
                     break
-                if self.tracker.get_open_count() >= self.config.max_open_positions:
-                    logger.info(f"Max open positions reached ({self.config.max_open_positions})")
-                    break
                 if signal.get("entry_status") != "ready":
                     continue
                 throttle_reason = self._entry_throttle_reason(signal, entry_gate_snapshot)
@@ -589,6 +587,11 @@ class CycleMixin:
                     continue
                 if balance_hint is not None:
                     signal["_balance_hint"] = balance_hint
+
+                if self.tracker.get_open_count() >= self.config.max_open_positions:
+                    if not self._try_replace_sideways_position_for_signal(signal):
+                        logger.info(f"Max open positions reached ({self.config.max_open_positions})")
+                        break
 
                 position = self.execute_entry(signal)
                 if position:

@@ -340,6 +340,8 @@ def _format_close_reason_label(reason: Any) -> str:
         "TRAILING": "追踪止损触发",
         "MANUAL": "手动平仓",
         "ENTRY_PROTECTION_FAILED": "开仓保护失败回滚",
+        "SIDEWAYS_TIMEOUT": "横盘超时退出",
+        "SIDEWAYS_REPLACED_BY_STRONG_SIGNAL": "横盘仓位被强信号替换",
         "EXCHANGE_REALIZED_EXCHANGE": "交易所已实现盈亏同步",
         "EXCHANGE_REALIZED": "交易所已实现盈亏同步",
         "FILLED": "完全成交",

@@ -78,6 +78,17 @@ class TradingConfig:
         oi_funding_cache_sec: int = 120,
         breakeven_after_tp: bool = True,
         breakeven_offset_pct: float = 0.5,
+        sideways_management_enabled: bool = True,
+        sideways_defense_after_minutes: int = 90,
+        sideways_exit_after_minutes: int = 180,
+        sideways_max_price_move_pct: float = 0.8,
+        sideways_max_roi_pct: float = 2.0,
+        sideways_stop_offset_pct: float = 0.35,
+        sideways_replacement_enabled: bool = True,
+        sideways_replacement_min_age_minutes: int = 90,
+        sideways_replacement_min_score: float = 88.0,
+        sideways_replacement_score_gap: float = 10.0,
+        sideways_replacement_max_roi_pct: float = 2.0,
         stop_trigger_buffer_pct: float = 2.0,
         breakout_stop_trigger_buffer_pct: float = 2.0,
         pullback_stop_trigger_buffer_pct: float = 1.5,
@@ -192,6 +203,17 @@ class TradingConfig:
         self.oi_funding_cache_sec = max(30, int(oi_funding_cache_sec))
         self.breakeven_after_tp = breakeven_after_tp
         self.breakeven_offset_pct = breakeven_offset_pct
+        self.sideways_management_enabled = sideways_management_enabled
+        self.sideways_defense_after_minutes = max(1, int(sideways_defense_after_minutes))
+        self.sideways_exit_after_minutes = max(0, int(sideways_exit_after_minutes))
+        self.sideways_max_price_move_pct = max(0.0, float(sideways_max_price_move_pct))
+        self.sideways_max_roi_pct = max(0.0, float(sideways_max_roi_pct))
+        self.sideways_stop_offset_pct = max(0.0, float(sideways_stop_offset_pct))
+        self.sideways_replacement_enabled = sideways_replacement_enabled
+        self.sideways_replacement_min_age_minutes = max(1, int(sideways_replacement_min_age_minutes))
+        self.sideways_replacement_min_score = max(0.0, float(sideways_replacement_min_score))
+        self.sideways_replacement_score_gap = max(0.0, float(sideways_replacement_score_gap))
+        self.sideways_replacement_max_roi_pct = max(0.0, float(sideways_replacement_max_roi_pct))
         self.stop_trigger_buffer_pct = stop_trigger_buffer_pct
         self.breakout_stop_trigger_buffer_pct = breakout_stop_trigger_buffer_pct
         self.pullback_stop_trigger_buffer_pct = pullback_stop_trigger_buffer_pct
@@ -319,6 +341,8 @@ class Position:
         self.exit_reason: Optional[str] = None
         self.pnl: float = 0.0
         self.pnl_pct: float = 0.0
+        self.sideways_defense_moved: bool = False
+        self.sideways_last_action_ts: float = 0.0
 
     def update_price(self, current_price: float, trailing_stop_pct: float):
         """Update price and trailing stop."""

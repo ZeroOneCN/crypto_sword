@@ -467,6 +467,212 @@ class ExecutionMixin:
         )
         return False
 
+    def _position_age_minutes(self, position: Position) -> float:
+        try:
+            return max(0.0, (datetime.now() - position.entry_time).total_seconds() / 60.0)
+        except Exception:
+            return 0.0
+
+    def _position_price_move_pct(self, position: Position) -> float:
+        if position.entry_price <= 0 or position.current_price <= 0:
+            return float(position.pnl_pct or 0.0)
+        if position.side == "BUY":
+            return (position.current_price - position.entry_price) / position.entry_price * 100.0
+        return (position.entry_price - position.current_price) / position.entry_price * 100.0
+
+    def _position_roi_pct(self, position: Position) -> float:
+        leverage = max(int(getattr(position, "leverage", 0) or self.config.leverage or 1), 1)
+        return self._position_price_move_pct(position) * leverage
+
+    def _position_entry_score_value(self, position: Position) -> float:
+        score_data = getattr(position, "entry_score", {}) or {}
+        if isinstance(score_data, dict):
+            return float(score_data.get("total_score", score_data.get("total", 0)) or 0)
+        return float(score_data or 0)
+
+    def _position_has_taken_profit(self, position: Position) -> bool:
+        return (
+            int(getattr(position, "partial_tp_count", 0) or 0) > 0
+            or float(getattr(position, "realized_quantity", 0.0) or 0.0) > 0
+            or float(getattr(position, "exchange_realized_quantity", 0.0) or 0.0) > 0
+        )
+
+    def _is_sideways_position_candidate(
+        self,
+        position: Position,
+        min_age_minutes: float,
+        max_roi_pct: float,
+        require_near_entry: bool = True,
+    ) -> bool:
+        if not getattr(self.config, "sideways_management_enabled", True):
+            return False
+        if position.entry_price <= 0 or position.quantity <= 0:
+            return False
+        if self._position_has_taken_profit(position):
+            return False
+        if self._position_age_minutes(position) < float(min_age_minutes):
+            return False
+
+        price_move_pct = self._position_price_move_pct(position)
+        roi_pct = self._position_roi_pct(position)
+        if require_near_entry and abs(price_move_pct) > float(self.config.sideways_max_price_move_pct):
+            return False
+        return abs(roi_pct) <= float(max_roi_pct)
+
+    def _move_stop_to_sideways_defense(self, position: Position) -> bool:
+        """Move a stale sideways position's exchange stop near entry without removing the hard stop."""
+        if getattr(position, "sideways_defense_moved", False):
+            return False
+        if position.quantity <= 0 or position.entry_price <= 0:
+            return False
+
+        offset_pct = float(self.config.sideways_stop_offset_pct)
+        if position.side == "BUY":
+            desired_stop = position.entry_price * (1 - offset_pct / 100.0)
+            close_side = "SELL"
+            position_side = "LONG"
+            old_exchange_stop = float(position.stop_loss_price or position.current_stop or 0.0)
+            if old_exchange_stop >= desired_stop > 0:
+                position.sideways_defense_moved = True
+                return True
+        else:
+            desired_stop = position.entry_price * (1 + offset_pct / 100.0)
+            close_side = "BUY"
+            position_side = "SHORT"
+            old_exchange_stop = float(position.stop_loss_price or position.current_stop or 0.0)
+            if 0 < old_exchange_stop <= desired_stop:
+                position.sideways_defense_moved = True
+                return True
+
+        latest_price = float(position.current_price or 0.0)
+        if latest_price <= 0:
+            try:
+                latest_price = float(self.get_current_prices([position.symbol]).get(position.symbol, 0) or 0)
+            except Exception as exc:
+                logger.debug(f"{position.symbol} sideways defense price fetch skipped: {exc}")
+
+        stop_price = desired_stop
+        if latest_price > 0:
+            trigger_buffer_pct = max(0.10, min(float(self.config.stop_trigger_buffer_pct), float(self.config.sideways_stop_offset_pct)))
+            trigger_buffer = trigger_buffer_pct / 100.0
+            if position.side == "BUY":
+                stop_price = min(stop_price, latest_price * (1 - trigger_buffer))
+                if old_exchange_stop and stop_price <= old_exchange_stop:
+                    logger.info(
+                        f"{position.symbol} 横盘防守跳过：安全止损 {stop_price:.8f} "
+                        f"未优于当前交易所止损 {old_exchange_stop:.8f}"
+                    )
+                    return False
+            else:
+                stop_price = max(stop_price, latest_price * (1 + trigger_buffer))
+                if old_exchange_stop and stop_price >= old_exchange_stop:
+                    logger.info(
+                        f"{position.symbol} 横盘防守跳过：安全止损 {stop_price:.8f} "
+                        f"未优于当前交易所止损 {old_exchange_stop:.8f}"
+                    )
+                    return False
+
+        if stop_price <= 0:
+            return False
+
+        old_order_id = position.stop_loss_order_id
+        sl_result = order_service.place_stop_loss(
+            position.symbol,
+            close_side,
+            position.quantity,
+            stop_price,
+            position_side=position_side,
+            reduce_only=True,
+        )
+        if sl_result.status != "ERROR" and sl_result.order_id:
+            position.stop_loss_order_id = sl_result.order_id
+            position.stop_loss_price = stop_price
+            position.current_stop = stop_price
+            position.sideways_defense_moved = True
+            position.sideways_last_action_ts = time.time()
+            if old_order_id and not order_service.cancel_stop_loss(position.symbol, old_order_id):
+                logger.warning(f"⚠️ {position.symbol} 横盘防守止损已生效，但旧止损撤销失败：{old_order_id}")
+            logger.warning(
+                f"🛡️ {position.symbol} 横盘防守止损已移动："
+                f"age={self._position_age_minutes(position):.0f}m roi={self._position_roi_pct(position):+.2f}% "
+                f"order={sl_result.order_id} @ {stop_price:.8f}"
+            )
+            return True
+
+        position.protection_failures += 1
+        position.last_protection_error = sl_result.message
+        logger.warning(f"⚠️ {position.symbol} 横盘防守止损移动失败：{sl_result.message}")
+        return False
+
+    def _manage_sideways_positions(self):
+        if not getattr(self.config, "sideways_management_enabled", True):
+            return
+
+        defense_after = float(self.config.sideways_defense_after_minutes)
+        exit_after = float(self.config.sideways_exit_after_minutes)
+        max_roi = float(self.config.sideways_max_roi_pct)
+        for symbol, position in list(self.tracker.positions.items()):
+            if not self.tracker.get_position(symbol):
+                continue
+            if exit_after > 0 and self._is_sideways_position_candidate(position, exit_after, max_roi):
+                logger.warning(
+                    f"⏳ {symbol} 横盘超时退出："
+                    f"age={self._position_age_minutes(position):.0f}m "
+                    f"price={self._position_price_move_pct(position):+.2f}% "
+                    f"roi={self._position_roi_pct(position):+.2f}%"
+                )
+                self.execute_exit(symbol, "SIDEWAYS_TIMEOUT")
+                continue
+            if self._is_sideways_position_candidate(position, defense_after, max_roi):
+                self._move_stop_to_sideways_defense(position)
+
+    def _try_replace_sideways_position_for_signal(self, signal: dict[str, Any]) -> bool:
+        """Free one weak sideways slot for a much stronger ready signal."""
+        if not getattr(self.config, "sideways_replacement_enabled", True):
+            return False
+        if self.tracker.get_open_count() < int(self.config.max_open_positions):
+            return True
+        if signal.get("entry_status") != "ready":
+            return False
+
+        symbol = str(signal.get("symbol", "") or "")
+        if not symbol or symbol in self.tracker.positions:
+            return False
+
+        try:
+            new_score = float(self._signal_score_value(signal))
+        except Exception:
+            score_data = signal.get("score") or {}
+            new_score = float(score_data.get("total_score", score_data.get("total", 0)) or 0) if isinstance(score_data, dict) else float(score_data or 0)
+        if new_score < float(self.config.sideways_replacement_min_score):
+            return False
+
+        candidates: list[tuple[float, float, float, Position]] = []
+        for position in list(self.tracker.positions.values()):
+            if not self._is_sideways_position_candidate(
+                position,
+                float(self.config.sideways_replacement_min_age_minutes),
+                float(self.config.sideways_replacement_max_roi_pct),
+            ):
+                continue
+            old_score = self._position_entry_score_value(position)
+            score_gap = new_score - old_score
+            if score_gap < float(self.config.sideways_replacement_score_gap) and new_score < 95.0:
+                continue
+            candidates.append((self._position_roi_pct(position), old_score, -self._position_age_minutes(position), position))
+
+        if not candidates:
+            return False
+
+        _, old_score, _, weakest = sorted(candidates, key=lambda item: (item[0], item[1], item[2]))[0]
+        logger.warning(
+            f"🔁 机会替换：{symbol} score={new_score:.1f} 替换横盘仓 {weakest.symbol} "
+            f"score={old_score:.1f} age={self._position_age_minutes(weakest):.0f}m "
+            f"roi={self._position_roi_pct(weakest):+.2f}%"
+        )
+        closed = self.execute_exit(weakest.symbol, "SIDEWAYS_REPLACED_BY_STRONG_SIGNAL")
+        return bool(closed and self.tracker.get_open_count() < int(self.config.max_open_positions))
+
     def _position_protection_status(self, position: Position) -> dict[str, Any]:
         stop_loss_ok = bool(position.stop_loss_order_id)
         take_profit_ids = [int(x) for x in position.take_profit_order_ids if x]
