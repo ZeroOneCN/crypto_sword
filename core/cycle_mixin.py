@@ -169,7 +169,11 @@ class CycleMixin:
             or (0 < payoff_ratio < 1.0)
         )
         hard_day = closed >= 3 and total_pnl < 0 and (profit_factor < 0.70 or payoff_ratio < 0.70)
-        if hard_day:
+        entry_limit_enabled = bool(getattr(self.config, "daily_entry_limit_enabled", False))
+        if not entry_limit_enabled:
+            soft_cap = int(getattr(self.config, "max_daily_entries", 15) or 15)
+            cap_mode = "unlimited"
+        elif hard_day:
             soft_cap = min(self.config.max_daily_entries, int(getattr(self.config, "hard_daily_entries", 2) or 2))
             cap_mode = "deep_defensive"
         elif weak_day:
@@ -183,6 +187,7 @@ class CycleMixin:
             "today": today,
             "daily_entries": max(local_entries, db_entries),
             "exception_entries": max(local_exceptions, db_exceptions),
+            "entry_limit_enabled": entry_limit_enabled,
             "weak_day": weak_day,
             "hard_day": hard_day,
             "soft_cap": max(1, soft_cap),
@@ -269,23 +274,25 @@ class CycleMixin:
         """Reject marginal entries before order execution to stop over-trading."""
         daily_entries = int(snapshot.get("daily_entries", 0) or 0)
         max_daily_entries = int(getattr(self.config, "max_daily_entries", 8) or 8)
+        entry_limit_enabled = bool(snapshot.get("entry_limit_enabled", getattr(self.config, "daily_entry_limit_enabled", False)))
 
-        if daily_entries >= max_daily_entries:
-            return f"今日开仓数已达上限 {daily_entries}/{max_daily_entries}"
+        if entry_limit_enabled:
+            if daily_entries >= max_daily_entries:
+                return f"今日开仓数已达上限 {daily_entries}/{max_daily_entries}"
 
-        soft_cap = int(snapshot.get("soft_cap", max_daily_entries) or max_daily_entries)
-        if daily_entries >= soft_cap:
-            override_reason = self._soft_cap_override_reason(signal, snapshot)
-            if override_reason:
-                signal["_entry_gate_override"] = "soft_cap_override"
-                signal["_entry_gate_note"] = override_reason
-                logger.info(f"Entry soft cap override {signal.get('symbol', '')}: {override_reason}")
-                return ""
-            return (
-                f"日内{snapshot.get('cap_mode', 'standard')}限单 {daily_entries}/{soft_cap}，"
-                f"仅王炸/神级评分信号可破例 | PF={float(snapshot.get('profit_factor', 0) or 0):.2f} "
-                f"盈亏比={float(snapshot.get('payoff_ratio', 0) or 0):.2f}"
-            )
+            soft_cap = int(snapshot.get("soft_cap", max_daily_entries) or max_daily_entries)
+            if daily_entries >= soft_cap:
+                override_reason = self._soft_cap_override_reason(signal, snapshot)
+                if override_reason:
+                    signal["_entry_gate_override"] = "soft_cap_override"
+                    signal["_entry_gate_note"] = override_reason
+                    logger.info(f"Entry soft cap override {signal.get('symbol', '')}: {override_reason}")
+                    return ""
+                return (
+                    f"日内{snapshot.get('cap_mode', 'standard')}限单 {daily_entries}/{soft_cap}，"
+                    f"仅王炸/神级评分信号可破例 | PF={float(snapshot.get('profit_factor', 0) or 0):.2f} "
+                    f"盈亏比={float(snapshot.get('payoff_ratio', 0) or 0):.2f}"
+                )
 
         score = self._signal_score_value(signal)
         min_score = float(getattr(self.config, "min_signal_score_for_entry", 82.0) or 82.0)

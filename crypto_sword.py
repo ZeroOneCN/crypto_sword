@@ -421,6 +421,7 @@ def main():
     parser.add_argument("--max-position-pct", type=float, default=25.0, help="Max notional position size (%% of balance)")
     parser.add_argument("--max-total-exposure", type=float, default=120.0, help="Max total notional exposure (%% of balance)")
     parser.add_argument("--max-daily-loss", type=float, default=0.0, help="Max daily loss (%%), 0 disables daily loss circuit breaker")
+    parser.add_argument("--daily-entry-limit", action="store_true", help="Enable daily entry count throttle (disabled by default)")
     parser.add_argument("--max-daily-entries", type=int, default=8, help="Max new entries per day")
     parser.add_argument("--max-entries-per-cycle", type=int, default=1, help="Max new entries per scan cycle")
     parser.add_argument("--weak-daily-entries", type=int, default=4, help="Soft cap when daily stats are weak")
@@ -480,6 +481,7 @@ def main():
         max_total_exposure_pct=max(args.max_position_pct, args.max_total_exposure),
         max_daily_loss_pct=args.max_daily_loss,
         max_open_positions=args.max_positions,
+        daily_entry_limit_enabled=args.daily_entry_limit,
         max_daily_entries=args.max_daily_entries,
         max_entries_per_cycle=args.max_entries_per_cycle,
         weak_daily_entries=args.weak_daily_entries,
