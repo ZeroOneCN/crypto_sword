@@ -196,19 +196,9 @@ class CycleMixin:
     def _soft_cap_override_reason(self, signal: dict[str, Any], snapshot: dict[str, Any]) -> str:
         max_exceptions = int(getattr(self.config, "daily_exception_entries", 0) or 0)
         used_exceptions = int(snapshot.get("exception_entries", 0) or 0)
-        if max_exceptions <= 0:
-            return ""
-        if used_exceptions >= max_exceptions:
-            return ""
 
         score = self._signal_score_value(signal)
-        if score < float(getattr(self.config, "exception_entry_score", 95.0) or 95.0):
-            return ""
-
         strategy_line = str(signal.get("strategy_line", "") or "")
-        if strategy_line != "趋势突破线":
-            return ""
-
         metrics = signal.get("metrics") or {}
         oi_funding = signal.get("oi_funding") or {}
 
@@ -229,6 +219,33 @@ class CycleMixin:
         change_24h = abs(_metric("change_24h_pct", "price_change_pct"))
         oi_change = abs(_metric("oi_24h_pct", "oi_change_pct"))
         funding = abs(_metric("funding_rate", "funding_current"))
+
+        score_override_score = float(getattr(self.config, "defensive_score_override_score", 95.0) or 95.0)
+        score_override_limit = int(getattr(self.config, "defensive_score_override_daily_limit", max_exceptions) or max_exceptions)
+        score_override_max_oi = float(getattr(self.config, "defensive_score_override_max_oi_pct", 120.0) or 120.0)
+        score_override_max_funding = float(
+            getattr(self.config, "defensive_score_override_max_abs_funding_rate", 0.003) or 0.003
+        )
+        if (
+            score >= score_override_score
+            and strategy_line == "趋势突破线"
+            and used_exceptions < score_override_limit
+            and (oi_change <= 0 or oi_change <= score_override_max_oi)
+            and (funding <= 0 or funding <= score_override_max_funding)
+        ):
+            return (
+                f"神级评分破例 {used_exceptions + 1}/{score_override_limit} "
+                f"评分={score:.1f} 24h={change_24h:.1f}% OI={oi_change:.1f}% Funding={funding:.4%}"
+            )
+
+        if max_exceptions <= 0:
+            return ""
+        if used_exceptions >= max_exceptions:
+            return ""
+        if score < float(getattr(self.config, "exception_entry_score", 95.0) or 95.0):
+            return ""
+        if strategy_line != "趋势突破线":
+            return ""
 
         min_change = float(getattr(self.config, "exception_entry_min_change_pct", 8.0) or 8.0)
         max_change = float(getattr(self.config, "exception_entry_max_change_pct", 35.0) or 35.0)
@@ -266,7 +283,7 @@ class CycleMixin:
                 return ""
             return (
                 f"日内{snapshot.get('cap_mode', 'standard')}限单 {daily_entries}/{soft_cap}，"
-                f"仅王炸信号可破例 | PF={float(snapshot.get('profit_factor', 0) or 0):.2f} "
+                f"仅王炸/神级评分信号可破例 | PF={float(snapshot.get('profit_factor', 0) or 0):.2f} "
                 f"盈亏比={float(snapshot.get('payoff_ratio', 0) or 0):.2f}"
             )
 

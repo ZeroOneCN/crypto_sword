@@ -38,6 +38,10 @@ class TradingConfig:
         exception_entry_min_oi_pct: float = 20.0,
         exception_entry_max_oi_pct: float = 85.0,
         exception_entry_max_abs_funding_rate: float = 0.0025,
+        defensive_score_override_score: float = 95.0,
+        defensive_score_override_daily_limit: int = 5,
+        defensive_score_override_max_oi_pct: float = 120.0,
+        defensive_score_override_max_abs_funding_rate: float = 0.003,
         min_signal_score_for_entry: float = 82.0,
         min_signal_score_defensive: float = 90.0,
         trailing_stop_pct: float = 8.0,
@@ -163,6 +167,10 @@ class TradingConfig:
         self.exception_entry_min_oi_pct = max(0.0, float(exception_entry_min_oi_pct))
         self.exception_entry_max_oi_pct = max(self.exception_entry_min_oi_pct, float(exception_entry_max_oi_pct))
         self.exception_entry_max_abs_funding_rate = max(0.0, float(exception_entry_max_abs_funding_rate))
+        self.defensive_score_override_score = max(0.0, float(defensive_score_override_score))
+        self.defensive_score_override_daily_limit = max(self.daily_exception_entries, int(defensive_score_override_daily_limit))
+        self.defensive_score_override_max_oi_pct = max(0.0, float(defensive_score_override_max_oi_pct))
+        self.defensive_score_override_max_abs_funding_rate = max(0.0, float(defensive_score_override_max_abs_funding_rate))
         self.min_signal_score_for_entry = max(0.0, float(min_signal_score_for_entry))
         self.min_signal_score_defensive = max(self.min_signal_score_for_entry, float(min_signal_score_defensive))
         self.trailing_stop_pct = trailing_stop_pct
