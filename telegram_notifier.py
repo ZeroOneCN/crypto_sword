@@ -342,6 +342,8 @@ def _format_close_reason_label(reason: Any) -> str:
         "ENTRY_PROTECTION_FAILED": "开仓保护失败回滚",
         "SIDEWAYS_TIMEOUT": "横盘超时退出",
         "SIDEWAYS_REPLACED_BY_STRONG_SIGNAL": "横盘仓位被强信号替换",
+        "EARLY_PROFIT_EXCHANGE": "提前微利退出（未达TP1）",
+        "EARLY_PROFIT": "提前微利退出（未达TP1）",
         "EXCHANGE_REALIZED_EXCHANGE": "交易所已实现盈亏同步",
         "EXCHANGE_REALIZED": "交易所已实现盈亏同步",
         "FILLED": "完全成交",
@@ -361,6 +363,8 @@ def _format_close_reason_label(reason: Any) -> str:
         return "追踪止损触发"
     if "EXCHANGE_REALIZED" in key:
         return "交易所已实现盈亏同步"
+    if "EARLY_PROFIT" in key:
+        return "提前微利退出（未达TP1）"
     return key if key else "未知原因"
 
 

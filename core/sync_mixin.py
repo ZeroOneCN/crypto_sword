@@ -122,6 +122,14 @@ class SyncMixin:
     ):
         if filled_qty <= 0:
             return
+        if not self._tp_fill_price_is_valid(position, fill_price):
+            target_price = self._take_profit_target_for_level(position)
+            logger.warning(
+                f"🛑 {position.symbol} TP成交回报价格未达目标，拒绝按分批止盈处理："
+                f"fill={fill_price:.8f} target={target_price:.8f} order={order_id}"
+            )
+            self._request_state_sync_from_ws("TP_FILL_BELOW_TARGET", position.symbol)
+            return
         if trade_key and trade_key in position.processed_tp_trade_keys:
             if order_id in position.take_profit_order_ids:
                 position.take_profit_order_ids = [oid for oid in position.take_profit_order_ids if oid != order_id]
@@ -197,8 +205,14 @@ class SyncMixin:
         if live_qty + 1e-9 < position.quantity:
             reduced_qty = position.quantity - live_qty
             current_price = self.get_current_prices([symbol]).get(symbol, position.take_profit_price or position.entry_price)
-            self._notify_partial_take_profit(position, reduced_qty, live_qty, current_price)
-            self._move_stop_to_breakeven(position, live_qty)
+            if self._tp_fill_price_is_valid(position, current_price):
+                self._notify_partial_take_profit(position, reduced_qty, live_qty, current_price)
+                self._move_stop_to_breakeven(position, live_qty)
+            else:
+                logger.warning(
+                    f"🛑 {symbol} 仓位减少但价格未达TP，跳过分批止盈/保本移动："
+                    f"price={current_price:.8f} target={self._take_profit_target_for_level(position):.8f}"
+                )
 
         current_price = self.get_current_prices([symbol]).get(symbol, 0.0)
         self._apply_live_position_snapshot(
@@ -629,7 +643,7 @@ class SyncMixin:
                 close_summary = self._fetch_exchange_realized_close_summary(position)
                 if close_summary:
                     exit_price, pnl, pnl_pct, remaining_pnl = close_summary
-                    inferred_reason = "EXCHANGE_REALIZED"
+                    inferred_reason = self._infer_exchange_close_reason(position, exit_price, pnl)
                 else:
                     close_summary = self._close_summary_from_exchange_realized(
                         position,
@@ -637,7 +651,7 @@ class SyncMixin:
                     )
                     if close_summary:
                         exit_price, pnl, pnl_pct, remaining_pnl = close_summary
-                        inferred_reason = "EXCHANGE_REALIZED"
+                        inferred_reason = self._infer_exchange_close_reason(position, exit_price, pnl)
                     else:
                         current_price = self.get_current_prices([symbol]).get(symbol, position.entry_price)
                         if position.side == "BUY":
@@ -709,8 +723,14 @@ class SyncMixin:
                 reduced_qty = position.quantity - live_qty
                 logger.info(f"🔆 {symbol} 交易所已部分止盈：减少 {reduced_qty:.6f}，剩余 {live_qty:.6f}")
                 current_price = self.get_current_prices([symbol]).get(symbol, position.take_profit_price)
-                self._notify_partial_take_profit(position, reduced_qty, live_qty, current_price)
-                self._move_stop_to_breakeven(position, live_qty)
+                if self._tp_fill_price_is_valid(position, current_price):
+                    self._notify_partial_take_profit(position, reduced_qty, live_qty, current_price)
+                    self._move_stop_to_breakeven(position, live_qty)
+                else:
+                    logger.warning(
+                        f"🛑 {symbol} REST发现仓位减少但价格未达TP，跳过分批止盈/保本移动："
+                        f"price={current_price:.8f} target={self._take_profit_target_for_level(position):.8f}"
+                    )
             self._apply_live_position_snapshot(position, live_pos, source="rest_sync")
             self._ensure_position_protection(position)
             self._sync_protective_order_snapshot(position)

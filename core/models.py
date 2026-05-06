@@ -83,6 +83,9 @@ class TradingConfig:
         oi_funding_cache_sec: int = 120,
         breakeven_after_tp: bool = True,
         breakeven_offset_pct: float = 0.5,
+        tp_fill_price_tolerance_pct: float = 0.35,
+        pre_tp_micro_exit_guard_enabled: bool = True,
+        pre_tp_micro_exit_guard_min_roi_pct: float = 0.2,
         sideways_management_enabled: bool = True,
         sideways_defense_after_minutes: int = 90,
         sideways_exit_after_minutes: int = 180,
@@ -213,6 +216,9 @@ class TradingConfig:
         self.oi_funding_cache_sec = max(30, int(oi_funding_cache_sec))
         self.breakeven_after_tp = breakeven_after_tp
         self.breakeven_offset_pct = breakeven_offset_pct
+        self.tp_fill_price_tolerance_pct = max(0.0, float(tp_fill_price_tolerance_pct))
+        self.pre_tp_micro_exit_guard_enabled = pre_tp_micro_exit_guard_enabled
+        self.pre_tp_micro_exit_guard_min_roi_pct = max(0.0, float(pre_tp_micro_exit_guard_min_roi_pct))
         self.sideways_management_enabled = sideways_management_enabled
         self.sideways_defense_after_minutes = max(1, int(sideways_defense_after_minutes))
         self.sideways_exit_after_minutes = max(0, int(sideways_exit_after_minutes))

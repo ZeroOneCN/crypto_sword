@@ -497,6 +497,66 @@ class ExecutionMixin:
             or float(getattr(position, "exchange_realized_quantity", 0.0) or 0.0) > 0
         )
 
+    def _take_profit_target_for_level(self, position: Position, level_index: int | None = None) -> float:
+        targets = sorted(
+            [target for target in (position.take_profit_targets or []) if float(target.get("price", 0) or 0) > 0],
+            key=lambda item: int(item.get("level", 0) or 0),
+        )
+        if targets:
+            if level_index is None:
+                level_index = min(max(int(getattr(position, "partial_tp_count", 0) or 0), 0), len(targets) - 1)
+            return float(targets[level_index].get("price", 0) or 0)
+        return float(position.take_profit_price or 0.0)
+
+    def _price_reaches_take_profit(self, position: Position, price: float, target_price: float, tolerance_pct: float = 0.0) -> bool:
+        if price <= 0 or target_price <= 0:
+            return False
+        tolerance = max(0.0, float(tolerance_pct)) / 100.0
+        if position.side == "BUY":
+            return price >= target_price * (1 - tolerance)
+        return price <= target_price * (1 + tolerance)
+
+    def _position_reached_tp1(self, position: Position, price: float | None = None, tolerance_pct: float = 0.0) -> bool:
+        if self._position_has_taken_profit(position):
+            return True
+        target_price = self._take_profit_target_for_level(position, 0)
+        current_price = float(price if price is not None else (position.current_price or 0.0))
+        return self._price_reaches_take_profit(position, current_price, target_price, tolerance_pct)
+
+    def _pre_tp_micro_exit_guard_blocks(self, position: Position, reason: str, price: float | None = None) -> bool:
+        if not getattr(self.config, "pre_tp_micro_exit_guard_enabled", True):
+            return False
+        if reason not in {"SIDEWAYS_TIMEOUT", "SIDEWAYS_REPLACED_BY_STRONG_SIGNAL"}:
+            return False
+        if self._position_has_taken_profit(position):
+            return False
+        roi_pct = self._position_roi_pct(position)
+        min_roi = float(getattr(self.config, "pre_tp_micro_exit_guard_min_roi_pct", 0.2) or 0.0)
+        if roi_pct <= min_roi:
+            return False
+        if self._position_reached_tp1(position, price=price, tolerance_pct=0.0):
+            return False
+        return True
+
+    def _tp_fill_price_is_valid(self, position: Position, fill_price: float) -> bool:
+        target_price = self._take_profit_target_for_level(position)
+        tolerance_pct = float(getattr(self.config, "tp_fill_price_tolerance_pct", 0.35) or 0.0)
+        return self._price_reaches_take_profit(position, fill_price, target_price, tolerance_pct)
+
+    def _infer_exchange_close_reason(self, position: Position, exit_price: float, pnl: float) -> str:
+        if exit_price <= 0:
+            return "EXCHANGE_REALIZED"
+        if self._position_reached_tp1(position, price=exit_price, tolerance_pct=float(getattr(self.config, "tp_fill_price_tolerance_pct", 0.35) or 0.0)):
+            return "TAKE_PROFIT"
+        if position.current_stop > 0:
+            if position.side == "BUY" and exit_price <= position.current_stop * 1.003:
+                return "STOP_LOSS"
+            if position.side != "BUY" and exit_price >= position.current_stop * 0.997:
+                return "STOP_LOSS"
+        if pnl > 0:
+            return "EARLY_PROFIT"
+        return "EXCHANGE_REALIZED"
+
     def _is_sideways_position_candidate(
         self,
         position: Position,
@@ -615,6 +675,14 @@ class ExecutionMixin:
             if not self.tracker.get_position(symbol):
                 continue
             if exit_after > 0 and self._is_sideways_position_candidate(position, exit_after, max_roi):
+                if self._pre_tp_micro_exit_guard_blocks(position, "SIDEWAYS_TIMEOUT"):
+                    logger.warning(
+                        f"🛑 {symbol} 横盘微利退出被拦截："
+                        f"age={self._position_age_minutes(position):.0f}m "
+                        f"roi={self._position_roi_pct(position):+.2f}% 未达TP1"
+                    )
+                    self._move_stop_to_sideways_defense(position)
+                    continue
                 logger.warning(
                     f"⏳ {symbol} 横盘超时退出："
                     f"age={self._position_age_minutes(position):.0f}m "
@@ -654,6 +722,8 @@ class ExecutionMixin:
                 float(self.config.sideways_replacement_min_age_minutes),
                 float(self.config.sideways_replacement_max_roi_pct),
             ):
+                continue
+            if self._pre_tp_micro_exit_guard_blocks(position, "SIDEWAYS_REPLACED_BY_STRONG_SIGNAL"):
                 continue
             old_score = self._position_entry_score_value(position)
             score_gap = new_score - old_score
@@ -1911,6 +1981,14 @@ class ExecutionMixin:
         except Exception:
             current_price = 0
         self._record_latency_step(latency_steps, "price_fetch", step_started)
+
+        if self._pre_tp_micro_exit_guard_blocks(position, reason, price=current_price):
+            logger.warning(
+                f"🛑 {symbol} 主动微利平仓被拦截：reason={reason} "
+                f"price={current_price:.8f} roi={self._position_roi_pct(position):+.2f}% 未达TP1"
+            )
+            self._emit_latency_trace("execute_exit_blocked_pre_tp", trace_started, latency_steps, symbol=symbol)
+            return False
 
         close_side = "SELL" if position.side == "BUY" else "BUY"
         position_side = "LONG" if position.side == "BUY" else "SHORT"
