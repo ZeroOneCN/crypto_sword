@@ -150,8 +150,8 @@ class OiFundingService:
 
         min_oi_change = float(getattr(config, "oi_funding_min_oi_change_pct", 8.0))
         turn_bonus = float(getattr(config, "oi_funding_turn_bonus", 4.0))
-        rising_bonus = float(getattr(config, "oi_funding_rising_bonus", 8.0))
-        bonus_cap = float(getattr(config, "oi_funding_bonus_cap", 12.0))
+        rising_bonus = float(getattr(config, "oi_funding_rising_bonus", 6.0))
+        bonus_cap = float(getattr(config, "oi_funding_bonus_cap", 8.0))
         cache_sec = float(getattr(config, "oi_funding_cache_sec", 120.0))
 
         funding_now = self._fetch_funding_map(cache_sec=max(cache_sec, 300.0))
@@ -232,12 +232,17 @@ class OiFundingService:
             return 0.0
 
         base = float(getattr(signal_score, "total_score", 0.0) or 0.0)
-        total = min(100.0, base + bonus)
+        # v9.8: 乘法权重替代加法 — OI加分按比例放大而非直接加n分
+        # bonus=10 时最多放大 3.3%, bonus=14 时最多放大 4.7%
+        # 避免14分OI加分把86分信号直接推成100分的虚假极高
+        weight = 1.0 + max(0.0, bonus) / 300.0
+        total = min(100.0, base * weight)
         signal_score.total_score = total
 
-        if total >= 70:
+        # 收紧置信度阈值：极高≥90 高≥75（原极高≥70 高≥50）
+        if total >= 90:
             signal_score.confidence = "\u6781\u9ad8"
-        elif total >= 50:
+        elif total >= 75:
             signal_score.confidence = "\u9ad8"
 
         return bonus

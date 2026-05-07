@@ -186,14 +186,14 @@ class ExecutionMixin:
                     "take_profit_mode": "roi",
                     "take_profit_targets": [20.0, 40.0, 70.0],
                     "take_profit_ratios": [0.15, 0.30, 0.55],
-                    "stop_loss_pct": 3.6,
+                    "stop_loss_pct": 4.5,
                 }
             return {
                 "name": "普通趋势",
                 "take_profit_mode": "roi",
                 "take_profit_targets": [15.0, 30.0, 55.0],
                 "take_profit_ratios": [0.20, 0.30, 0.50],
-                "stop_loss_pct": 3.0,
+                "stop_loss_pct": 4.0,
             }
         if strategy_line == "均线二启线":
             return {
@@ -201,7 +201,7 @@ class ExecutionMixin:
                 "take_profit_mode": "roi",
                 "take_profit_targets": [12.0, 24.0, 45.0],
                 "take_profit_ratios": [0.20, 0.30, 0.50],
-                "stop_loss_pct": 2.8,
+                "stop_loss_pct": 3.5,
             }
 
         return {
@@ -209,7 +209,7 @@ class ExecutionMixin:
             "take_profit_mode": "roi",
             "take_profit_targets": [12.0, 24.0, 45.0],
             "take_profit_ratios": [0.20, 0.30, 0.50],
-            "stop_loss_pct": 3.2,
+            "stop_loss_pct": 4.0,
         }
 
     def _strategy_stop_loss_pct(self, strategy_line: str = "") -> float:
