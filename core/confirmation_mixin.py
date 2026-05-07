@@ -493,7 +493,44 @@ class ConfirmationMixin:
             f"评分 {score_total:.1f}，OI {oi_change:+.1f}%，量比 {volume_ratio:.2f}",
         )
 
-    # Keep the original confirmation state-machine body unchanged for behavior stability.
+    def _direct_entry_stage_decision(
+        self,
+        signal: dict[str, Any],
+        *,
+        strategy_line: str,
+        score_total: float,
+    ) -> tuple[bool, str]:
+        """Return whether a fresh signal may bypass the watchlist."""
+        stage = str(signal.get("stage", "") or "")
+        direction = str(signal.get("direction", "") or "")
+        metrics = signal.get("metrics", {}) or {}
+        change_24h = abs(float(metrics.get("change_24h_pct", 0) or 0))
+        range_position = float(metrics.get("range_position_24h_pct", 50) or 50)
+
+        if stage == "mania":
+            if direction == "LONG" and not getattr(self.config, "allow_mania_long_entries", False):
+                return False, "过热阶段禁止追多，等待回踩后二次确认"
+            return False, "过热阶段不直通，等待风险释放后二次确认"
+
+        if stage == "pre_break":
+            return True, ""
+
+        if stage == "confirmed_breakout":
+            min_score = float(getattr(self.config, "confirmed_breakout_direct_score", 95.0))
+            max_change = float(getattr(self.config, "confirmed_breakout_max_change_pct", 25.0))
+            max_range = float(getattr(self.config, "confirmed_breakout_max_range_position_pct", 92.0))
+            if score_total >= min_score and change_24h <= max_change and range_position <= max_range:
+                return True, ""
+            return False, (
+                f"确认突破降权，需评分≥{min_score:.0f}、涨跌幅≤{max_change:.0f}%、"
+                f"区间≤{max_range:.0f}%"
+            )
+
+        if strategy_line == "均线二启线":
+            return True, ""
+        return False, "非优势阶段，等待回踩确认"
+
+    # Entry confirmation state machine.
     def _apply_entry_confirmation(self, signal: dict[str, Any]) -> dict[str, Any]:
         signal["entry_status"] = "ready"
         signal["entry_status_text"] = "确认入场"
@@ -528,13 +565,22 @@ class ConfirmationMixin:
                 initial_note = "首次发现，等待趋势延续确认"
             elif strategy_line == "均线二启线":
                 initial_note = "首次发现，等待回踩守住均线后二次启动"
-            # P0: 超高评分信号直通入场（跳过复杂确认）
-            # 评分≥90极高信噪比，直接开仓避免错过行情
-            if score_total >= 90.0:
-                signal["entry_status"] = "ready"; signal["entry_status_text"] = "神级信号直通入场"; signal["strategy_line"] = strategy_line; signal["watch_stage"] = "神级直通"; signal["entry_note"] = f"评分 {score_total:.1f}，极高信噪比"; signal["confirmation_trend"] = trend; return signal
-            if score_total >= 85.0 and strategy_line == "趋势突破线":
-                signal["entry_status"] = "ready"; signal["entry_status_text"] = "强信号直通入场"; signal["strategy_line"] = strategy_line; signal["watch_stage"] = "强信号直通"; signal["entry_note"] = f"评分 {score_total:.1f}，强动量直通"; signal["confirmation_trend"] = trend; return signal
-            if continuation_ready or momentum_ready or accumulation_ready:
+            direct_stage_ok, direct_block_note = self._direct_entry_stage_decision(
+                signal,
+                strategy_line=strategy_line,
+                score_total=score_total,
+            )
+            if direct_block_note:
+                initial_note = direct_block_note
+            if score_total >= float(getattr(self.config, "god_direct_score", 90.0)) and direct_stage_ok:
+                signal["entry_status"] = "ready"; signal["entry_status_text"] = "优势阶段神级直通"; signal["strategy_line"] = strategy_line; signal["watch_stage"] = "神级直通"; signal["entry_note"] = f"评分 {score_total:.1f}，阶段 {signal.get('stage', '')}"; signal["confirmation_trend"] = trend; return signal
+            if (
+                score_total >= float(getattr(self.config, "pre_break_direct_score", 85.0))
+                and strategy_line == "趋势突破线"
+                and str(signal.get("stage", "") or "") == "pre_break"
+            ):
+                signal["entry_status"] = "ready"; signal["entry_status_text"] = "预突破强信号直通"; signal["strategy_line"] = strategy_line; signal["watch_stage"] = "pre_break主攻"; signal["entry_note"] = f"评分 {score_total:.1f}，预突破阶段优先入场"; signal["confirmation_trend"] = trend; return signal
+            if direct_stage_ok and (continuation_ready or momentum_ready or accumulation_ready):
                 signal["entry_status"] = "ready"; signal["entry_status_text"] = "突破确认入场"; signal["strategy_line"] = "趋势突破线"; signal["watch_stage"] = "首发现直通"; signal["entry_note"] = accumulation_note or momentum_note or continuation_note; signal["confirmation_trend"] = trend; return signal
             if strategy_line == "均线二启线" and ma_reentry_ready:
                 signal["entry_status"] = "ready"; signal["entry_status_text"] = "二启确认入场"; signal["strategy_line"] = "均线二启线"; signal["watch_stage"] = "均线二启"; signal["entry_note"] = ma_reentry_note; signal["confirmation_trend"] = trend; return signal
@@ -553,13 +599,18 @@ class ConfirmationMixin:
             momentum_ready, momentum_note = self._is_momentum_entry_ready(signal, trend, current_price)
             accumulation_ready, accumulation_note = self._is_accumulation_entry_ready(signal, trend, current_price)
             ma_reentry_ready, ma_reentry_note = self._is_ma_reentry_ready(signal, trend, current_price)
-            if momentum_ready:
+            direct_stage_ok, direct_block_note = self._direct_entry_stage_decision(
+                signal,
+                strategy_line=watch.get("strategy_line", self._strategy_line_for_signal(signal)),
+                score_total=score_total,
+            )
+            if direct_stage_ok and momentum_ready:
                 signal["entry_status"] = "ready"; signal["entry_status_text"] = "动量确认入场"; signal["strategy_line"] = "趋势突破线"; signal["watch_stage"] = "动量突破"; signal["entry_note"] = momentum_note; signal["confirmation_trend"] = trend; return signal
-            if accumulation_ready:
+            if direct_stage_ok and accumulation_ready:
                 signal["entry_status"] = "ready"; signal["entry_status_text"] = "吸筹暗流入场"; signal["strategy_line"] = "趋势突破线"; signal["watch_stage"] = "吸筹启动"; signal["entry_note"] = accumulation_note; signal["confirmation_trend"] = trend; return signal
-            if watch.get("strategy_line") == "均线二启线" and ma_reentry_ready:
+            if direct_stage_ok and watch.get("strategy_line") == "均线二启线" and ma_reentry_ready:
                 signal["entry_status"] = "ready"; signal["entry_status_text"] = "二启确认入场"; signal["strategy_line"] = "均线二启线"; signal["watch_stage"] = "均线二启"; signal["entry_note"] = ma_reentry_note; signal["confirmation_trend"] = trend; return signal
-            if watch.get("strategy_line") == "趋势突破线":
+            if direct_stage_ok and watch.get("strategy_line") == "趋势突破线":
                 continuation_ready, continuation_note = self._is_trend_continuation_ready(signal, trend, current_price)
                 if continuation_ready:
                     signal["entry_status"] = "ready"; signal["entry_status_text"] = "突破确认入场"; signal["strategy_line"] = "趋势突破线"; signal["watch_stage"] = "趋势延续"; signal["entry_note"] = continuation_note; signal["confirmation_trend"] = trend; return signal
@@ -568,7 +619,7 @@ class ConfirmationMixin:
                 entry_note = "等待回踩均线后重新站上短均线"
             else:
                 stage_name = "趋势待命" if watch.get("strategy_line") == "趋势突破线" else "回踩等待"
-                entry_note = "等待趋势延续确认" if watch.get("strategy_line") == "趋势突破线" else f"等待至少 {required_pullback:.1f}% 回踩"
+                entry_note = direct_block_note or ("等待趋势延续确认" if watch.get("strategy_line") == "趋势突破线" else f"等待至少 {required_pullback:.1f}% 回踩")
             self._update_watch_state(watch, strategy_line=watch.get("strategy_line", "回踩确认线"), stage_name=stage_name, entry_note=entry_note, required_pullback=required_pullback, current_pullback=pullback_pct, trend=trend)
             signal["entry_status"] = "watch"; signal["entry_status_text"] = "观察中"; signal["strategy_line"] = watch.get("strategy_line", "回踩确认线"); signal["watch_stage"] = stage_name; signal["entry_note"] = entry_note; return signal
         trend = self._load_confirmation_trend(symbol)

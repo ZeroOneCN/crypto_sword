@@ -126,6 +126,7 @@ class CapitalAllocator:
 
         score = _score_value(signal)
         strategy_line = str(signal.get("strategy_line", "") or "")
+        stage = str(signal.get("stage", "") or "")
         direction = str(signal.get("direction", "") or "")
         oi_change = abs(_metric(signal, "oi_24h_pct", "oi_change_pct"))
         funding = _metric(signal, "funding_rate", "funding_current")
@@ -223,6 +224,37 @@ class CapitalAllocator:
             risk_multiplier = min(risk_multiplier, 0.65)
             max_position_multiplier = min(max_position_multiplier, 0.75)
             notes.append(f"评分偏普通 {score:.1f}")
+
+        if stage == "pre_break" and strategy_line == "趋势突破线" and score >= 82.0:
+            risk_multiplier = max(risk_multiplier, 1.0)
+            max_position_multiplier = max(max_position_multiplier, 1.0)
+            notes.append("pre_break主攻阶段")
+        elif stage == "confirmed_breakout":
+            risk_multiplier = min(risk_multiplier, 0.72)
+            max_position_multiplier = min(max_position_multiplier, 0.85)
+            notes.append("确认突破降权")
+        elif stage == "mania":
+            if direction == "LONG" and not bool(getattr(config, "allow_mania_long_entries", False)):
+                return CapitalPlan(
+                    allowed=False,
+                    mode="过热禁追",
+                    reason="mania 过热阶段禁止做多",
+                    leverage=leverage,
+                    risk_per_trade_pct=base_risk,
+                    max_position_pct=base_max_position,
+                    max_total_exposure_pct=base_exposure,
+                    max_correlated_positions=max_correlated,
+                    effective_balance=account_balance,
+                    locked_profit=0.0,
+                    expected_reward_pct=expected_reward_pct,
+                    expected_rr=expected_rr,
+                    min_expected_rr=999.0,
+                    drawdown_pct=drawdown_pct,
+                    notes=["mania过热禁追"],
+                )
+            risk_multiplier = min(risk_multiplier, 0.45)
+            max_position_multiplier = min(max_position_multiplier, 0.60)
+            notes.append("mania过热小仓")
 
         soft_rr_floor = max(1.70, float(getattr(config, "capital_min_expected_rr", 2.0) or 2.0) - 0.25)
         if expected_rr < soft_rr_floor:

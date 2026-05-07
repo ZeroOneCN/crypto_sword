@@ -28,12 +28,15 @@ def monitor_item_signature(item: dict[str, Any]) -> str:
 
 
 def stable_monitor_sort(items: list[dict[str, Any]], order_cache: dict[str, int]) -> list[dict[str, Any]]:
-    def _key(item: dict[str, Any]) -> tuple[int, float, int]:
+    def _key(item: dict[str, Any]) -> tuple[int, int, int, float, int]:
         symbol = str(item.get("symbol", ""))
-        strategy_bonus = 1 if item.get("strategy_line") == "趋势突破线" else 0
+        stage = str(item.get("stage", "") or "")
+        ready_bonus = 2 if item.get("entry_status") == "ready" else 0
+        stage_bonus = {"pre_break": 3, "confirmed_breakout": 1, "mania": -3}.get(stage, 0)
+        strategy_bonus = 1 if item.get("strategy_line") == "趋势突破线" and stage == "pre_break" else 0
         score_total = round(float((item.get("score") or {}).get("total_score", 0) or 0), 1)
         previous_rank = order_cache.get(symbol, 999)
-        return strategy_bonus, score_total, -previous_rank
+        return ready_bonus, stage_bonus, strategy_bonus, score_total, -previous_rank
 
     sorted_items = sorted(items, key=_key, reverse=True)
     order_cache.clear()

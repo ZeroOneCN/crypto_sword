@@ -45,6 +45,12 @@ class TradingConfig:
         defensive_score_override_max_abs_funding_rate: float = 0.003,
         min_signal_score_for_entry: float = 82.0,
         min_signal_score_defensive: float = 90.0,
+        god_direct_score: float = 90.0,
+        pre_break_direct_score: float = 85.0,
+        confirmed_breakout_direct_score: float = 95.0,
+        confirmed_breakout_max_change_pct: float = 25.0,
+        confirmed_breakout_max_range_position_pct: float = 92.0,
+        allow_mania_long_entries: bool = False,
         trailing_stop_pct: float = 8.0,
         trailing_stop_enabled: bool = True,
         scan_top_n: int = 50,
@@ -178,6 +184,12 @@ class TradingConfig:
         self.defensive_score_override_max_abs_funding_rate = max(0.0, float(defensive_score_override_max_abs_funding_rate))
         self.min_signal_score_for_entry = max(0.0, float(min_signal_score_for_entry))
         self.min_signal_score_defensive = max(self.min_signal_score_for_entry, float(min_signal_score_defensive))
+        self.god_direct_score = max(0.0, float(god_direct_score))
+        self.pre_break_direct_score = max(0.0, float(pre_break_direct_score))
+        self.confirmed_breakout_direct_score = max(self.pre_break_direct_score, float(confirmed_breakout_direct_score))
+        self.confirmed_breakout_max_change_pct = max(0.0, float(confirmed_breakout_max_change_pct))
+        self.confirmed_breakout_max_range_position_pct = max(0.0, float(confirmed_breakout_max_range_position_pct))
+        self.allow_mania_long_entries = bool(allow_mania_long_entries)
         self.trailing_stop_pct = trailing_stop_pct
         self.trailing_stop_enabled = trailing_stop_enabled
         self.scan_top_n = scan_top_n

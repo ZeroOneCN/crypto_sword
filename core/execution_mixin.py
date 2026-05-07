@@ -57,11 +57,11 @@ class ExecutionMixin:
 
     def _strategy_take_profit_ratios(self, strategy_line: str, levels_count: int) -> list[float]:
         if strategy_line == "趋势突破线":
-            base_ratios = [0.20, 0.30, 0.50]
+            base_ratios = [0.10, 0.30, 0.60]
         elif strategy_line == "均线二启线":
-            base_ratios = [0.20, 0.30, 0.50]
+            base_ratios = [0.15, 0.35, 0.50]
         else:
-            base_ratios = [0.20, 0.30, 0.50]
+            base_ratios = [0.15, 0.35, 0.50]
         ratios = base_ratios[:levels_count]
         ratio_total = sum(ratios) or 1.0
         return [ratio / ratio_total for ratio in ratios]
@@ -85,6 +85,8 @@ class ExecutionMixin:
     def _is_strong_trend_signal(self, signal: dict[str, Any]) -> bool:
         """Detect high-conviction momentum breakouts for wider profit targets."""
         if str(signal.get("strategy_line", "") or "") != "趋势突破线":
+            return False
+        if str(signal.get("stage", "") or "") == "mania":
             return False
         metrics = signal.get("metrics") or {}
         score_data = signal.get("score") or {}
@@ -111,6 +113,7 @@ class ExecutionMixin:
         score_data = signal.get("score") or {}
         score = float(score_data.get("total_score", score_data.get("total", 0)) if isinstance(score_data, dict) else score_data or 0)
         strategy_line = str(signal.get("strategy_line", "") or "")
+        stage = str(signal.get("stage", "") or "")
         metrics = signal.get("metrics") or {}
         oi_change = abs(float(metrics.get("oi_24h_pct", metrics.get("oi_change_pct", 0)) or 0))
         funding = abs(float(metrics.get("funding_rate", metrics.get("funding_current", 0)) or 0))
@@ -154,11 +157,25 @@ class ExecutionMixin:
             mode = "保护单谨慎"
             reasons.append(f"保护单成功率={protection_ok_rate:.0f}%")
 
-        if strategy_line == "趋势突破线" and score >= 95.0 and oi_change >= 30.0 and funding < self.config.max_abs_funding_rate * 0.60:
+        if (
+            strategy_line == "趋势突破线"
+            and stage == "pre_break"
+            and score >= 95.0
+            and oi_change >= 30.0
+            and funding < self.config.max_abs_funding_rate * 0.60
+        ):
             exposure = min(hard_cap, max(exposure, base_exposure + 20.0))
             max_correlated = max(max_correlated, 4)
             mode = "强信号进攻"
             reasons.append(f"强趋势评分={score:.0f} OI={oi_change:.0f}%")
+        elif stage == "confirmed_breakout":
+            exposure = min(exposure, 140.0)
+            max_correlated = min(max_correlated, 3)
+            reasons.append("确认突破降权")
+        elif stage == "mania":
+            exposure = min(exposure, 100.0)
+            max_correlated = min(max_correlated, 2)
+            reasons.append("过热阶段降权")
         elif score < 72.0:
             exposure = max(min_cap, min(exposure, base_exposure - 40.0))
             max_correlated = min(max_correlated, 4)
@@ -179,36 +196,61 @@ class ExecutionMixin:
     def _exit_profile_for_signal(self, signal: dict[str, Any]) -> dict[str, Any]:
         """Return TP/SL profile for this entry signal."""
         strategy_line = str(signal.get("strategy_line", "") or "")
+        stage = str(signal.get("stage", "") or "")
         if strategy_line == "趋势突破线":
             if self._is_strong_trend_signal(signal):
                 return {
-                    "name": "强趋势",
+                    "name": "强趋势主升",
                     "take_profit_mode": "roi",
-                    "take_profit_targets": [20.0, 40.0, 70.0],
-                    "take_profit_ratios": [0.15, 0.30, 0.55],
-                    "stop_loss_pct": 4.5,
+                    "take_profit_targets": [25.0, 55.0, 100.0],
+                    "take_profit_ratios": [0.10, 0.25, 0.65],
+                    "stop_loss_pct": 4.8,
+                }
+            if stage == "pre_break":
+                return {
+                    "name": "预突破主攻",
+                    "take_profit_mode": "roi",
+                    "take_profit_targets": [18.0, 40.0, 80.0],
+                    "take_profit_ratios": [0.10, 0.30, 0.60],
+                    "stop_loss_pct": 4.2,
+                }
+            if stage == "confirmed_breakout":
+                return {
+                    "name": "确认突破轻仓",
+                    "take_profit_mode": "roi",
+                    "take_profit_targets": [15.0, 35.0, 65.0],
+                    "take_profit_ratios": [0.15, 0.35, 0.50],
+                    "stop_loss_pct": 3.8,
+                }
+            if stage == "mania":
+                return {
+                    "name": "过热反向观察",
+                    "take_profit_mode": "roi",
+                    "take_profit_targets": [10.0, 22.0, 40.0],
+                    "take_profit_ratios": [0.20, 0.35, 0.45],
+                    "stop_loss_pct": 3.0,
                 }
             return {
                 "name": "普通趋势",
                 "take_profit_mode": "roi",
-                "take_profit_targets": [15.0, 30.0, 55.0],
-                "take_profit_ratios": [0.20, 0.30, 0.50],
+                "take_profit_targets": [15.0, 35.0, 65.0],
+                "take_profit_ratios": [0.15, 0.35, 0.50],
                 "stop_loss_pct": 4.0,
             }
         if strategy_line == "均线二启线":
             return {
                 "name": "均线二次启动",
                 "take_profit_mode": "roi",
-                "take_profit_targets": [12.0, 24.0, 45.0],
-                "take_profit_ratios": [0.20, 0.30, 0.50],
+                "take_profit_targets": [14.0, 30.0, 60.0],
+                "take_profit_ratios": [0.15, 0.35, 0.50],
                 "stop_loss_pct": 3.5,
             }
 
         return {
             "name": "默认策略",
             "take_profit_mode": "roi",
-            "take_profit_targets": [12.0, 24.0, 45.0],
-            "take_profit_ratios": [0.20, 0.30, 0.50],
+            "take_profit_targets": [12.0, 28.0, 55.0],
+            "take_profit_ratios": [0.15, 0.35, 0.50],
             "stop_loss_pct": 4.0,
         }
 
@@ -1343,6 +1385,30 @@ class ExecutionMixin:
             score_data = signal.get("score") or {}
             score = float(score_data.get("total_score", score_data.get("total", 0)) if isinstance(score_data, dict) else score_data or 0)
             direction_label = format_direction_label(direction)
+
+            if (
+                str(signal.get("stage", "") or "") == "mania"
+                and direction == "LONG"
+                and not getattr(self.config, "allow_mania_long_entries", False)
+            ):
+                logger.warning(f"entry guard reject {symbol}: mania LONG is disabled")
+                if score >= 85.0:
+                    send_telegram_message(
+                        format_error_msg(
+                            error_type="过热追多拦截",
+                            message=(
+                                "阶段：开仓前阶段过滤\n"
+                                "原因：mania 过热阶段不再允许做多直通，等待回踩后二次确认\n"
+                                f"方向：{direction_label}\n"
+                                f"策略：{strategy_line}｜{exit_profile_name}\n"
+                                f"评分：{score:.1f}"
+                            ),
+                            symbol=symbol,
+                            session_id=session_id,
+                            component="execute_entry",
+                        )
+                    )
+                return None
 
             if not execution_service.should_trade(trading_signal):
                 if score >= 85.0:

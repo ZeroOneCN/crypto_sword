@@ -298,6 +298,14 @@ class CycleMixin:
         min_score = float(getattr(self.config, "min_signal_score_for_entry", 82.0) or 82.0)
         if snapshot.get("weak_day"):
             min_score = max(min_score, float(getattr(self.config, "min_signal_score_defensive", 90.0) or 90.0))
+        stage = str(signal.get("stage", "") or "")
+        direction = str(signal.get("direction", "") or "")
+        if stage == "confirmed_breakout":
+            min_score = max(min_score, 90.0)
+        elif stage == "mania":
+            if direction == "LONG" and not getattr(self.config, "allow_mania_long_entries", False):
+                return "mania过热阶段禁止追多"
+            min_score = max(min_score, 95.0)
         if score < min_score:
             return f"评分不足 {score:.1f} < {min_score:.1f}"
 
