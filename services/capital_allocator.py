@@ -128,6 +128,7 @@ class CapitalAllocator:
         strategy_line = str(signal.get("strategy_line", "") or "")
         stage = str(signal.get("stage", "") or "")
         direction = str(signal.get("direction", "") or "")
+        quality_gate_mode = str(signal.get("_quality_gate_mode", "") or "")
         oi_change = abs(_metric(signal, "oi_24h_pct", "oi_change_pct"))
         funding = _metric(signal, "funding_rate", "funding_current")
         change_24h = _metric(signal, "change_24h_pct", "price_change_pct")
@@ -255,6 +256,19 @@ class CapitalAllocator:
             risk_multiplier = min(risk_multiplier, 0.45)
             max_position_multiplier = min(max_position_multiplier, 0.60)
             notes.append("mania过热小仓")
+
+        if quality_gate_mode == "defensive":
+            mode = "曲线防守"
+            risk_multiplier = min(risk_multiplier, 0.55)
+            max_position_multiplier = min(max_position_multiplier, 0.70)
+            max_exposure = min(max_exposure, 90.0)
+            max_correlated = min(max_correlated, 2)
+            notes.append("收益曲线防守降仓")
+        elif quality_gate_mode == "caution":
+            mode = "曲线谨慎" if mode == "标准复利" else mode
+            risk_multiplier = min(risk_multiplier, 0.75)
+            max_position_multiplier = min(max_position_multiplier, 0.85)
+            notes.append("收益曲线谨慎降仓")
 
         soft_rr_floor = max(1.70, float(getattr(config, "capital_min_expected_rr", 2.0) or 2.0) - 0.25)
         if expected_rr < soft_rr_floor:

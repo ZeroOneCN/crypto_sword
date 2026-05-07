@@ -123,6 +123,69 @@ class CycleMixin:
             return float(score_data.get("total_score", score_data.get("total", 0)) or 0)
         return float(score_data or 0)
 
+    def _recent_quality_guard_snapshot(self) -> dict[str, Any]:
+        """Summarize the latest closed trades for adaptive entry quality control."""
+        if not getattr(self.config, "quality_guard_enabled", True):
+            return {"mode": "normal", "reason": "质量守门关闭"}
+
+        lookback = int(getattr(self.config, "quality_guard_lookback_trades", 12) or 12)
+        try:
+            trades = self.db.get_closed_trades(days=7, mode=self.config.mode)[:lookback]
+        except Exception as exc:
+            logger.debug(f"recent quality guard skipped: {exc}")
+            return {"mode": "normal", "reason": "近期交易读取失败"}
+
+        pnls = [float(getattr(item, "pnl", 0.0) or 0.0) for item in trades]
+        count = len(pnls)
+        if count < 4:
+            return {"mode": "normal", "reason": "近期样本不足", "count": count}
+
+        wins = [pnl for pnl in pnls if pnl > 0]
+        losses = [pnl for pnl in pnls if pnl < 0]
+        gross_profit = sum(wins)
+        gross_loss = -sum(losses)
+        profit_factor = gross_profit / gross_loss if gross_loss > 0 else (999.0 if gross_profit > 0 else 0.0)
+        win_rate = len(wins) / count * 100.0
+        total_pnl = sum(pnls)
+        loss_streak = 0
+        for pnl in pnls:
+            if pnl < 0:
+                loss_streak += 1
+                continue
+            break
+        stop_loss_count = sum(1 for item in trades if "STOP_LOSS" in str(getattr(item, "exit_reason", "") or ""))
+        stop_loss_ratio = stop_loss_count / count * 100.0
+
+        min_pf = float(getattr(self.config, "quality_guard_min_profit_factor", 0.85) or 0.85)
+        min_wr = float(getattr(self.config, "quality_guard_min_win_rate", 40.0) or 40.0)
+        max_loss_streak = int(getattr(self.config, "quality_guard_max_loss_streak", 3) or 3)
+
+        mode = "normal"
+        reasons: list[str] = []
+        if loss_streak >= max_loss_streak:
+            mode = "defensive"
+            reasons.append(f"连续亏损 {loss_streak} 笔")
+        if count >= 6 and total_pnl < 0 and (profit_factor < min_pf or win_rate < min_wr):
+            mode = "defensive"
+            reasons.append(f"近{count}笔 PF={profit_factor:.2f} 胜率={win_rate:.0f}%")
+        elif count >= 6 and (total_pnl < 0 or profit_factor < 1.05 or win_rate < 45.0):
+            mode = "caution" if mode == "normal" else mode
+            reasons.append(f"近{count}笔走弱 PF={profit_factor:.2f} 胜率={win_rate:.0f}%")
+        if stop_loss_ratio >= 50.0 and total_pnl < 0:
+            mode = "defensive"
+            reasons.append(f"止损占比 {stop_loss_ratio:.0f}%")
+
+        return {
+            "mode": mode,
+            "reason": "；".join(reasons) if reasons else "近期交易正常",
+            "count": count,
+            "total_pnl": round(total_pnl, 4),
+            "profit_factor": round(profit_factor, 2),
+            "win_rate": round(win_rate, 1),
+            "loss_streak": loss_streak,
+            "stop_loss_ratio": round(stop_loss_ratio, 1),
+        }
+
     def _build_entry_gate_snapshot(self) -> dict[str, Any]:
         """Build daily throttle state before trying new entries."""
         today = datetime.now().date().isoformat()
@@ -169,6 +232,13 @@ class CycleMixin:
             or (0 < payoff_ratio < 1.0)
         )
         hard_day = closed >= 3 and total_pnl < 0 and (profit_factor < 0.70 or payoff_ratio < 0.70)
+        quality_guard = self._recent_quality_guard_snapshot()
+        quality_mode = str(quality_guard.get("mode", "normal") or "normal")
+        if quality_mode == "defensive":
+            weak_day = True
+            hard_day = True
+        elif quality_mode == "caution":
+            weak_day = True
         entry_limit_enabled = bool(getattr(self.config, "daily_entry_limit_enabled", False))
         if not entry_limit_enabled:
             soft_cap = int(getattr(self.config, "max_daily_entries", 15) or 15)
@@ -196,6 +266,9 @@ class CycleMixin:
             "total_pnl": total_pnl,
             "profit_factor": profit_factor,
             "payoff_ratio": payoff_ratio,
+            "quality_mode": quality_mode,
+            "quality_reason": quality_guard.get("reason", ""),
+            "quality_guard": quality_guard,
         }
 
     def _soft_cap_override_reason(self, signal: dict[str, Any], snapshot: dict[str, Any]) -> str:
@@ -275,6 +348,65 @@ class CycleMixin:
         daily_entries = int(snapshot.get("daily_entries", 0) or 0)
         max_daily_entries = int(getattr(self.config, "max_daily_entries", 8) or 8)
         entry_limit_enabled = bool(snapshot.get("entry_limit_enabled", getattr(self.config, "daily_entry_limit_enabled", False)))
+        score = self._signal_score_value(signal)
+        stage = str(signal.get("stage", "") or "")
+        direction = str(signal.get("direction", "") or "")
+        strategy_line = str(signal.get("strategy_line", "") or "")
+        metrics = signal.get("metrics") or {}
+        oi_funding = signal.get("oi_funding") or {}
+
+        def _metric(*keys: str) -> float:
+            for key in keys:
+                if key in metrics:
+                    try:
+                        return float(metrics.get(key, 0) or 0)
+                    except Exception:
+                        return 0.0
+                if key in oi_funding:
+                    try:
+                        return float(oi_funding.get(key, 0) or 0)
+                    except Exception:
+                        return 0.0
+            return 0.0
+
+        change_24h = abs(_metric("change_24h_pct", "price_change_pct"))
+        oi_change = abs(_metric("oi_24h_pct", "oi_change_pct"))
+        funding = abs(_metric("funding_rate", "funding_current"))
+        range_position = float(metrics.get("range_position_24h_pct", 50) or 50)
+        quality_mode = str(snapshot.get("quality_mode", "normal") or "normal")
+        quality_reason = str(snapshot.get("quality_reason", "") or "")
+
+        if quality_mode == "defensive":
+            min_score = float(getattr(self.config, "quality_guard_defensive_min_score", 92.0) or 92.0)
+            max_change = float(getattr(self.config, "quality_guard_defensive_max_change_pct", 18.0) or 18.0)
+            max_oi = float(getattr(self.config, "quality_guard_defensive_max_oi_pct", 70.0) or 70.0)
+            max_range = float(getattr(self.config, "quality_guard_defensive_max_range_position_pct", 88.0) or 88.0)
+            if stage != "pre_break" or strategy_line != "趋势突破线":
+                return f"收益曲线防守：仅允许pre_break主攻 | {quality_reason}"
+            if score < min_score:
+                return f"收益曲线防守：评分不足 {score:.1f} < {min_score:.1f} | {quality_reason}"
+            if not (5.0 <= change_24h <= max_change):
+                return f"收益曲线防守：24h涨跌幅 {change_24h:.1f}% 不在 5-{max_change:.0f}%"
+            if oi_change <= 0 or oi_change > max_oi:
+                return f"收益曲线防守：OI {oi_change:.1f}% 超出上限 {max_oi:.0f}%"
+            if range_position > max_range:
+                return f"收益曲线防守：区间位置 {range_position:.1f}% > {max_range:.0f}%"
+            if funding > self.config.max_abs_funding_rate * 0.70:
+                return f"收益曲线防守：费率过热 {funding:.4%}"
+            signal["_quality_gate_mode"] = "defensive"
+            signal["_quality_gate_note"] = quality_reason
+
+        elif quality_mode == "caution":
+            if stage == "mania":
+                return f"收益曲线谨慎：过热阶段跳过 | {quality_reason}"
+            if stage == "confirmed_breakout" and (
+                score < float(getattr(self.config, "confirmed_breakout_direct_score", 98.0) or 98.0)
+                or change_24h > float(getattr(self.config, "confirmed_breakout_max_change_pct", 18.0) or 18.0)
+                or range_position > float(getattr(self.config, "confirmed_breakout_max_range_position_pct", 85.0) or 85.0)
+            ):
+                return f"收益曲线谨慎：确认突破降权等待 | {quality_reason}"
+            signal["_quality_gate_mode"] = "caution"
+            signal["_quality_gate_note"] = quality_reason
 
         if entry_limit_enabled:
             if daily_entries >= max_daily_entries:
@@ -294,12 +426,9 @@ class CycleMixin:
                     f"盈亏比={float(snapshot.get('payoff_ratio', 0) or 0):.2f}"
                 )
 
-        score = self._signal_score_value(signal)
         min_score = float(getattr(self.config, "min_signal_score_for_entry", 82.0) or 82.0)
         if snapshot.get("weak_day"):
             min_score = max(min_score, float(getattr(self.config, "min_signal_score_defensive", 90.0) or 90.0))
-        stage = str(signal.get("stage", "") or "")
-        direction = str(signal.get("direction", "") or "")
         if stage == "confirmed_breakout":
             min_score = max(min_score, 90.0)
         elif stage == "mania":
