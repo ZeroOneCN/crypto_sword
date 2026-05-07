@@ -321,19 +321,34 @@ class SyncMixin:
             return None
 
         close_side = "SELL" if position.side == "BUY" else "BUY"
+        expected_position_side = "LONG" if position.side == "BUY" else "SHORT"
         realized_pnl = 0.0
         exit_value = 0.0
         qty = 0.0
-        for trade in trades or []:
+        target_qty = max(float(position.initial_quantity or 0.0), float(position.quantity or 0.0))
+        sorted_trades = sorted(
+            trades or [],
+            key=lambda item: int(item.get("time", item.get("T", 0)) or 0),
+        )
+        for trade in sorted_trades:
             if str(trade.get("side", "")).upper() != close_side:
+                continue
+            trade_position_side = str(trade.get("positionSide", "") or "").upper()
+            if trade_position_side and trade_position_side not in {expected_position_side, "BOTH"}:
                 continue
             trade_qty = abs(float(trade.get("qty", 0) or 0))
             if trade_qty <= 0:
                 continue
+            if target_qty > 0 and qty >= target_qty * 0.999:
+                break
+            used_qty = min(trade_qty, max(target_qty - qty, 0.0)) if target_qty > 0 else trade_qty
+            if used_qty <= 0:
+                continue
+            fill_ratio = used_qty / trade_qty
             trade_price = float(trade.get("price", 0) or 0)
-            realized_pnl += float(trade.get("realizedPnl", 0) or 0)
-            exit_value += trade_price * trade_qty
-            qty += trade_qty
+            realized_pnl += float(trade.get("realizedPnl", 0) or 0) * fill_ratio
+            exit_value += trade_price * used_qty
+            qty += used_qty
 
         if qty <= 0:
             return None
@@ -342,6 +357,14 @@ class SyncMixin:
         entry_notional = position.entry_price * total_qty
         pnl_pct = realized_pnl / entry_notional * 100 if entry_notional > 0 else 0.0
         remaining_pnl_delta = realized_pnl - float(position.realized_pnl or 0.0)
+        avg_exit_price, pnl_pct = self._repair_close_summary_consistency(
+            position,
+            avg_exit_price,
+            realized_pnl,
+            pnl_pct,
+            source="user_trades",
+            qty=total_qty,
+        )
         return avg_exit_price, realized_pnl, pnl_pct, remaining_pnl_delta
 
     def _parse_trade_notes(self, notes: str) -> dict[str, str]:
@@ -664,6 +687,14 @@ class SyncMixin:
                             current_price,
                         )
 
+                exit_price, pnl_pct = self._repair_close_summary_consistency(
+                    position,
+                    exit_price,
+                    pnl,
+                    pnl_pct,
+                    source="exchange_position_missing",
+                )
+                inferred_reason = self._normalize_close_reason_for_pnl(inferred_reason, pnl)
                 position.exit_price = exit_price
                 position.exit_time = datetime.now()
                 position.exit_reason = f"{inferred_reason}_EXCHANGE"

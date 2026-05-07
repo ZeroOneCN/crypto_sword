@@ -592,9 +592,9 @@ class ExecutionMixin:
             return "TAKE_PROFIT"
         if position.current_stop > 0:
             if position.side == "BUY" and exit_price <= position.current_stop * 1.003:
-                return "STOP_LOSS"
+                return "PROTECTIVE_STOP" if pnl > 0 else "STOP_LOSS"
             if position.side != "BUY" and exit_price >= position.current_stop * 0.997:
-                return "STOP_LOSS"
+                return "PROTECTIVE_STOP" if pnl > 0 else "STOP_LOSS"
         if pnl > 0:
             return "EARLY_PROFIT"
         return "EXCHANGE_REALIZED"
@@ -1125,6 +1125,56 @@ class ExecutionMixin:
         pnl_pct = total_pnl / entry_notional * 100 if entry_notional > 0 else 0.0
         return avg_exit_price, total_pnl, pnl_pct, remaining_pnl
 
+    def _close_price_matches_pnl_direction(self, position: Position, exit_price: float, pnl: float) -> bool:
+        entry = float(position.entry_price or 0.0)
+        if entry <= 0 or exit_price <= 0 or abs(float(pnl or 0.0)) <= 1e-9:
+            return True
+        if position.side == "BUY":
+            return (pnl > 0 and exit_price >= entry) or (pnl < 0 and exit_price <= entry)
+        return (pnl > 0 and exit_price <= entry) or (pnl < 0 and exit_price >= entry)
+
+    def _derive_exit_price_from_pnl(self, position: Position, pnl: float, qty: float | None = None) -> float:
+        entry = float(position.entry_price or 0.0)
+        close_qty = float(qty or position.initial_quantity or position.quantity or 0.0)
+        if entry <= 0 or close_qty <= 0:
+            return 0.0
+        if position.side == "BUY":
+            return max(entry + float(pnl or 0.0) / close_qty, 0.0)
+        return max(entry - float(pnl or 0.0) / close_qty, 0.0)
+
+    def _repair_close_summary_consistency(
+        self,
+        position: Position,
+        exit_price: float,
+        pnl: float,
+        pnl_pct: float,
+        *,
+        source: str = "",
+        qty: float | None = None,
+    ) -> tuple[float, float]:
+        """Keep close notifications internally consistent when exchange sync data is partial/stale."""
+        close_qty = float(qty or position.initial_quantity or position.quantity or 0.0)
+        if not self._close_price_matches_pnl_direction(position, exit_price, pnl):
+            repaired_price = self._derive_exit_price_from_pnl(position, pnl, close_qty)
+            if repaired_price > 0 and self._close_price_matches_pnl_direction(position, repaired_price, pnl):
+                logger.warning(
+                    f"⚠️ {position.symbol} 平仓均价与盈亏方向矛盾，已修正展示价："
+                    f"source={source or '-'} entry={position.entry_price:.8f} "
+                    f"old_exit={exit_price:.8f} repaired_exit={repaired_price:.8f} pnl={pnl:+.6f}"
+                )
+                exit_price = repaired_price
+
+        entry_notional = float(position.entry_price or 0.0) * close_qty
+        if entry_notional > 0:
+            pnl_pct = float(pnl or 0.0) / entry_notional * 100.0
+        return exit_price, pnl_pct
+
+    def _normalize_close_reason_for_pnl(self, reason: str, pnl: float) -> str:
+        reason_text = str(reason or "")
+        if "STOP_LOSS" in reason_text and float(pnl or 0.0) > 0:
+            return reason_text.replace("STOP_LOSS", "PROTECTIVE_STOP")
+        return reason_text
+
     def _close_summary_from_exchange_realized(
         self,
         position: Position,
@@ -1141,6 +1191,14 @@ class ExecutionMixin:
         entry_notional = position.entry_price * total_qty
         pnl_pct = realized_pnl / entry_notional * 100 if entry_notional > 0 else 0.0
         remaining_pnl_delta = realized_pnl - float(position.realized_pnl or 0.0)
+        avg_exit_price, pnl_pct = self._repair_close_summary_consistency(
+            position,
+            avg_exit_price,
+            realized_pnl,
+            pnl_pct,
+            source="exchange_realized_state",
+            qty=total_qty,
+        )
         return avg_exit_price, realized_pnl, pnl_pct, remaining_pnl_delta
 
     def _find_open_trade_for_session(self, symbol: str, session_id: str) -> tuple[Optional[TradeRecord], str]:
@@ -2094,6 +2152,14 @@ class ExecutionMixin:
                     position.quantity,
                     result.executed_price,
                 )
+                exit_price, pnl_pct = self._repair_close_summary_consistency(
+                    position,
+                    exit_price,
+                    pnl,
+                    pnl_pct,
+                    source="active_market_close",
+                )
+                reason = self._normalize_close_reason_for_pnl(reason, pnl)
                 position.exit_price = exit_price
                 position.exit_time = datetime.now()
                 position.exit_reason = reason

@@ -182,9 +182,9 @@ class CapitalAllocator:
 
         if closed >= 3 and total_pnl < 0 and (profit_factor < 1.0 or win_rate < 45.0):
             mode = "防守复利"
-            risk_multiplier = min(risk_multiplier, 0.45)
-            max_position_multiplier = min(max_position_multiplier, 0.70)
-            max_exposure = min(max_exposure, 100.0)
+            risk_multiplier = min(risk_multiplier, 0.60)
+            max_position_multiplier = min(max_position_multiplier, 0.80)
+            max_exposure = min(max_exposure, 110.0)
             max_correlated = min(max_correlated, 3)
             notes.append(f"日内弱势 PF={profit_factor:.2f} 胜率={win_rate:.0f}%")
 
@@ -259,9 +259,9 @@ class CapitalAllocator:
 
         if quality_gate_mode == "defensive":
             mode = "曲线防守"
-            risk_multiplier = min(risk_multiplier, 0.55)
-            max_position_multiplier = min(max_position_multiplier, 0.70)
-            max_exposure = min(max_exposure, 90.0)
+            risk_multiplier = min(risk_multiplier, 0.70)
+            max_position_multiplier = min(max_position_multiplier, 0.85)
+            max_exposure = min(max_exposure, 110.0)
             max_correlated = min(max_correlated, 2)
             notes.append("收益曲线防守降仓")
         elif quality_gate_mode == "caution":

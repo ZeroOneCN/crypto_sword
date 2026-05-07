@@ -330,6 +330,8 @@ def _format_close_reason_label(reason: Any) -> str:
     """Translate close reason codes into concise Chinese labels."""
     key = str(reason or "").upper()
     mapping = {
+        "PROTECTIVE_STOP_EXCHANGE": "防守止损盈利离场",
+        "PROTECTIVE_STOP": "防守止损盈利离场",
         "TAKE_PROFIT_TP_FULL_EXCHANGE": "TP1/TP2/TP3 全部成交｜交易所分批止盈完成",
         "TAKE_PROFIT_EXCHANGE": "交易所止盈完成",
         "TAKE_PROFIT_LOCAL_FALLBACK": "本地止盈兜底",
