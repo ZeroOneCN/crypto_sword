@@ -3,25 +3,23 @@
 This module will grow into a full scanner that:
 - pulls Binance USDT-margined futures public data
 - computes breakout-style metrics
-- classifies stage via token_anomaly_radar.classify_breakout_stage
+- classifies stage via services.stage_classifier.classify_breakout_stage
 
 For now, we start with small, unit-tested metric helpers.
 """
 
 from __future__ import annotations
 
-import importlib.util
 import json
 import logging
 import os
-import sys
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from typing import Any, Tuple
 
-from hermes_paths import hermes_scripts_dir
+from services.stage_classifier import classify_breakout_stage
 
 logger = logging.getLogger(__name__)
 
@@ -199,41 +197,6 @@ def derive_venues_events(
     return venues, events
 
 
-_radar_mod = None
-
-
-def _load_radar_module():
-    """Load token_anomaly_radar module.
-
-    Prefer regular imports (repo-local). If not importable, fall back to
-    `$HERMES_HOME/scripts/token_anomaly_radar.py` for legacy deployments.
-    """
-    global _radar_mod
-    if _radar_mod is not None:
-        return _radar_mod
-
-    try:
-        import token_anomaly_radar as mod  # type: ignore
-
-        _radar_mod = mod
-        return mod
-    except Exception:
-        pass
-
-    module_path = hermes_scripts_dir() / "token_anomaly_radar.py"
-    if not module_path.exists():
-        raise FileNotFoundError(f"token_anomaly_radar.py not found: {module_path}")
-
-    spec = importlib.util.spec_from_file_location("token_anomaly_radar", module_path)
-    if spec is None or spec.loader is None:
-        raise ImportError(f"Failed to load spec for token_anomaly_radar from {module_path}")
-    mod = importlib.util.module_from_spec(spec)
-    sys.modules[spec.name] = mod
-    spec.loader.exec_module(mod)
-    _radar_mod = mod
-    return mod
-
-
 def decide_direction(stage: str, metrics: dict) -> str:
     """Map (stage, metrics) -> trade direction label.
     
@@ -309,8 +272,7 @@ def decide_direction(stage: str, metrics: dict) -> str:
 
 def classify_and_direction(metrics: dict) -> tuple[str, str, str, str]:
     """Return (stage, direction, trigger, risk)."""
-    radar = _load_radar_module()
-    stage, trigger, risk = radar.classify_breakout_stage(metrics)
+    stage, trigger, risk = classify_breakout_stage(metrics)
     direction = decide_direction(stage, metrics)
     return stage, direction, trigger, risk
 
