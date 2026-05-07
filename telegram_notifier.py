@@ -1026,7 +1026,9 @@ def format_scan_monitor_msg(
         strategy_line = item.get("strategy_line", "")
         watch_stage = item.get("watch_stage", "")
 
-        tag = "跟多信号" if direction in {"LONG", "CONSIDER_LONG"} else "跟空信号"
+        is_long_signal = direction in {"LONG", "CONSIDER_LONG"}
+        tag = "跟多信号" if is_long_signal else "跟空信号"
+        signal_emoji = "📈" if is_long_signal else "📉"
         if funding_pct <= -0.5:
             funding_tag = "极负费率"
         elif funding_pct < 0:
@@ -1036,7 +1038,7 @@ def format_scan_monitor_msg(
 
         msg += f"""
 
-🧭 <b>{_escape(tag)} ({_escape(funding_tag)})</b>
+{signal_emoji} <b>{_escape(tag)} ({_escape(funding_tag)})</b>
 •<code>{_escape(symbol)}</code> 评分 <code>{score:.1f}</code> {_escape(str(confidence))}
 •费率 <code>{funding_pct:+.4f}%</code>  价格 <code>{change_24h:+.2f}%</code>
 •OI <code>{oi_24h:+.2f}%</code>  现价 <code>${price:,.6f}</code>"""
