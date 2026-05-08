@@ -868,16 +868,75 @@ class ExecutionMixin:
                 key=lambda item: float(item.get("price", 0) or 0),
                 reverse=position.side != "BUY",
             )
-            for target, order in zip(position.take_profit_targets, sorted_orders):
+            targets = sorted(
+                position.take_profit_targets,
+                key=lambda item: int(item.get("level", 0) or 0),
+            )
+            orders_by_id = {
+                int(order.get("order_id", 0) or 0): order
+                for order in sorted_orders
+                if int(order.get("order_id", 0) or 0) > 0
+            }
+            assigned_order_ids: set[int] = set()
+
+            # Keep the original TP plan immutable. Exchange snapshots are used
+            # only to adopt order ids/status/quantity; they must not shift TP2
+            # into the TP1 slot after TP1 has filled.
+            for target in targets:
+                target_order_id = int(target.get("order_id", 0) or 0)
+                order = orders_by_id.get(target_order_id)
+                if not order:
+                    continue
                 order_id = int(order.get("order_id", 0) or 0)
-                if order_id > 0:
-                    target["order_id"] = order_id
-                    target["status"] = "ADOPTED"
-                    if float(order.get("quantity", 0) or 0) > 0:
-                        target["quantity"] = float(order.get("quantity", 0) or 0)
-                    if float(order.get("price", 0) or 0) > 0:
-                        target["price"] = float(order.get("price", 0) or 0)
-                    changed = True
+                if order_id <= 0:
+                    continue
+                target["order_id"] = order_id
+                target["status"] = "ADOPTED"
+                if float(order.get("quantity", 0) or 0) > 0:
+                    target["quantity"] = float(order.get("quantity", 0) or 0)
+                if float(target.get("price", 0) or 0) <= 0 and float(order.get("price", 0) or 0) > 0:
+                    target["price"] = float(order.get("price", 0) or 0)
+                assigned_order_ids.add(order_id)
+                changed = True
+
+            unmatched_orders = [
+                order
+                for order in sorted_orders
+                if int(order.get("order_id", 0) or 0) not in assigned_order_ids
+            ]
+            for target in targets:
+                current_id = int(target.get("order_id", 0) or 0)
+                if current_id in open_tp_ids:
+                    continue
+                planned_price = float(target.get("price", 0) or 0)
+                if planned_price <= 0 or not unmatched_orders:
+                    continue
+
+                best_order = None
+                best_diff = float("inf")
+                for order in unmatched_orders:
+                    order_price = float(order.get("price", 0) or 0)
+                    if order_price <= 0:
+                        continue
+                    diff = abs(order_price - planned_price) / planned_price
+                    if diff < best_diff:
+                        best_diff = diff
+                        best_order = order
+
+                if best_order is None or best_diff > 0.01:
+                    continue
+                order_id = int(best_order.get("order_id", 0) or 0)
+                if order_id <= 0:
+                    continue
+                target["order_id"] = order_id
+                target["status"] = "ADOPTED"
+                if float(best_order.get("quantity", 0) or 0) > 0:
+                    target["quantity"] = float(best_order.get("quantity", 0) or 0)
+                unmatched_orders = [
+                    order for order in unmatched_orders if int(order.get("order_id", 0) or 0) != order_id
+                ]
+                assigned_order_ids.add(order_id)
+                changed = True
 
         if self._position_protection_status(position)["protected"]:
             position.protection_failures = 0
@@ -987,6 +1046,15 @@ class ExecutionMixin:
                 else 0.0,
             }
         ]
+        completed_tp_count = int(getattr(position, "partial_tp_count", 0) or 0)
+        if position.take_profit_targets and completed_tp_count > 0:
+            active_tp_targets = [
+                target
+                for target in active_tp_targets
+                if int(target.get("level", 0) or 0) > completed_tp_count
+            ]
+            if not active_tp_targets:
+                active_tp_targets = [position.take_profit_targets[-1]]
         if position.take_profit_order_ids:
             return self._position_protection_status(position)["protected"]
 
