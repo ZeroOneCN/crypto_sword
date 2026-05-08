@@ -750,6 +750,15 @@ class CycleMixin:
                 if balance_hint is not None:
                     signal["_balance_hint"] = balance_hint
 
+                # 逐币种去重：同一币种已有持仓时跳过
+                signal_symbol = str(signal.get("symbol", "") or "")
+                if signal_symbol and signal_symbol in self.tracker.positions:
+                    logger.warning(
+                        f"entry guard skip {signal_symbol}: already have open position "
+                        f"(session={self.tracker.positions[signal_symbol].session_id})"
+                    )
+                    continue
+
                 if self.tracker.get_open_count() >= self.config.max_open_positions:
                     if not self._try_replace_sideways_position_for_signal(signal):
                         logger.info(f"Max open positions reached ({self.config.max_open_positions})")
