@@ -63,6 +63,7 @@ from core.confirmation_mixin import ConfirmationMixin
 from core.market_mixin import MarketMixin
 from core.bootstrap_service import BootstrapService
 from feature_store import feature_store
+from services.accounting_service import fetch_daily_income_summary, fetch_period_income_summary
 from services.time_basis import utc_hour_key, utc_today_key, utc8_window_label
 
 
@@ -204,6 +205,19 @@ class CryptoSword(ExecutionMixin, ScannerMixin, CycleMixin, SyncMixin, Confirmat
                 daily_report["utc8_window"] = utc8_window_label(date_str)
                 daily_report["mode"] = self.config.mode
                 daily_report["entry_protection"] = entry_protection
+            income_summary = fetch_daily_income_summary(date_str)
+            if income_summary.get("available"):
+                db_total_pnl = float(daily_report.get("total_pnl", 0) or 0)
+                exchange_net_pnl = float(income_summary.get("net_pnl", 0) or 0)
+                daily_report["db_total_pnl"] = db_total_pnl
+                daily_report["exchange_total_pnl"] = exchange_net_pnl
+                daily_report["total_pnl"] = exchange_net_pnl
+                closed_trades = int(daily_report.get("closed_trades", 0) or 0)
+                if closed_trades > 0:
+                    daily_report["avg_pnl"] = round(exchange_net_pnl / closed_trades, 4)
+                daily_report["pnl_source"] = "exchange_income"
+                daily_report["income_summary"] = income_summary
+                daily_report["pnl_diff_vs_db"] = round(exchange_net_pnl - db_total_pnl, 8)
             log_signature = "|".join(
                 [
                     str(date_str),
@@ -253,6 +267,19 @@ class CryptoSword(ExecutionMixin, ScannerMixin, CycleMixin, SyncMixin, Confirmat
             try:
                 report = self.db.get_period_report(days=days, mode=self.config.mode)
                 if isinstance(report, dict):
+                    income_summary = fetch_period_income_summary(days)
+                    if income_summary.get("available"):
+                        db_total_pnl = float(report.get("total_pnl", 0) or 0)
+                        exchange_net_pnl = float(income_summary.get("net_pnl", 0) or 0)
+                        report["db_total_pnl"] = db_total_pnl
+                        report["exchange_total_pnl"] = exchange_net_pnl
+                        report["total_pnl"] = exchange_net_pnl
+                        closed_trades = int(report.get("closed_trades", 0) or 0)
+                        if closed_trades > 0:
+                            report["avg_pnl"] = round(exchange_net_pnl / closed_trades, 4)
+                        report["pnl_source"] = "exchange_income"
+                        report["income_summary"] = income_summary
+                        report["pnl_diff_vs_db"] = round(exchange_net_pnl - db_total_pnl, 8)
                     reports.append(report)
                     logger.info(
                         f"Period report from DB [{days}d] | trades={int(report.get('closed_trades', 0) or 0)} "

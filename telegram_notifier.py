@@ -823,14 +823,33 @@ def format_summary_msg(
     """格式化持仓汇总通知"""
     stats_date = ""
     stats_window = ""
+    db_total_pnl: float | None = None
+    pnl_source = ""
+    income_summary: dict[str, Any] = {}
     if isinstance(daily_stats, dict):
         stats_date = str(daily_stats.get("date", "") or "")
         stats_window = str(daily_stats.get("utc8_window", "") or "")
+        pnl_source = str(daily_stats.get("pnl_source", "") or "")
+        income_summary = daily_stats.get("income_summary") or {}
+        if "db_total_pnl" in daily_stats:
+            try:
+                db_total_pnl = float(daily_stats.get("db_total_pnl", 0) or 0)
+            except Exception:
+                db_total_pnl = None
+    realized_label = "交易所净盈亏(UTC日)" if pnl_source == "exchange_income" else "已实现(UTC日)"
     msg = f"""📊 <b>宙斯交易中枢 | 持仓汇总</b>
 
 <b>持仓数</b>  <code>{len(positions)}</code>
 <b>未实现</b>  <code>{"+" if total_pnl >= 0 else "-"}{_fmt_usdt(abs(total_pnl))} USDT</code>
-<b>已实现(UTC日)</b>  <code>{"+" if realized_pnl >= 0 else "-"}{_fmt_usdt(abs(realized_pnl))} USDT</code>"""
+<b>{realized_label}</b>  <code>{"+" if realized_pnl >= 0 else "-"}{_fmt_usdt(abs(realized_pnl))} USDT</code>"""
+    if pnl_source == "exchange_income":
+        msg += (
+            f"\n<b>收入流水</b>  实现 <code>{float(income_summary.get('realized_pnl', 0) or 0):+,.4f}</code>"
+            f" | 手续费 <code>{float(income_summary.get('commission', 0) or 0):+,.4f}</code>"
+            f" | 资金费 <code>{float(income_summary.get('funding_fee', 0) or 0):+,.4f}</code>"
+        )
+    if db_total_pnl is not None and abs(db_total_pnl - float(realized_pnl or 0.0)) >= 0.005:
+        msg += f"\n<b>本地平仓明细</b>  <code>{db_total_pnl:+,.4f} USDT</code>"
     if stats_date:
         msg += f"\n<b>统计日</b>  <code>{_escape(stats_date)} UTC</code>"
         if stats_window:
@@ -1072,6 +1091,9 @@ def format_daily_report_msg(report: dict[str, Any]) -> str:
         utc8_window = utc8_window_label(str(report.get("date", "")))
     closed_trades = int(report.get("closed_trades", 0) or 0)
     total_pnl = float(report.get("total_pnl", 0) or 0)
+    pnl_source = str(report.get("pnl_source", "") or "")
+    db_total_pnl = report.get("db_total_pnl")
+    income_summary = report.get("income_summary") or {}
     win_rate = float(report.get("win_rate", 0) or 0)
     avg_pnl = float(report.get("avg_pnl", 0) or 0)
     winning = int(report.get("winning_trades", 0) or 0)
@@ -1083,9 +1105,22 @@ def format_daily_report_msg(report: dict[str, Any]) -> str:
 <b>统计日</b>  <code>{report_date} UTC</code>
 <b>北京时间</b>  <code>{_escape(utc8_window)}</code>
 
-<b>已平仓</b>  <code>{closed_trades}</code>  |  <b>盈亏</b>  <code>{total_pnl:+,.2f} USDT</code> {pnl_emoji}
+<b>已平仓</b>  <code>{closed_trades}</code>  |  <b>{'交易所净盈亏' if pnl_source == 'exchange_income' else '盈亏'}</b>  <code>{total_pnl:+,.2f} USDT</code> {pnl_emoji}
 <b>胜率</b>  <code>{win_rate:.1f}%</code>  |  <b>胜/负</b>  <code>{winning}</code>/<code>{losing}</code>
 <b>平均</b>  <code>{avg_pnl:+,.2f} USDT</code>"""
+    if pnl_source == "exchange_income":
+        msg += (
+            f"\n<b>收入流水</b>  实现 <code>{float(income_summary.get('realized_pnl', 0) or 0):+,.4f}</code>"
+            f" | 手续费 <code>{float(income_summary.get('commission', 0) or 0):+,.4f}</code>"
+            f" | 资金费 <code>{float(income_summary.get('funding_fee', 0) or 0):+,.4f}</code>"
+        )
+    if db_total_pnl is not None:
+        try:
+            db_value = float(db_total_pnl or 0)
+            if abs(db_value - total_pnl) >= 0.005:
+                msg += f"\n<b>本地平仓明细</b>  <code>{db_value:+,.4f} USDT</code>"
+        except Exception:
+            pass
     source_rows = int(report.get("source_rows", closed_trades) or closed_trades)
     split_rows = int(report.get("split_rows", 0) or 0)
     if source_rows != closed_trades or split_rows > 0:
@@ -1236,6 +1271,8 @@ def _format_period_block(report: dict[str, Any]) -> str:
     source_rows = int(report.get("source_rows", closed) or closed)
     split_rows = int(report.get("split_rows", 0) or 0)
     total_pnl = float(report.get("total_pnl", 0) or 0)
+    pnl_source = str(report.get("pnl_source", "") or "")
+    db_total_pnl = report.get("db_total_pnl")
     pnl_emoji = _E if total_pnl >= 0 else _E2
     best_trade = report.get("best_trade") or {}
     worst_trade = report.get("worst_trade") or {}
@@ -1250,11 +1287,18 @@ def _format_period_block(report: dict[str, Any]) -> str:
         lines.append(f"原始平仓记录  <code>{source_rows}</code> 行 | 已聚合分批 <code>{split_rows}</code> 行")
     lines.extend(
         [
-            f"总盈亏  <code>{total_pnl:+,.2f} USDT</code> {pnl_emoji}",
+            f"{'交易所净盈亏' if pnl_source == 'exchange_income' else '总盈亏'}  <code>{total_pnl:+,.2f} USDT</code> {pnl_emoji}",
             f"胜率  <code>{float(report.get('win_rate', 0) or 0):.1f}%</code>  |  笔均  <code>{float(report.get('avg_pnl', 0) or 0):+,.2f}</code>",
             f"盈亏比  <code>{_format_ratio_value(report.get('payoff_ratio', 0))}</code>  |  收益因子  <code>{_format_ratio_value(report.get('profit_factor', 0))}</code>",
         ]
     )
+    if db_total_pnl is not None:
+        try:
+            db_value = float(db_total_pnl or 0)
+            if abs(db_value - total_pnl) >= 0.005:
+                lines.append(f"本地平仓明细  <code>{db_value:+,.2f} USDT</code>")
+        except Exception:
+            pass
     if best_trade.get("symbol"):
         lines.append(
             f"最佳  <code>{_escape(best_trade.get('symbol'))}</code> "

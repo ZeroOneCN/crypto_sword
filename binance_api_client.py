@@ -289,6 +289,31 @@ class BinanceApiClient:
         data = self._request("GET", "/fapi/v1/userTrades", params=params, signed=True)
         return data if isinstance(data, list) else []
 
+    def income_history(
+        self,
+        symbol: str | None = None,
+        income_type: str | None = None,
+        start_time: int | None = None,
+        end_time: int | None = None,
+        limit: int = 1000,
+    ) -> list[dict[str, Any]]:
+        """Get USD-M Futures income history.
+
+        This is the accounting source closest to Binance's Futures UI because
+        it includes realized PnL, commission and funding-fee rows.
+        """
+        params: dict[str, Any] = {"limit": limit}
+        if symbol:
+            params["symbol"] = symbol
+        if income_type:
+            params["incomeType"] = income_type
+        if start_time:
+            params["startTime"] = start_time
+        if end_time:
+            params["endTime"] = end_time
+        data = self._request("GET", "/fapi/v1/income", params=params, signed=True)
+        return data if isinstance(data, list) else []
+
     def all_orders(
         self,
         symbol: str,
