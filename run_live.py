@@ -19,19 +19,20 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Run Crypto Sword runtime (simplified entry)")
     parser.add_argument("--mode", default="live", help="Runtime mode (only live supported)")
     parser.add_argument("--leverage", type=int, default=5, help="Leverage multiplier")
-    parser.add_argument("--risk", type=float, default=0.8, help="Risk per trade percent")
+    parser.add_argument("--risk", type=float, default=0.6, help="Risk per trade percent")
     parser.add_argument("--stop-loss", type=float, default=12.0, help="Stop loss percent")
     parser.add_argument("--take-profit", type=float, default=35.0, help="Take profit percent")
     parser.add_argument("--trailing", type=float, default=8.0, help="Trailing stop percent")
-    parser.add_argument("--max-positions", type=int, default=8, help="Max open positions")
-    parser.add_argument("--max-position-pct", type=float, default=15.0, help="Max notional position size percent of balance")
-    parser.add_argument("--max-total-exposure", type=float, default=150.0, help="Max total notional exposure percent of balance")
-    parser.add_argument("--daily-entry-limit", action="store_true", help="Enable daily entry count throttle (disabled by default)")
-    parser.add_argument("--max-daily-entries", type=int, default=12, help="Max new entries per day")
-    parser.add_argument("--max-entries-per-cycle", type=int, default=2, help="Max new entries per scan cycle")
-    parser.add_argument("--weak-daily-entries", type=int, default=6, help="Soft cap when daily stats are weak")
-    parser.add_argument("--hard-daily-entries", type=int, default=3, help="Soft cap in deep defensive mode")
-    parser.add_argument("--daily-exception-entries", type=int, default=2, help="Max A+ override entries after soft cap")
+    parser.add_argument("--max-positions", type=int, default=3, help="Max open positions")
+    parser.add_argument("--max-position-pct", type=float, default=12.0, help="Max notional position size percent of balance")
+    parser.add_argument("--max-total-exposure", type=float, default=90.0, help="Max total notional exposure percent of balance")
+    parser.add_argument("--daily-entry-limit", dest="daily_entry_limit", action="store_true", default=True, help="Enable daily entry count throttle")
+    parser.add_argument("--no-daily-entry-limit", dest="daily_entry_limit", action="store_false", help="Disable daily entry count throttle")
+    parser.add_argument("--max-daily-entries", type=int, default=8, help="Max new entries per day")
+    parser.add_argument("--max-entries-per-cycle", type=int, default=1, help="Max new entries per scan cycle")
+    parser.add_argument("--weak-daily-entries", type=int, default=4, help="Soft cap when daily stats are weak")
+    parser.add_argument("--hard-daily-entries", type=int, default=2, help="Soft cap in deep defensive mode")
+    parser.add_argument("--daily-exception-entries", type=int, default=1, help="Max A+ override entries after soft cap")
     parser.add_argument("--scan-top-n", type=int, default=30, help="Top N symbols per deep scan")
     parser.add_argument("--scan-interval", type=int, default=300, help="Deep scan interval seconds")
     parser.add_argument("--fast-interval", type=int, default=60, help="Fast scan interval seconds")
@@ -50,6 +51,7 @@ def build_config(args: argparse.Namespace) -> TradingConfig:
         trailing_stop_pct=args.trailing,
         max_position_pct=max(5.0, args.max_position_pct),
         max_total_exposure_pct=max(args.max_position_pct, args.max_total_exposure),
+        dynamic_exposure_enabled=False,
         max_open_positions=args.max_positions,
         daily_entry_limit_enabled=args.daily_entry_limit,
         max_daily_entries=args.max_daily_entries,

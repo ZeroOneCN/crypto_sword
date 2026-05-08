@@ -319,7 +319,8 @@ class CapitalAllocator:
         risk_cap = float(getattr(config, "capital_max_risk_pct", 1.6) or 1.6)
         risk_floor = float(getattr(config, "capital_min_risk_pct", 0.35) or 0.35)
         risk_pct = max(risk_floor, min(risk_cap, base_risk * risk_multiplier))
-        max_position_pct = max(10.0, min(55.0, base_max_position * max_position_multiplier))
+        max_position_floor = min(8.0, max(5.0, base_max_position * 0.50))
+        max_position_pct = max(max_position_floor, min(35.0, base_max_position * max_position_multiplier))
         effective_balance = max(0.0, account_balance - locked_profit)
 
         return CapitalPlan(
