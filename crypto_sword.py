@@ -368,17 +368,17 @@ def main():
     )
 
     parser.add_argument("--leverage", "-l", type=int, default=5, choices=range(1, 11), metavar="1-10", help="Leverage (1-10x)")
-    parser.add_argument("--risk", "-r", type=float, default=0.6, help="Risk per trade (%%)")
+    parser.add_argument("--risk", "-r", type=float, default=0.8, help="Risk per trade (%%)")
     parser.add_argument("--stop-loss", "-s", type=float, default=12.0, help="Stop loss (%%)")
     parser.add_argument("--take-profit", "-t", type=float, default=35.0, help="Take profit (%%)")
     parser.add_argument("--take-profit-mode", choices=["price", "roi"], default="roi", help="Take profit mode")
-    parser.add_argument("--max-positions", "-m", type=int, default=3, help="Max open positions")
-    parser.add_argument("--max-position-pct", type=float, default=12.0, help="Max notional position size (%% of balance)")
-    parser.add_argument("--max-total-exposure", type=float, default=90.0, help="Max total notional exposure (%% of balance)")
+    parser.add_argument("--max-positions", "-m", type=int, default=8, help="Max open positions")
+    parser.add_argument("--max-position-pct", type=float, default=15.0, help="Max notional position size (%% of balance)")
+    parser.add_argument("--max-total-exposure", type=float, default=150.0, help="Max total notional exposure (%% of balance)")
     parser.add_argument("--max-daily-loss", type=float, default=5.0, help="Max daily loss (%%), 0 disables daily loss circuit breaker")
-    parser.add_argument("--daily-entry-limit", dest="daily_entry_limit", action="store_true", default=True, help="Enable daily entry count throttle")
+    parser.add_argument("--daily-entry-limit", dest="daily_entry_limit", action="store_true", default=False, help="Enable daily entry count throttle")
     parser.add_argument("--no-daily-entry-limit", dest="daily_entry_limit", action="store_false", help="Disable daily entry count throttle")
-    parser.add_argument("--max-daily-entries", type=int, default=8, help="Max new entries per day")
+    parser.add_argument("--max-daily-entries", type=int, default=12, help="Max new entries per day")
     parser.add_argument("--max-entries-per-cycle", type=int, default=1, help="Max new entries per scan cycle")
     parser.add_argument("--weak-daily-entries", type=int, default=4, help="Soft cap when daily stats are weak")
     parser.add_argument("--hard-daily-entries", type=int, default=2, help="Soft cap in deep defensive mode")
@@ -435,7 +435,6 @@ def main():
         take_profit_mode=args.take_profit_mode,
         max_position_pct=max(5.0, args.max_position_pct),
         max_total_exposure_pct=max(args.max_position_pct, args.max_total_exposure),
-        dynamic_exposure_enabled=False,
         max_daily_loss_pct=args.max_daily_loss,
         max_open_positions=args.max_positions,
         daily_entry_limit_enabled=args.daily_entry_limit,
