@@ -46,6 +46,32 @@ websocket = _ws
 
 logger = logging.getLogger(__name__)
 
+_GLOBAL_PRICE_CACHE: dict[str, tuple[float, float]] = {}
+_GLOBAL_PRICE_LOCK = threading.RLock()
+
+
+def update_cached_market_price(symbol: str, price: float) -> None:
+    """Update process-wide latest price cache from any market stream."""
+    symbol_key = str(symbol or "").upper()
+    if not symbol_key or price <= 0:
+        return
+    with _GLOBAL_PRICE_LOCK:
+        _GLOBAL_PRICE_CACHE[symbol_key] = (float(price), time.time())
+
+
+def get_cached_market_price(symbol: str, max_age_sec: float = 5.0) -> float:
+    """Return latest process-wide WS price cache, or 0 when stale."""
+    symbol_key = str(symbol or "").upper()
+    now = time.time()
+    with _GLOBAL_PRICE_LOCK:
+        item = _GLOBAL_PRICE_CACHE.get(symbol_key)
+    if not item:
+        return 0.0
+    price, ts = item
+    if now - ts > max(0.0, float(max_age_sec)):
+        return 0.0
+    return float(price or 0.0)
+
 
 def _ws_sockopt() -> tuple[tuple[int, int, int], ...]:
     """Prefer low-latency TCP packets for realtime trading streams."""
@@ -210,6 +236,7 @@ class BinanceWebSocketClient:
                         ticker = self.tickers[symbol]
                         ticker.price = float(data["p"])
                         ticker.last_update = time.time()
+                        update_cached_market_price(ticker.symbol, ticker.price)
 
                     if "on_ticker" in self.callbacks:
                         self.callbacks["on_ticker"](ticker)
@@ -227,6 +254,7 @@ class BinanceWebSocketClient:
                         ticker.volume_24h = float(data["v"])
                         ticker.quote_volume_24h = float(data["q"])
                         ticker.last_update = time.time()
+                        update_cached_market_price(ticker.symbol, ticker.price)
 
                     if "on_ticker" in self.callbacks:
                         self.callbacks["on_ticker"](ticker)
@@ -412,6 +440,7 @@ class BinanceAllMarketTickerWebSocketClient:
                         quote_volume_24h=float(item.get("q", 0) or 0),
                         last_update=now,
                     )
+                    update_cached_market_price(symbol, last_price)
                     if last_price > 0:
                         history = self.price_history.setdefault(symbol, deque(maxlen=900))
                         if not history or now - history[-1][0] >= 0.9:

@@ -112,6 +112,7 @@ flowchart TD
 | `services/order_service.py` | 📤 订单服务封装，包含保护单撤销和补挂。 |
 | `services/risk_service.py` | 🛡️ 风控服务封装，连接 `risk_manager.py`。 |
 | `binance_api_client.py` | 🔌 原生 Binance REST API 客户端，不再依赖 `binance-cli` 下单。 |
+| `binance_ws_api_client.py` | ⚡ Binance WebSocket API 下单客户端，优先下单，失败回退 REST。 |
 | `binance_websocket.py` | ⚡ WebSocket 行情、订单、账户监听。 |
 | `binance_trading_executor.py` | ⚙️ 实际下单、杠杆、止损、分批止盈执行。 |
 | `signal_enhancer.py` | 📈 K 线、均线、趋势、成交量、信号增强分析。 |
@@ -308,6 +309,12 @@ core/models.py -> TradingConfig
 - 📡 `scan_interval_sec` / `fast_scan_interval_sec`：深扫/快扫间隔。
 - 🌊 `oi_funding_*`：OI/Funding 加分逻辑。
 - 🚀 `momentum_*` / `accumulation_*`：趋势和吸筹入场门槛。
+
+WebSocket 下单开关：
+
+- ⚡ 默认启用 `BINANCE_WS_ORDER_ENABLED=1`，开仓、平仓、止损、止盈优先走 Binance WebSocket API。
+- 🧯 如果服务器环境不兼容，可临时设置 `BINANCE_WS_ORDER_ENABLED=0`，系统会回到 REST 下单。
+- 🧭 REST 仍用于账户快照、账务收入、交易规则、WS 失败兜底，不建议完全移除。
 
 临时查看完整命令参数：
 

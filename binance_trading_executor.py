@@ -22,6 +22,21 @@ except Exception:
     def is_native_binance_configured() -> bool:
         return False
 
+try:
+    from binance_ws_api_client import BinanceWsApiError, get_ws_order_client, is_ws_order_enabled
+except Exception:
+    BinanceWsApiError = RuntimeError
+    get_ws_order_client = None
+
+    def is_ws_order_enabled() -> bool:
+        return False
+
+try:
+    from binance_websocket import get_cached_market_price
+except Exception:
+    def get_cached_market_price(symbol: str, max_age_sec: float = 5.0) -> float:
+        return 0.0
+
 # 导入行情获取函数（用于滑点保护和名义价值校验）
 try:
     from binance_breakout_scanner import fetch_ticker_24hr as get_ticker_24hr
@@ -33,6 +48,26 @@ except ImportError:
 
 logger = logging.getLogger(__name__)
 _leverage_cache: dict[str, int] = {}
+
+
+def _ws_fallback_allowed(error: Exception) -> bool:
+    return bool(getattr(error, "safe_to_fallback", True))
+
+
+def _warn_ws_fallback(operation: str, symbol: str, error: Exception) -> None:
+    logger.warning(f"⚡ {symbol} WS API {operation} 失败，回退 REST：{error}")
+
+
+def _ws_ambiguous_order_result(symbol: str, side: str, quantity: float, message: str) -> "OrderResult":
+    return OrderResult(
+        symbol=symbol,
+        side=side,
+        quantity=quantity,
+        executed_price=0,
+        order_id=0,
+        status="ERROR",
+        message=f"WS_API_AMBIGUOUS_NO_REST_RETRY: {message}",
+    )
 
 
 def _query_symbol_leverage(symbol: str) -> int:
@@ -745,12 +780,13 @@ def place_market_order(
         OrderResult with execution details
     """
     try:
-        # 获取当前价格用于名义价值校验和滑点保护
-        current_price = 0.0
+        # 获取当前价格用于名义价值校验和滑点保护，优先使用常驻 WS 缓存，REST 只兜底。
+        current_price = get_cached_market_price(symbol, max_age_sec=5.0)
         try:
-            ticker = get_ticker_24hr(symbol)
-            if isinstance(ticker, dict):
-                current_price = float(ticker.get("lastPrice", 0))
+            if current_price <= 0:
+                ticker = get_ticker_24hr(symbol)
+                if isinstance(ticker, dict):
+                    current_price = float(ticker.get("lastPrice", 0))
         except Exception as e:
             logger.debug(f"获取 {symbol} 价格失败，跳过校验: {e}")
         
@@ -789,15 +825,35 @@ def place_market_order(
         if not reduce_only:
             applied_leverage = _ensure_symbol_leverage(symbol, int(leverage))
 
-        result = get_native_binance_client().new_order(  # type: ignore
-            symbol=symbol,
-            side=side,
-            order_type="MARKET",
-            quantity=quantity,
-            position_side=resolved_position_side,
-            reduce_only=reduce_only,
-            new_order_resp_type="RESULT",
-        )
+        ws_used = False
+        try:
+            if is_ws_order_enabled() and get_ws_order_client is not None:
+                result = get_ws_order_client().new_order(  # type: ignore[union-attr]
+                    symbol=symbol,
+                    side=side,
+                    order_type="MARKET",
+                    quantity=quantity,
+                    position_side=resolved_position_side,
+                    reduce_only=reduce_only,
+                    new_order_resp_type="RESULT",
+                )
+                ws_used = True
+            else:
+                raise RuntimeError("WS API 下单未启用")
+        except Exception as ws_error:
+            if not _ws_fallback_allowed(ws_error):
+                return _ws_ambiguous_order_result(symbol, side, quantity, str(ws_error))
+            if "未启用" not in str(ws_error):
+                _warn_ws_fallback("MARKET", symbol, ws_error)
+            result = get_native_binance_client().new_order(  # type: ignore
+                symbol=symbol,
+                side=side,
+                order_type="MARKET",
+                quantity=quantity,
+                position_side=resolved_position_side,
+                reduce_only=reduce_only,
+                new_order_resp_type="RESULT",
+            )
 
         # Parse result
         executed_qty = float(result.get("executedQty", 0))
@@ -813,7 +869,7 @@ def place_market_order(
                 logger.warning(f"⚠️ {symbol} 滑点过大，已成交但需关注")
                 high_slippage = True
 
-        message = f"Leverage: {applied_leverage}x"
+        message = f"Leverage: {applied_leverage}x | {'WS_API' if ws_used else 'REST'}"
         if high_slippage:
             message += " | HIGH_SLIPPAGE"
 
@@ -864,17 +920,39 @@ def place_stop_loss_order(
                 trigger_price = stop_price * (1 + trigger_buffer_pct / 100.0)
             trigger_price = adjust_price_precision(symbol, trigger_price, rounding=stop_rounding)
 
-        result = get_native_binance_client().new_algo_order(  # type: ignore
-            symbol=symbol,
-            side=side,
-            order_type="STOP_MARKET",
-            quantity=quantity,
-            position_side=resolved_position_side,
-            reduce_only=reduce_only,
-            trigger_price=trigger_price,
-            working_type="MARK_PRICE",
-            new_order_resp_type="RESULT",
-        )
+        ws_used = False
+        try:
+            if is_ws_order_enabled() and get_ws_order_client is not None:
+                result = get_ws_order_client().new_algo_order(  # type: ignore[union-attr]
+                    symbol=symbol,
+                    side=side,
+                    order_type="STOP_MARKET",
+                    quantity=quantity,
+                    position_side=resolved_position_side,
+                    reduce_only=reduce_only,
+                    trigger_price=trigger_price,
+                    working_type="MARK_PRICE",
+                    new_order_resp_type="RESULT",
+                )
+                ws_used = True
+            else:
+                raise RuntimeError("WS API 下单未启用")
+        except Exception as ws_error:
+            if not _ws_fallback_allowed(ws_error):
+                return _ws_ambiguous_order_result(symbol, side, quantity, str(ws_error))
+            if "未启用" not in str(ws_error):
+                _warn_ws_fallback("STOP_MARKET", symbol, ws_error)
+            result = get_native_binance_client().new_algo_order(  # type: ignore
+                symbol=symbol,
+                side=side,
+                order_type="STOP_MARKET",
+                quantity=quantity,
+                position_side=resolved_position_side,
+                reduce_only=reduce_only,
+                trigger_price=trigger_price,
+                working_type="MARK_PRICE",
+                new_order_resp_type="RESULT",
+            )
 
         executed_qty = float(result.get("executedQty", 0))
         order_id = int(result.get("algoId", result.get("orderId", result.get("orderID", 0))))
@@ -887,7 +965,7 @@ def place_stop_loss_order(
             executed_price=trigger_price,
             order_id=order_id,
             status=status,
-            message=f"Stop loss order placed | logical={stop_price:.8f} trigger={trigger_price:.8f}",
+            message=f"Stop loss order placed via {'WS_API' if ws_used else 'REST'} | logical={stop_price:.8f} trigger={trigger_price:.8f}",
         )
     except Exception as e:
         if _is_precision_error(e):
@@ -953,17 +1031,39 @@ def place_take_profit_order(
         tp_rounding = "ceil" if side == "SELL" else "floor"
         trigger_price = adjust_price_precision(symbol, trigger_price, rounding=tp_rounding)
 
-        result = get_native_binance_client().new_algo_order(  # type: ignore
-            symbol=symbol,
-            side=side,
-            order_type="TAKE_PROFIT_MARKET",
-            quantity=quantity,
-            position_side=resolved_position_side,
-            reduce_only=reduce_only,
-            trigger_price=trigger_price,
-            working_type="MARK_PRICE",
-            new_order_resp_type="RESULT",
-        )
+        ws_used = False
+        try:
+            if is_ws_order_enabled() and get_ws_order_client is not None:
+                result = get_ws_order_client().new_algo_order(  # type: ignore[union-attr]
+                    symbol=symbol,
+                    side=side,
+                    order_type="TAKE_PROFIT_MARKET",
+                    quantity=quantity,
+                    position_side=resolved_position_side,
+                    reduce_only=reduce_only,
+                    trigger_price=trigger_price,
+                    working_type="MARK_PRICE",
+                    new_order_resp_type="RESULT",
+                )
+                ws_used = True
+            else:
+                raise RuntimeError("WS API 下单未启用")
+        except Exception as ws_error:
+            if not _ws_fallback_allowed(ws_error):
+                return _ws_ambiguous_order_result(symbol, side, quantity, str(ws_error))
+            if "未启用" not in str(ws_error):
+                _warn_ws_fallback("TAKE_PROFIT_MARKET", symbol, ws_error)
+            result = get_native_binance_client().new_algo_order(  # type: ignore
+                symbol=symbol,
+                side=side,
+                order_type="TAKE_PROFIT_MARKET",
+                quantity=quantity,
+                position_side=resolved_position_side,
+                reduce_only=reduce_only,
+                trigger_price=trigger_price,
+                working_type="MARK_PRICE",
+                new_order_resp_type="RESULT",
+            )
 
         executed_qty = float(result.get("executedQty", 0))
         order_id = int(result.get("algoId", result.get("orderId", result.get("orderID", 0))))
@@ -976,7 +1076,7 @@ def place_take_profit_order(
             executed_price=trigger_price,
             order_id=order_id,
             status=status,
-            message="Take profit order placed",
+            message=f"Take profit order placed via {'WS_API' if ws_used else 'REST'}",
         )
     except Exception as e:
         if _is_precision_error(e):
@@ -1033,6 +1133,24 @@ def cancel_protective_order(symbol: str, order_id: int) -> bool:
         raise RuntimeError("Native Binance API is not configured; cannot cancel order")
 
     try:
+        if is_ws_order_enabled() and get_ws_order_client is not None:
+            try:
+                get_ws_order_client().cancel_algo_order(symbol, order_id)  # type: ignore[union-attr]
+                return True
+            except Exception as ws_algo_error:
+                if not _ws_fallback_allowed(ws_algo_error):
+                    logger.warning(f"{symbol} WS cancel ambiguous id={order_id}: {ws_algo_error}")
+                    return False
+                logger.debug(f"{symbol} WS algo cancel fallback id={order_id}: {ws_algo_error}")
+                try:
+                    get_ws_order_client().cancel_order(symbol, order_id)  # type: ignore[union-attr]
+                    return True
+                except Exception as ws_order_error:
+                    if not _ws_fallback_allowed(ws_order_error):
+                        logger.warning(f"{symbol} WS normal cancel ambiguous id={order_id}: {ws_order_error}")
+                        return False
+                    logger.debug(f"{symbol} WS normal cancel fallback id={order_id}: {ws_order_error}")
+
         get_native_binance_client().cancel_algo_order(symbol, order_id)  # type: ignore
         return True
     except Exception as algo_error:

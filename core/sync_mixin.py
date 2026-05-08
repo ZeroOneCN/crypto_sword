@@ -231,6 +231,13 @@ class SyncMixin:
         """React to user stream order updates."""
         order = event.get("o", {}) if isinstance(event, dict) else {}
         symbol = str(order.get("s", "") or "")
+        if symbol:
+            try:
+                from services.order_service import OrderService
+
+                OrderService.invalidate_symbol(symbol)
+            except Exception:
+                pass
         status = str(order.get("X", "") or "")
         execution_type = str(order.get("x", "") or "")
         order_type = str(order.get("o", "") or "")
@@ -299,6 +306,13 @@ class SyncMixin:
     def _handle_ws_algo_update(self, event: dict[str, Any]):
         """React to conditional/algo order updates from user stream."""
         symbol = str(event.get("s", event.get("symbol", "")) or "")
+        if symbol:
+            try:
+                from services.order_service import OrderService
+
+                OrderService.invalidate_symbol(symbol)
+            except Exception:
+                pass
         event_type = str(event.get("e", "") or "ALGO_UPDATE")
         logger.info(f"WS algo update: {event_type}{f' | {symbol}' if symbol else ''}")
         self._request_state_sync_from_ws(event_type, symbol)
