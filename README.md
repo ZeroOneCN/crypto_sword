@@ -116,9 +116,9 @@ flowchart TD
 | `binance_trading_executor.py` | ⚙️ 实际下单、杠杆、止损、分批止盈执行。 |
 | `signal_enhancer.py` | 📈 K 线、均线、趋势、成交量、信号增强分析。 |
 | `oi_funding_scanner.py` | 🌊 OI / Funding 数据增强。 |
-| `token_anomaly_radar.py` | 📡 妖币/异动雷达。 |
 | `telegram_notifier.py` | 📲 Telegram 通知模板。 |
 | `trade_logger.py` | 🧾 SQLite 交易记录、日报、复盘数据。 |
+| `dashboard_server.py` | 🖥️ 只读网页看板，自动读取余额、持仓、统计和交易明细。 |
 | `feature_store/` | 🧠 交易特征、开仓保护、复盘原因沉淀。 |
 
 ---
@@ -220,6 +220,7 @@ config/telegram.json
 - `crypto_sword.log`：运行日志，排查扫描、下单、WS、异常。
 - `trade_log.db`：SQLite 交易数据库，保存开仓、平仓、盈亏、复盘原因。
 - `feature_store/`：交易特征沉淀，可作为后续策略训练和复盘样本。
+- `dashboard_server.py`：只读网页看板，自动读取交易数据库和 Binance 只读数据。
 
 查看日志：
 
@@ -248,6 +249,38 @@ FROM trades
 ORDER BY id DESC
 LIMIT 20;
 ```
+
+---
+
+## 🖥️ 网页数据看板
+
+看板是只读服务，不参与开仓、平仓、撤单；默认只监听服务器本机 `127.0.0.1:8787`，不需要 nginx，也不暴露公网。
+
+服务器启动：
+
+```bash
+cd /root/.hermes/scripts
+nohup python3 dashboard_server.py --host 127.0.0.1 --port 8787 > /root/.hermes/logs/dashboard.log 2>&1 &
+```
+
+本地电脑建立 SSH 隧道：
+
+```bash
+ssh -L 8787:127.0.0.1:8787 root@你的服务器IP
+```
+
+然后打开：
+
+```text
+http://127.0.0.1:8787
+```
+
+看板会自动刷新：
+
+- ⚡ 余额、持仓、未实现盈亏、保护单状态：约 5 秒刷新。
+- 📊 今日、近 7 天、近 30 天、最近交易：后端缓存约 60 秒，避免频繁打 Binance API。
+- 🧾 统计口径使用 Binance UTC 自然日，并显示 UTC+8 辅助窗口。
+- 📥 页面右上角保留 CSV 下载按钮，方便临时导出复盘。
 
 ---
 
