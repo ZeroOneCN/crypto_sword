@@ -19,13 +19,13 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Run Crypto Sword runtime (simplified entry)")
     parser.add_argument("--mode", default="live", help="Runtime mode (only live supported)")
     parser.add_argument("--leverage", type=int, default=5, help="Leverage multiplier")
-    parser.add_argument("--risk", type=float, default=0.6, help="Risk per trade (%)")
-    parser.add_argument("--stop-loss", type=float, default=12.0, help="Stop loss (%)")
-    parser.add_argument("--take-profit", type=float, default=25.0, help="Take profit (%)")
-    parser.add_argument("--trailing", type=float, default=8.0, help="Trailing stop (%)")
+    parser.add_argument("--risk", type=float, default=0.6, help="Risk per trade percent")
+    parser.add_argument("--stop-loss", type=float, default=12.0, help="Stop loss percent")
+    parser.add_argument("--take-profit", type=float, default=25.0, help="Take profit percent")
+    parser.add_argument("--trailing", type=float, default=8.0, help="Trailing stop percent")
     parser.add_argument("--max-positions", type=int, default=3, help="Max open positions")
-    parser.add_argument("--max-position-pct", type=float, default=25.0, help="Max notional position size (% of balance)")
-    parser.add_argument("--max-total-exposure", type=float, default=120.0, help="Max total notional exposure (% of balance)")
+    parser.add_argument("--max-position-pct", type=float, default=25.0, help="Max notional position size percent of balance")
+    parser.add_argument("--max-total-exposure", type=float, default=120.0, help="Max total notional exposure percent of balance")
     parser.add_argument("--daily-entry-limit", action="store_true", help="Enable daily entry count throttle (disabled by default)")
     parser.add_argument("--max-daily-entries", type=int, default=15, help="Max new entries per day")
     parser.add_argument("--max-entries-per-cycle", type=int, default=1, help="Max new entries per scan cycle")
@@ -39,9 +39,9 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def main() -> None:
-    args = build_parser().parse_args()
-    config = TradingConfig(
+def build_config(args: argparse.Namespace) -> TradingConfig:
+    """Build the recommended runtime config from simplified CLI args."""
+    return TradingConfig(
         mode=args.mode,
         leverage=args.leverage,
         risk_per_trade_pct=args.risk,
@@ -62,6 +62,11 @@ def main() -> None:
         fast_scan_interval_sec=args.fast_interval,
         oi_funding_enabled=not args.disable_oi_funding,
     )
+
+
+def main() -> None:
+    args = build_parser().parse_args()
+    config = build_config(args)
     trader = CryptoSword(config)
     trader.run()
 
