@@ -18,6 +18,14 @@ from typing import Optional, List, Dict, Any
 from dataclasses import dataclass, asdict
 
 from hermes_paths import hermes_logs_dir
+from services.time_basis import (
+    is_after_utc_cutoff,
+    is_utc_date,
+    parse_db_datetime,
+    utc_cutoff_for_days,
+    utc_date_key,
+    utc_now_iso,
+)
 
 # 支持环境变量配置路径，兼容现有部署
 _DEFAULT_DB_PATH = hermes_logs_dir() / "trade_log.db"
@@ -66,7 +74,7 @@ class TradeRecord:
         if self.market_snapshot is None:
             self.market_snapshot = {}
         if not self.entry_time:
-            self.entry_time = datetime.now().isoformat()
+            self.entry_time = utc_now_iso()
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -204,7 +212,7 @@ class TradeDatabase:
                 realized_pnl = COALESCE(?, ?)
             WHERE id = ?
         """, (
-            exit_price, datetime.now().isoformat(), exit_reason,
+            exit_price, utc_now_iso(), exit_reason,
             pnl, pnl_pct, realized_pnl, pnl, trade_id
         ))
         
@@ -284,7 +292,9 @@ class TradeDatabase:
             item["quantity"] = float(item.get("quantity", 0.0) or 0.0) + float(trade.quantity or 0.0)
 
             trade_exit_time = trade.exit_time or ""
-            if trade_exit_time >= str(item.get("exit_time", "") or ""):
+            trade_exit_dt = parse_db_datetime(trade_exit_time)
+            item_exit_dt = parse_db_datetime(item.get("exit_time", ""))
+            if trade_exit_dt and (not item_exit_dt or trade_exit_dt >= item_exit_dt):
                 item["exit_time"] = trade_exit_time
                 item["exit_price"] = float(trade.exit_price or item.get("exit_price", 0.0) or 0.0)
                 item["exit_reason"] = trade.exit_reason or item.get("exit_reason", "")
@@ -499,7 +509,7 @@ class TradeDatabase:
             conn.close()
 
     def get_closed_trades(self, days: int = 7, mode: str = None) -> List[TradeRecord]:
-        """获取已平仓交易（最近 N 天）"""
+        """获取已平仓交易（最近 N 天，Binance UTC 口径）"""
         conn = self._get_connection()
         cursor = conn.cursor()
         
@@ -508,21 +518,21 @@ class TradeDatabase:
                 SELECT * FROM trades 
                 WHERE exit_price IS NOT NULL 
                 AND mode = ?
-                AND datetime(exit_time) >= datetime('now', '-' || ? || ' days')
                 ORDER BY exit_time DESC
-            """, (mode, days))
+            """, (mode,))
         else:
             cursor.execute("""
                 SELECT * FROM trades 
                 WHERE exit_price IS NOT NULL 
-                AND datetime(exit_time) >= datetime('now', '-' || ? || ' days')
                 ORDER BY exit_time DESC
-            """, (days,))
+            """)
         
         rows = cursor.fetchall()
         conn.close()
-        
-        return [self._row_to_trade(row) for row in rows]
+
+        cutoff = utc_cutoff_for_days(days)
+        trades = [self._row_to_trade(row) for row in rows]
+        return [trade for trade in trades if is_after_utc_cutoff(trade.exit_time, cutoff)]
     
     def get_all_trades(self, limit: int = 100) -> List[TradeRecord]:
         """获取所有交易（限制数量）"""
@@ -540,7 +550,7 @@ class TradeDatabase:
         return [self._row_to_trade(row) for row in rows]
     
     def get_statistics(self, days: int = 7, mode: str = None) -> Dict[str, Any]:
-        """获取交易统计"""
+        """获取交易统计（Binance UTC 口径）"""
         conn = self._get_connection()
         cursor = conn.cursor()
         if mode:
@@ -551,9 +561,8 @@ class TradeDatabase:
                     COUNT(CASE WHEN exit_price IS NULL THEN 1 END) as open_rows
                 FROM trades
                 WHERE mode = ?
-                AND (exit_time IS NULL OR datetime(exit_time) >= datetime('now', '-' || ? || ' days'))
                 """,
-                (mode, days),
+                (mode,),
             )
         else:
             cursor.execute(
@@ -562,9 +571,7 @@ class TradeDatabase:
                     COUNT(*) as total_rows,
                     COUNT(CASE WHEN exit_price IS NULL THEN 1 END) as open_rows
                 FROM trades
-                WHERE (exit_time IS NULL OR datetime(exit_time) >= datetime('now', '-' || ? || ' days'))
                 """,
-                (days,),
             )
 
         row = cursor.fetchone()
@@ -652,7 +659,7 @@ class TradeDatabase:
             strategy_stats[strategy_key]["pnl"] = round(float(strategy_stats[strategy_key]["pnl"]) + pnl, 2)
 
             exit_time = str(trade.get("exit_time", "") or "")
-            day_key = exit_time[:10] if len(exit_time) >= 10 else "UNKNOWN"
+            day_key = utc_date_key(exit_time) or "UNKNOWN"
             daily_pnl[day_key] = round(daily_pnl.get(day_key, 0.0) + pnl, 2)
 
         def _trade_summary(trade: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
@@ -674,7 +681,8 @@ class TradeDatabase:
 
         return {
             "period_days": days,
-            "label": f"近{days}天",
+            "label": f"近{days}天(UTC)",
+            "time_basis": "Binance UTC",
             "mode": mode or "all",
             "source_rows": source_rows,
             "split_rows": max(0, source_rows - closed_count),
@@ -707,16 +715,15 @@ class TradeDatabase:
         }
 
     def get_daily_report(self, report_date: str, mode: str = None) -> Dict[str, Any]:
-        """按自然日聚合已平仓交易，用于 Telegram 精简日报。"""
+        """按 Binance UTC 自然日聚合已平仓交易，用于 Telegram 精简日报。"""
         conn = self._get_connection()
         cursor = conn.cursor()
 
         sql = """
             SELECT * FROM trades
             WHERE exit_price IS NOT NULL
-            AND date(exit_time) = ?
         """
-        params: list[Any] = [report_date]
+        params: list[Any] = []
         if mode:
             sql += " AND mode = ?"
             params.append(mode)
@@ -725,6 +732,7 @@ class TradeDatabase:
         cursor.execute(sql, params)
         trades = [self._row_to_trade(row) for row in cursor.fetchall()]
         conn.close()
+        trades = [trade for trade in trades if is_utc_date(trade.exit_time, report_date)]
 
         sessions = self._aggregate_closed_trade_sessions(trades)
         closed_count = len(sessions)
@@ -859,6 +867,7 @@ class TradeDatabase:
 
         return {
             "date": report_date,
+            "time_basis": "Binance UTC",
             "mode": mode or "all",
             "source_rows": len(trades),
             "split_rows": max(0, len(trades) - closed_count),
@@ -897,32 +906,32 @@ class TradeDatabase:
         }
 
     def get_daily_entry_count(self, report_date: str, mode: str = None) -> int:
-        """Count entries opened on a natural day."""
+        """Count entries opened on a Binance UTC natural day."""
         conn = self._get_connection()
         cursor = conn.cursor()
-        sql = "SELECT COUNT(*) FROM trades WHERE date(entry_time) = ?"
-        params: list[Any] = [report_date]
+        sql = "SELECT entry_time FROM trades WHERE 1=1"
+        params: list[Any] = []
         if mode:
             sql += " AND mode = ?"
             params.append(mode)
         cursor.execute(sql, params)
-        count = int(cursor.fetchone()[0] or 0)
+        rows = cursor.fetchall()
         conn.close()
-        return count
+        return sum(1 for row in rows if is_utc_date(row["entry_time"], report_date))
 
     def get_daily_exception_entry_count(self, report_date: str, mode: str = None) -> int:
         """Count A+ override entries opened after the soft daily cap."""
         conn = self._get_connection()
         cursor = conn.cursor()
-        sql = "SELECT COUNT(*) FROM trades WHERE date(entry_time) = ? AND notes LIKE ?"
-        params: list[Any] = [report_date, "%entry_gate=soft_cap_override%"]
+        sql = "SELECT entry_time FROM trades WHERE notes LIKE ?"
+        params: list[Any] = ["%entry_gate=soft_cap_override%"]
         if mode:
             sql += " AND mode = ?"
             params.append(mode)
         cursor.execute(sql, params)
-        count = int(cursor.fetchone()[0] or 0)
+        rows = cursor.fetchall()
         conn.close()
-        return count
+        return sum(1 for row in rows if is_utc_date(row["entry_time"], report_date))
 
     def export_to_csv(self, output_path: Path, days: int = 30):
         """导出交易记录到 CSV"""

@@ -25,6 +25,7 @@ import time
 from datetime import datetime
 from pathlib import Path
 from typing import Any
+from services.time_basis import report_clock_label, utc8_window_label
 
 logger = logging.getLogger(__name__)
 
@@ -820,11 +821,20 @@ def format_summary_msg(
     daily_stats: dict | None = None,
 ) -> str:
     """格式化持仓汇总通知"""
+    stats_date = ""
+    stats_window = ""
+    if isinstance(daily_stats, dict):
+        stats_date = str(daily_stats.get("date", "") or "")
+        stats_window = str(daily_stats.get("utc8_window", "") or "")
     msg = f"""📊 <b>宙斯交易中枢 | 持仓汇总</b>
 
 <b>持仓数</b>  <code>{len(positions)}</code>
 <b>未实现</b>  <code>{"+" if total_pnl >= 0 else "-"}{_fmt_usdt(abs(total_pnl))} USDT</code>
-<b>已实现</b>  <code>{"+" if realized_pnl >= 0 else "-"}{_fmt_usdt(abs(realized_pnl))} USDT</code>"""
+<b>已实现(UTC日)</b>  <code>{"+" if realized_pnl >= 0 else "-"}{_fmt_usdt(abs(realized_pnl))} USDT</code>"""
+    if stats_date:
+        msg += f"\n<b>统计日</b>  <code>{_escape(stats_date)} UTC</code>"
+        if stats_window:
+            msg += f"\n<b>北京时间</b>  <code>{_escape(stats_window)}</code>"
     if total_balance > 0:
         msg += f"\n<b>总余额</b>  <code>{_fmt_usdt(total_balance)} USDT</code>"
     if available_balance > 0:
@@ -1057,6 +1067,9 @@ def format_scan_monitor_msg(
 def format_daily_report_msg(report: dict[str, Any]) -> str:
     """Format a compact daily trading review."""
     report_date = _escape(report.get("date", ""))
+    utc8_window = str(report.get("utc8_window", "") or "")
+    if not utc8_window and report_date:
+        utc8_window = utc8_window_label(str(report.get("date", "")))
     closed_trades = int(report.get("closed_trades", 0) or 0)
     total_pnl = float(report.get("total_pnl", 0) or 0)
     win_rate = float(report.get("win_rate", 0) or 0)
@@ -1067,7 +1080,8 @@ def format_daily_report_msg(report: dict[str, Any]) -> str:
 
     msg = f"""📝 <b>宙斯交易中枢 | 每日复盘</b>
 
-<code>{report_date}</code>
+<b>统计日</b>  <code>{report_date} UTC</code>
+<b>北京时间</b>  <code>{_escape(utc8_window)}</code>
 
 <b>已平仓</b>  <code>{closed_trades}</code>  |  <b>盈亏</b>  <code>{total_pnl:+,.2f} USDT</code> {pnl_emoji}
 <b>胜率</b>  <code>{win_rate:.1f}%</code>  |  <b>胜/负</b>  <code>{winning}</code>/<code>{losing}</code>
@@ -1078,7 +1092,7 @@ def format_daily_report_msg(report: dict[str, Any]) -> str:
         msg += f"\n<b>统计口径</b>  <code>{source_rows} 行平仓记录 → {closed_trades} 笔完整交易</code>"
 
     if closed_trades <= 0:
-        return msg + "\n\n📭 昨日无已平仓交易，系统继续观察中。"
+        return msg + "\n\n📭 该 UTC 统计日无已平仓交易，系统继续观察中。"
 
     avg_win = float(report.get("avg_win", 0) or 0)
     avg_loss = float(report.get("avg_loss", 0) or 0)
@@ -1265,10 +1279,11 @@ def _format_period_block(report: dict[str, Any]) -> str:
 
 def format_period_report_msg(reports: list[dict[str, Any]]) -> str:
     """Format rolling 7d/30d performance review for Telegram."""
-    now_text = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    now_text = report_clock_label()
     msg = f"""📈 <b>宙斯交易中枢 | 周期复盘</b>
 
-<code>{now_text}</code>"""
+<code>{now_text}</code>
+<b>统计口径</b>  <code>Binance UTC 自然日；UTC+8 仅作北京时间对照</code>"""
 
     valid_reports = [report for report in reports if isinstance(report, dict)]
     if not valid_reports:

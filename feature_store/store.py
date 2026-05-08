@@ -47,8 +47,8 @@ class FeatureStore:
         body.setdefault("stored_at", datetime.utcnow().isoformat(timespec="seconds") + "Z")
         self._append_jsonl("reviews.ndjson", body)
 
-    def summarize_entry_protection(self, report_date: str, tz_offset_hours: int = 8) -> dict[str, Any]:
-        """Summarize entry protection pass/fail events for a local-calendar day."""
+    def summarize_entry_protection(self, report_date: str, tz_offset_hours: int = 0) -> dict[str, Any]:
+        """Summarize entry protection pass/fail events for a UTC/Binance day."""
         summary: dict[str, Any] = {
             "attempts": 0,
             "ok": 0,

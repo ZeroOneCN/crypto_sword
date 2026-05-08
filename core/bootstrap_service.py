@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from datetime import datetime
 from logging import Logger
 from typing import Any
 
@@ -12,6 +11,7 @@ from telegram_notifier import (
     format_startup_msg,
     send_telegram_message,
 )
+from services.time_basis import utc_hour_key
 
 
 class BootstrapService:
@@ -92,7 +92,7 @@ class BootstrapService:
             if int(summary.get("open_positions", 0) or 0) <= 0:
                 return
             self.trader._send_position_summary(summary, force=True)
-            self.trader._last_hourly_summary_sent_for = datetime.now().strftime("%Y-%m-%d %H")
+            self.trader._last_hourly_summary_sent_for = utc_hour_key()
             self.trader._last_summary_time = 0.0
         except Exception as exc:
             self.logger.warning(f"Startup position summary skipped: {exc}")

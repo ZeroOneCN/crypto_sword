@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 import time
-from datetime import datetime, timedelta
+from datetime import datetime
 from typing import Any
 
 from adapters.rest_gateway import get_top_symbols_by_change_rest, get_top_symbols_by_volume_rest
@@ -20,6 +20,7 @@ from telegram_notifier import (
 )
 
 from .monitoring import build_monitor_delta, build_monitor_event, message_signature, stable_monitor_sort
+from services.time_basis import utc_hour_key, utc_previous_date_key, utc_today_key
 
 logger = logging.getLogger(__name__)
 
@@ -37,11 +38,11 @@ class CycleMixin:
         if not self.config.daily_report_enabled or not self.config.daily_report_on_first_cycle:
             return
 
-        today = datetime.now().date().isoformat()
+        today = utc_today_key()
         if self._last_daily_report_sent_for == today:
             return
 
-        report_date = (datetime.now().date() - timedelta(days=1)).isoformat()
+        report_date = utc_previous_date_key(1)
         report = self._enrich_daily_report_with_api({}, report_date)
 
         send_telegram_message(format_daily_report_msg(report))
@@ -51,7 +52,7 @@ class CycleMixin:
     def _send_period_report_if_due(self, today: str | None = None):
         if not self.config.daily_report_enabled:
             return
-        today = today or datetime.now().date().isoformat()
+        today = today or utc_today_key()
         if self._last_period_report_sent_for == today:
             return
         reports = self._get_period_reports_snapshot()
@@ -89,7 +90,7 @@ class CycleMixin:
         return self._filter_altcoin_symbols(merged)
 
     def _check_new_day(self):
-        today = datetime.now().date().isoformat()
+        today = utc_today_key()
         if today != self._daily_marker:
             self._daily_marker = today
             self.daily_pnl = 0.0
@@ -188,7 +189,7 @@ class CycleMixin:
 
     def _build_entry_gate_snapshot(self) -> dict[str, Any]:
         """Build daily throttle state before trying new entries."""
-        today = datetime.now().date().isoformat()
+        today = utc_today_key()
         now = time.time()
         if hasattr(self, "_entry_timestamps_today"):
             self._entry_timestamps_today = [
@@ -518,7 +519,7 @@ class CycleMixin:
 
     def _send_hourly_position_summary_if_due(self, summary: dict | None = None):
         """Send position summary once per natural hour, on the first cycle after the hour rolls."""
-        hour_key = datetime.now().strftime("%Y-%m-%d %H")
+        hour_key = utc_hour_key()
         if self._last_hourly_summary_sent_for == hour_key:
             return
         summary = self._build_position_summary(force_exchange_sync=True) if summary is None else summary

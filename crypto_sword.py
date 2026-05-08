@@ -63,6 +63,7 @@ from core.confirmation_mixin import ConfirmationMixin
 from core.market_mixin import MarketMixin
 from core.bootstrap_service import BootstrapService
 from feature_store import feature_store
+from services.time_basis import utc_hour_key, utc_today_key, utc8_window_label
 
 
 class CryptoSword(ExecutionMixin, ScannerMixin, CycleMixin, SyncMixin, ConfirmationMixin, MarketMixin):
@@ -75,7 +76,7 @@ class CryptoSword(ExecutionMixin, ScannerMixin, CycleMixin, SyncMixin, Confirmat
         self.db = TradeDatabase()
         self.daily_pnl = 0.0
         self.day_start_balance: float = 0.0
-        self._daily_marker = datetime.now().date().isoformat()
+        self._daily_marker = utc_today_key()
         self._daily_loss_alert_sent = False
         self.traded_symbols_today: set = set()
         self.running = True
@@ -118,7 +119,7 @@ class CryptoSword(ExecutionMixin, ScannerMixin, CycleMixin, SyncMixin, Confirmat
         self._entry_exception_timestamps_today: list[float] = []
         self._last_daily_report_sent_for: str = ""
         self._last_period_report_sent_for: str = ""
-        self._last_hourly_summary_sent_for: str = datetime.now().strftime("%Y-%m-%d %H")
+        self._last_hourly_summary_sent_for: str = utc_hour_key()
         self._last_watch_monitor_time: float = 0.0
         self._market_style_mode: str = "balanced"
         self._market_style_stats: dict[str, Any] = {}
@@ -160,6 +161,8 @@ class CryptoSword(ExecutionMixin, ScannerMixin, CycleMixin, SyncMixin, Confirmat
         """Build daily report from persisted closed-position records."""
         daily_report: dict[str, Any] = {
             "date": date_str,
+            "time_basis": "Binance UTC",
+            "utc8_window": utc8_window_label(date_str),
             "mode": self.config.mode,
             "closed_trades": 0,
             "winning_trades": 0,
@@ -187,7 +190,7 @@ class CryptoSword(ExecutionMixin, ScannerMixin, CycleMixin, SyncMixin, Confirmat
         }
         del report  # explicitly ignore caller snapshot
         try:
-            daily_report["entry_protection"] = feature_store.summarize_entry_protection(date_str, tz_offset_hours=8)
+            daily_report["entry_protection"] = feature_store.summarize_entry_protection(date_str, tz_offset_hours=0)
         except Exception as e:
             logger.debug(f"entry protection summary skipped [{date_str}]: {e}")
 
@@ -197,6 +200,8 @@ class CryptoSword(ExecutionMixin, ScannerMixin, CycleMixin, SyncMixin, Confirmat
                 entry_protection = daily_report.get("entry_protection", {})
                 daily_report.update(db_report)
                 daily_report["date"] = date_str
+                daily_report["time_basis"] = "Binance UTC"
+                daily_report["utc8_window"] = utc8_window_label(date_str)
                 daily_report["mode"] = self.config.mode
                 daily_report["entry_protection"] = entry_protection
             log_signature = "|".join(
@@ -224,7 +229,7 @@ class CryptoSword(ExecutionMixin, ScannerMixin, CycleMixin, SyncMixin, Confirmat
         return daily_report
 
     def _get_daily_report_snapshot(self, ttl_sec: float = 60.0, force: bool = False) -> dict[str, Any]:
-        report_date = datetime.now().date().isoformat()
+        report_date = utc_today_key()
         now = time.time()
         if (
             not force
