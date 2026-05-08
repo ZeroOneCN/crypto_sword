@@ -124,7 +124,10 @@ class PositionLifecycleMixin:
             market_snapshot={
                 **(signal.get("metrics", {}) or {}),
                 "_oi_funding": oi_funding,
-                "_entry_score": signal.get("score", {}) or {},
+                "_entry_score": {
+                    **(signal.get("score", {}) or {}),
+                    "strategy_line": strategy_line,
+                },
                 "_entry_gate": signal.get("_entry_gate_override") or "normal",
                 "_entry_gate_note": signal.get("_entry_gate_note") or "",
                 "_leverage_applied": leverage_applied,
@@ -652,56 +655,56 @@ class PositionLifecycleMixin:
                 return {
                     "name": "强趋势主升",
                     "take_profit_mode": "roi",
-                    "take_profit_targets": [25.0, 55.0, 100.0],
+                    "take_profit_targets": [45.0, 80.0, 130.0],
                     "take_profit_ratios": [0.10, 0.25, 0.65],
-                    "stop_loss_pct": 4.8,
+                    "stop_loss_pct": 7.0,
                 }
             if stage == "pre_break":
                 return {
                     "name": "预突破主攻",
                     "take_profit_mode": "roi",
-                    "take_profit_targets": [18.0, 40.0, 80.0],
+                    "take_profit_targets": [40.0, 70.0, 110.0],
                     "take_profit_ratios": [0.10, 0.30, 0.60],
-                    "stop_loss_pct": 4.2,
+                    "stop_loss_pct": 6.5,
                 }
             if stage == "confirmed_breakout":
                 return {
                     "name": "确认突破轻仓",
                     "take_profit_mode": "roi",
-                    "take_profit_targets": [15.0, 35.0, 65.0],
+                    "take_profit_targets": [35.0, 60.0, 95.0],
                     "take_profit_ratios": [0.15, 0.35, 0.50],
-                    "stop_loss_pct": 3.8,
+                    "stop_loss_pct": 6.0,
                 }
             if stage == "mania":
                 return {
                     "name": "过热反向观察",
                     "take_profit_mode": "roi",
-                    "take_profit_targets": [10.0, 22.0, 40.0],
+                    "take_profit_targets": [30.0, 50.0, 80.0],
                     "take_profit_ratios": [0.20, 0.35, 0.45],
-                    "stop_loss_pct": 3.0,
+                    "stop_loss_pct": 5.5,
                 }
             return {
                 "name": "普通趋势",
                 "take_profit_mode": "roi",
-                "take_profit_targets": [15.0, 35.0, 65.0],
+                "take_profit_targets": [35.0, 60.0, 95.0],
                 "take_profit_ratios": [0.15, 0.35, 0.50],
-                "stop_loss_pct": 4.0,
+                "stop_loss_pct": 6.0,
             }
         if strategy_line == "均线二启线":
             return {
                 "name": "均线二次启动",
                 "take_profit_mode": "roi",
-                "take_profit_targets": [14.0, 30.0, 60.0],
+                "take_profit_targets": [32.0, 55.0, 85.0],
                 "take_profit_ratios": [0.15, 0.35, 0.50],
-                "stop_loss_pct": 3.5,
+                "stop_loss_pct": 5.5,
             }
 
         return {
             "name": "默认策略",
             "take_profit_mode": "roi",
-            "take_profit_targets": [12.0, 28.0, 55.0],
+            "take_profit_targets": [35.0, 60.0, 95.0],
             "take_profit_ratios": [0.15, 0.35, 0.50],
-            "stop_loss_pct": 4.0,
+            "stop_loss_pct": 6.0,
         }
 
     def _strategy_stop_loss_pct(self, strategy_line: str = "") -> float:
