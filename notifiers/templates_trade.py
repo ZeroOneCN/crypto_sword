@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import os
 from datetime import datetime
 from typing import Any
 
@@ -29,6 +30,9 @@ from .telegram_sender import send_telegram_message
 _E = "\U0001f7e2"
 _E2 = "\U0001f534"
 _E3 = "\U0001f6d1"
+
+def _compact_trade_notify_enabled() -> bool:
+    return os.environ.get("TELEGRAM_COMPACT_TRADE_NOTIFY", "1").strip().lower() not in {"0", "false", "no"}
 
 def format_open_position_msg(
     symbol: str,
@@ -57,6 +61,24 @@ def format_open_position_msg(
     sl_pct = abs(entry_price - stop_loss) / entry_price * 100 if entry_price else 0.0
     tp_pct = abs(take_profit - entry_price) / entry_price * 100 if entry_price else 0.0
     notional_value = entry_price * quantity
+    if _compact_trade_notify_enabled():
+        lines = [
+            f"{direction_emoji} <b>宙斯交易中枢 | 开仓</b>",
+            "",
+            f"<b>{_escape(symbol)}</b>  {direction_text}  <code>{leverage}x</code>",
+            f"<b>入场</b> <code>{_fmt_price(entry_price)}</code>  <b>数量</b> <code>{_fmt_num(quantity)}</code>",
+            f"<b>名义</b> <code>{_fmt_usdt(notional_value)} USDT</code>",
+            f"<b>SL</b> <code>{_fmt_price(stop_loss)}</code> ({sl_pct:.1f}%)  <b>TP</b> <code>{_fmt_price(take_profit)}</code> ({tp_pct:.1f}%)",
+            f"<b>风险</b> <code>{_fmt_usdt(risk_amount)} USDT</code>  |  <code>{risk_pct:.1f}%</code>",
+        ]
+        if strategy_line:
+            lines.append(f"<b>策略</b> <code>{_escape(strategy_line)}</code>")
+        if score > 0:
+            lines.append(f"<b>评分</b> <code>{score:.0f}/100</code>")
+        if session_id:
+            lines.append(f"<b>流水</b> <code>{_escape(session_id)}</code>")
+        return "\n".join(lines)
+
     expected_sl_loss = abs(entry_price - stop_loss) * quantity if entry_price > 0 and stop_loss > 0 else risk_amount
     expected_tp_total = 0.0
     for target in take_profit_targets or []:
@@ -128,37 +150,31 @@ def format_close_position_msg(
     roi_pct: float = 0.0,
     price_move_pct: float = 0.0,
 ) -> str:
-    """格式化平仓通知"""
-    direction_emoji = _E if pnl >= 0 else _E2
+    """Format a compact close-position notification."""
+    del quantity, oi_funding
+    direction_text = format_direction_label(direction)
     pnl_emoji = _E if pnl >= 0 else _E2
     pnl_sign = "+" if pnl >= 0 else ""
-    direction_text = format_direction_label(direction)
-
-    direction_text = format_direction_label(direction)
-    emoji = "🟢" if pnl >= 0 else "🔴"
-
-    msg = f"""{emoji} <b>宙斯交易中枢 | 平仓</b>
-
-<b>{_escape(symbol)}</b>  {direction_text}
-<b>入场</b>  <code>{_fmt_price(entry_price)}</code>  →  <b>出场</b>  <code>{_fmt_price(exit_price)}</code>
-<b>盈亏</b>  {pnl_emoji} <b>{pnl_sign}{_fmt_usdt(pnl)} USDT</b>  ({pnl_sign}{pnl_pct:.2f}%)
-<b>原因</b>  <code>{_escape(_humanize_close_reason(reason))}</code>"""
-
-    if strategy_line:
-        msg += f"\n<b>策略</b>  <code>{_escape(strategy_line)}</code>"
-    oi_funding_line = _format_oi_funding_brief(oi_funding)
-    if oi_funding_line:
-        msg += f"\n{oi_funding_line}"
+    title_emoji = _E if pnl >= 0 else _E2
+    lines = [
+        f"{title_emoji} <b>宙斯交易中枢 | 平仓</b>",
+        "",
+        f"<b>{_escape(symbol)}</b>  {direction_text}",
+        f"<b>价格</b> <code>{_fmt_price(entry_price)}</code> → <code>{_fmt_price(exit_price)}</code>",
+        f"<b>盈亏</b> {pnl_emoji} <b>{pnl_sign}{_fmt_usdt(pnl)} USDT</b>  (<code>{pnl_sign}{pnl_pct:.2f}%</code>)",
+        f"<b>原因</b> <code>{_escape(_humanize_close_reason(reason))}</code>",
+    ]
     if price_move_pct:
-        msg += f"\n<b>价格涨幅</b>  <code>{price_move_pct:+.2f}%</code>"
+        lines.append(f"<b>价格涨幅</b> <code>{price_move_pct:+.2f}%</code>")
     if roi_pct:
-        msg += f"\n<b>实际ROI</b>  <code>{roi_pct:+.2f}%</code>"
+        lines.append(f"<b>ROI</b> <code>{roi_pct:+.2f}%</code>")
+    if strategy_line:
+        lines.append(f"<b>策略</b> <code>{_escape(strategy_line)}</code>")
     if duration_hours > 0:
-        msg += f"\n<b>持仓</b>  {_format_duration_from_hours(duration_hours)}"
+        lines.append(f"<b>持仓</b> {_format_duration_from_hours(duration_hours)}")
     if session_id:
-        msg += f"\n<b>流水号</b>  <code>{_escape(session_id)}</code>"
-
-    return msg
+        lines.append(f"<b>流水</b> <code>{_escape(session_id)}</code>")
+    return "\n".join(lines)
 
 def format_partial_take_profit_msg(
     symbol: str,
@@ -174,31 +190,25 @@ def format_partial_take_profit_msg(
     strategy_line: str = "",
     pnl_source: str = "",
 ) -> str:
-    """格式化分批止盈成交通知"""
+    """Format a compact partial-take-profit notification."""
+    del entry_price, pnl_source
     direction_text = format_direction_label(direction)
     pnl_sign = "+" if pnl >= 0 else ""
     pnl_emoji = _E if pnl >= 0 else _E2
     level_text = f"TP{level}" if level else "部分止盈"
-    entry_text = f"{_fmt_price(entry_price)}" if entry_price > 0 else "待同步"
-    pnl_pct_text = f"({pnl_sign}{pnl_pct:.2f}%)" if entry_price > 0 else "(比例待同步)"
-
-    pnl_pct_text = f"({pnl_sign}{pnl_pct:.2f}%)"
-
-    emoji = "🟢" if pnl >= 0 else "🔴"
-    msg = f"""{emoji} <b>宙斯交易中枢 | 分批止盈</b>
-
-<b>{_escape(symbol)}</b>  {direction_text}  |  <b>{_escape(level_text)}</b> ✅
-<b>入场</b>  <code>{_escape(entry_text)}</code>  →  <b>成交</b>  <code>{_fmt_price(exit_price)}</code>
-<b>本次</b>  {pnl_emoji} <b>{pnl_sign}{_fmt_usdt(pnl)} USDT</b>  {pnl_pct_text}  |  止盈 <code>{_fmt_num(quantity)}</code>
-<b>剩余</b>  <code>{_fmt_num(remaining_quantity)}</code>  继续持有"""
-
-    if pnl_source:
-        msg += f"\n<b>盈亏来源</b>  <code>{_escape(pnl_source)}</code>"
+    lines = [
+        f"{_E} <b>宙斯交易中枢 | 分批止盈</b>",
+        "",
+        f"<b>{_escape(symbol)}</b>  {direction_text}  |  <b>{_escape(level_text)}</b>",
+        f"<b>成交</b> <code>{_fmt_price(exit_price)}</code>  <b>数量</b> <code>{_fmt_num(quantity)}</code>",
+        f"<b>本次</b> {pnl_emoji} <b>{pnl_sign}{_fmt_usdt(pnl)} USDT</b>  (<code>{pnl_sign}{pnl_pct:.2f}%</code>)",
+        f"<b>剩余</b> <code>{_fmt_num(remaining_quantity)}</code>",
+    ]
     if strategy_line:
-        msg += f"\n<b>策略</b>  <code>{_escape(strategy_line)}</code>"
+        lines.append(f"<b>策略</b> <code>{_escape(strategy_line)}</code>")
     if session_id:
-        msg += f"\n<b>流水号</b>  <code>{_escape(session_id)}</code>"
-    return msg
+        lines.append(f"<b>流水</b> <code>{_escape(session_id)}</code>")
+    return "\n".join(lines)
 
 def format_protection_status_msg(
     symbol: str,

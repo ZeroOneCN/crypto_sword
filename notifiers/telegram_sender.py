@@ -13,6 +13,11 @@ import time
 from pathlib import Path
 from typing import Any
 
+try:
+    import requests
+except Exception:  # pragma: no cover - urllib fallback is kept for minimal hosts
+    requests = None
+
 from .labels import (
     _looks_like_placeholder,
     _normalize_telegram_value,
@@ -26,6 +31,7 @@ logger = logging.getLogger(__name__)
 _telegram_lock = threading.Lock()
 _last_message_time = 0.0
 _min_message_interval = 0.5
+_telegram_session_local = threading.local()
 
 def _int_env(name: str, default: int) -> int:
     try:
@@ -38,6 +44,22 @@ _telegram_queue: "queue.Queue[tuple[str, str | None]]" = queue.Queue(
 )
 _telegram_worker_started = False
 _telegram_worker_lock = threading.Lock()
+
+def _telegram_timeout() -> float:
+    try:
+        return max(1.0, float(os.environ.get("TELEGRAM_TIMEOUT_SEC", "4") or 4))
+    except Exception:
+        return 4.0
+
+def _telegram_session():
+    if requests is None:
+        return None
+    session = getattr(_telegram_session_local, "session", None)
+    if session is None:
+        session = requests.Session()
+        session.headers.update({"User-Agent": "HermesTraderTelegram/1.0"})
+        _telegram_session_local.session = session
+    return session
 
 def _hermes_home() -> Path:
     """Return Hermes home dir (cross-platform).
@@ -170,9 +192,6 @@ def _send_telegram_message_sync(message: str, parse_mode: str | None = "HTML") -
         url = f"https://api.telegram.org/bot{token}/sendMessage"
 
         try:
-            import urllib.error
-            import urllib.request
-
             attempts: list[tuple[str, str | None]] = [(message, parse_mode)]
             if parse_mode is not None:
                 attempts.append((_strip_html(message), None))
@@ -182,31 +201,45 @@ def _send_telegram_message_sync(message: str, parse_mode: str | None = "HTML") -
                 if attempt_parse_mode:
                     payload["parse_mode"] = attempt_parse_mode
 
-                data = json.dumps(payload).encode("utf-8")
-                req = urllib.request.Request(url, data=data, headers={"Content-Type": "application/json"})
+                if requests is not None:
+                    session = _telegram_session()
+                    response = session.post(url, json=payload, timeout=_telegram_timeout())  # type: ignore[union-attr]
+                    raw = response.text or ""
+                    if response.status_code >= 400:
+                        logger.error(f"Telegram HTTP {response.status_code}: {raw[:300]}")
+                        if response.status_code == 404:
+                            logger.error(
+                                "Telegram endpoint 404, usually caused by invalid bot token. "
+                                f"token={_sanitize_token_preview(token)}"
+                            )
+                        if response.status_code == 400 and index + 1 < len(attempts):
+                            continue
+                        response.raise_for_status()
+                    result = response.json() if raw else {}
+                else:
+                    import urllib.error
+                    import urllib.request
 
-                try:
-                    with urllib.request.urlopen(req, timeout=10) as response:
-                        result = json.loads(response.read().decode("utf-8"))
-                        _last_message_time = time.time()
-                        if result.get("ok"):
-                            if index > 0:
-                                logger.warning("Telegram HTML failed; plain-text fallback sent successfully")
-                            else:
-                                logger.info("Telegram message sent successfully")
-                            return True
-                        logger.error(f"Telegram API error: {result}")
-                except urllib.error.HTTPError as e:
-                    body = e.read().decode("utf-8", errors="replace")
-                    logger.error(f"Telegram HTTP {e.code}: {body[:300]}")
-                    if e.code == 404:
-                        logger.error(
-                            "Telegram endpoint 404, usually caused by invalid bot token. "
-                            f"token={_sanitize_token_preview(token)}"
-                        )
-                    if e.code == 400 and index + 1 < len(attempts):
-                        continue
-                    raise
+                    data = json.dumps(payload).encode("utf-8")
+                    req = urllib.request.Request(url, data=data, headers={"Content-Type": "application/json"})
+                    try:
+                        with urllib.request.urlopen(req, timeout=_telegram_timeout()) as response:
+                            result = json.loads(response.read().decode("utf-8"))
+                    except urllib.error.HTTPError as e:
+                        body = e.read().decode("utf-8", errors="replace")
+                        logger.error(f"Telegram HTTP {e.code}: {body[:300]}")
+                        if e.code == 400 and index + 1 < len(attempts):
+                            continue
+                        raise
+
+                _last_message_time = time.time()
+                if result.get("ok"):
+                    if index > 0:
+                        logger.warning("Telegram HTML failed; plain-text fallback sent successfully")
+                    else:
+                        logger.info("Telegram message sent successfully")
+                    return True
+                logger.error(f"Telegram API error: {result}")
 
             return False
         except Exception as e:

@@ -522,10 +522,10 @@ class CycleMixin:
         hour_key = utc_hour_key()
         if self._last_hourly_summary_sent_for == hour_key:
             return
-        summary = self._build_position_summary(force_exchange_sync=True) if summary is None else summary
-        self._send_position_summary(summary, force=True)
         self._last_hourly_summary_sent_for = hour_key
         self._last_summary_time = time.time()
+        summary = self._build_position_summary(force_exchange_sync=True) if summary is None else summary
+        self._send_position_summary(summary, force=True)
 
     def _watchlist_monitor_items(self) -> list[dict[str, Any]]:
         items: list[dict[str, Any]] = []

@@ -37,13 +37,7 @@
       background: rgba(8, 12, 19, 0.72);
       border-bottom: 1px solid var(--line);
     }
-    .title-row {
-      display: flex;
-      justify-content: space-between;
-      gap: 16px;
-      align-items: center;
-      flex-wrap: wrap;
-    }
+    .title-row { display: flex; justify-content: space-between; gap: 16px; align-items: center; flex-wrap: wrap; }
     h1 { margin: 0; font-size: clamp(22px, 4vw, 34px); letter-spacing: 0.04em; }
     .sub { color: var(--muted); font-size: 13px; margin-top: 6px; }
     .pill {
@@ -71,7 +65,8 @@
     .value { font-size: clamp(20px, 3vw, 30px); font-weight: 800; margin-top: 8px; }
     .hint { margin-top: 8px; color: var(--muted); font-size: 12px; }
     .panel { padding: 18px; margin-top: 14px; overflow: hidden; }
-    .panel h2 { margin: 0 0 14px; font-size: 18px; }
+    .panel-head { display: flex; justify-content: space-between; gap: 12px; align-items: center; flex-wrap: wrap; margin-bottom: 14px; }
+    .panel h2 { margin: 0; font-size: 18px; }
     table { width: 100%; border-collapse: collapse; font-size: 13px; }
     th, td { padding: 11px 10px; border-bottom: 1px solid var(--line); text-align: left; white-space: nowrap; }
     th { color: var(--muted); font-weight: 600; background: rgba(255,255,255,0.02); }
@@ -98,8 +93,8 @@
       color: #b8c7de;
       white-space: pre-wrap;
     }
-    .toolbar { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; }
-    button, a.button {
+    .toolbar, .pager { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; }
+    button, a.button, select {
       border: 1px solid var(--line);
       color: var(--text);
       background: rgba(255,255,255,0.06);
@@ -110,6 +105,7 @@
       font: inherit;
     }
     button:hover, a.button:hover { background: rgba(112,183,255,0.15); }
+    button:disabled { opacity: 0.45; cursor: not-allowed; }
     @media (max-width: 1100px) {
       .cards, .three { grid-template-columns: repeat(2, minmax(0, 1fr)); }
       .two { grid-template-columns: 1fr; }
@@ -125,13 +121,13 @@
     <div class="title-row">
       <div>
         <h1>宙斯交易中枢 · 数据看板</h1>
-        <div class="sub">只读自动刷新，不参与下单；统计口径以 Binance UTC 为准。</div>
+        <div class="sub">只读自动刷新，不参与下单；统计以 Binance UTC 自然日为准，页面同时标注 UTC+8 辅助窗口。</div>
       </div>
       <div class="toolbar">
         <span class="pill"><span class="status-dot"></span><span id="status">连接中</span></span>
         <span class="pill" id="clock">--</span>
         <button onclick="loadAll(true)">立即刷新</button>
-        <a class="button" href="/api/export/trades.csv" target="_blank">下载CSV</a>
+        <a class="button" href="/api/export/trades.csv" target="_blank">下载全部 CSV</a>
       </div>
     </div>
   </header>
@@ -140,23 +136,23 @@
       <div class="card"><div class="label">总余额</div><div class="value" id="totalBalance">--</div><div class="hint">Binance Futures</div></div>
       <div class="card"><div class="label">可用余额</div><div class="value" id="availableBalance">--</div><div class="hint">可开仓资金</div></div>
       <div class="card"><div class="label">未实现盈亏</div><div class="value" id="unrealized">--</div><div class="hint">当前持仓浮盈亏</div></div>
-      <div class="card"><div class="label">今日已实现(UTC)</div><div class="value" id="todayPnl">--</div><div class="hint" id="todayWindow">--</div></div>
-      <div class="card"><div class="label">近7天净盈亏</div><div class="value" id="pnl7">--</div><div class="hint" id="pf7">--</div></div>
-      <div class="card"><div class="label">近30天净盈亏</div><div class="value" id="pnl30">--</div><div class="hint" id="pf30">--</div></div>
+      <div class="card"><div class="label">今日净盈亏 UTC</div><div class="value" id="todayPnl">--</div><div class="hint" id="todayWindow">--</div></div>
+      <div class="card"><div class="label">今日手续费</div><div class="value" id="todayFee">--</div><div class="hint">Binance income 本地缓存</div></div>
+      <div class="card"><div class="label">近30天手续费</div><div class="value" id="fee30">--</div><div class="hint">历史统计一并展示</div></div>
     </section>
 
     <section class="grid two">
       <div class="panel">
-        <h2>当前持仓</h2>
+        <div class="panel-head"><h2>当前持仓</h2><span class="pill" id="orderSummary">保护单 --</span></div>
         <div class="scroll"><table>
           <thead><tr><th>币种</th><th>方向</th><th>数量</th><th>入场</th><th>标记</th><th>未实现</th><th>ROI</th><th>保护单</th></tr></thead>
           <tbody id="positions"></tbody>
         </table></div>
       </div>
       <div class="panel">
-        <h2>今日战况</h2>
+        <div class="panel-head"><h2>今日战况</h2><span class="pill" id="incomeSource">来源 --</span></div>
         <div class="grid three">
-          <div class="card"><div class="label">完整交易</div><div class="value" id="todayTrades">--</div><div class="hint">分批TP按1笔算</div></div>
+          <div class="card"><div class="label">完整交易</div><div class="value" id="todayTrades">--</div><div class="hint">分批 TP 按 1 笔算</div></div>
           <div class="card"><div class="label">胜率</div><div class="value" id="todayWinRate">--</div><div class="hint">SQLite 聚合</div></div>
           <div class="card"><div class="label">盈亏比</div><div class="value" id="todayPayoff">--</div><div class="hint">均盈 / 均亏</div></div>
         </div>
@@ -164,29 +160,37 @@
     </section>
 
     <section class="panel">
-      <h2>周期复盘</h2>
+      <div class="panel-head"><h2>周期复盘</h2><span class="muted">净盈亏优先使用 Binance income，同步后落入本地 DB。</span></div>
       <div class="scroll"><table>
-        <thead><tr><th>周期</th><th>完整交易</th><th>总盈亏(DB)</th><th>交易所净收入</th><th>胜率</th><th>笔均</th><th>盈亏比</th><th>收益因子</th><th>最佳</th><th>最差</th></tr></thead>
+        <thead><tr><th>周期</th><th>完整交易</th><th>DB盈亏</th><th>交易所净盈亏</th><th>手续费</th><th>资金费</th><th>胜率</th><th>笔均</th><th>收益因子</th><th>最佳</th><th>最差</th></tr></thead>
         <tbody id="periods"></tbody>
       </table></div>
     </section>
 
     <section class="panel">
-      <h2>最近完整交易</h2>
+      <div class="panel-head">
+        <h2>最近完整交易</h2>
+        <div class="pager">
+          <span class="pill" id="tradePageInfo">第 1 页</span>
+          <button id="prevPage" onclick="changeTradePage(-1)">上一页</button>
+          <button id="nextPage" onclick="changeTradePage(1)">下一页</button>
+        </div>
+      </div>
       <div class="scroll"><table>
-        <thead><tr><th>时间(UTC)</th><th>币种</th><th>方向</th><th>策略</th><th>入场</th><th>出场</th><th>盈亏</th><th>涨幅</th><th>原因</th><th>持仓</th></tr></thead>
+        <thead><tr><th>时间(UTC)</th><th>币种</th><th>方向</th><th>策略</th><th>入场</th><th>出场</th><th>盈亏</th><th>手续费</th><th>资金费</th><th>涨幅</th><th>原因</th><th>持仓</th></tr></thead>
         <tbody id="recentTrades"></tbody>
       </table></div>
     </section>
 
     <section class="panel">
-      <h2>运行日志尾部</h2>
+      <div class="panel-head"><h2>运行日志尾部</h2><span class="muted">仅展示最近 60 行</span></div>
       <div class="log" id="logs">读取中...</div>
     </section>
   </main>
 
   <script>
     const fmt = new Intl.NumberFormat('en-US', { maximumFractionDigits: 6 });
+    const tradeState = { page: 1, perPage: 15, totalPages: 1 };
     const money = v => `${Number(v || 0) >= 0 ? '+' : ''}${fmt.format(Number(v || 0))} USDT`;
     const plainMoney = v => `${fmt.format(Number(v || 0))} USDT`;
     const pct = v => `${Number(v || 0) >= 0 ? '+' : ''}${Number(v || 0).toFixed(2)}%`;
@@ -231,16 +235,19 @@
       const body = document.getElementById('periods');
       const rows = [['近7天', periods['7']], ['近30天', periods['30']]];
       body.innerHTML = rows.map(([label, r]) => {
+        r = r || {};
+        const income = r.income_summary || r.exchange_income || {};
         const best = r.best_trade ? `${r.best_trade.symbol} ${money(r.best_trade.pnl)}` : '--';
         const worst = r.worst_trade ? `${r.worst_trade.symbol} ${money(r.worst_trade.pnl)}` : '--';
         return `<tr>
           ${cell(label)}
           ${cell(r.closed_trades || 0)}
-          ${cell(money(r.total_pnl), cls(r.total_pnl))}
-          ${cell(money(r.exchange_net_pnl), cls(r.exchange_net_pnl))}
+          ${cell(money(r.db_total_pnl ?? r.total_pnl), cls(r.db_total_pnl ?? r.total_pnl))}
+          ${cell(money(r.exchange_net_pnl ?? r.total_pnl), cls(r.exchange_net_pnl ?? r.total_pnl))}
+          ${cell(money(income.commission || 0), 'bad')}
+          ${cell(money(income.funding_fee || 0), cls(income.funding_fee))}
           ${cell(`${Number(r.win_rate || 0).toFixed(2)}%`)}
           ${cell(money(r.avg_pnl), cls(r.avg_pnl))}
-          ${cell(Number(r.payoff_ratio || 0).toFixed(2))}
           ${cell(Number(r.profit_factor || 0).toFixed(2))}
           ${cell(best, 'good')}
           ${cell(worst, 'bad')}
@@ -248,13 +255,20 @@
       }).join('');
     }
 
-    function renderTrades(rows) {
+    function renderTradesPage(pageData) {
+      const rows = pageData.trades || [];
+      tradeState.page = pageData.page || 1;
+      tradeState.totalPages = pageData.total_pages || 1;
+      const info = `第 ${tradeState.page}/${tradeState.totalPages} 页 · 共 ${pageData.total || 0} 笔`;
+      document.getElementById('tradePageInfo').textContent = info;
+      document.getElementById('prevPage').disabled = tradeState.page <= 1;
+      document.getElementById('nextPage').disabled = tradeState.page >= tradeState.totalPages;
       const body = document.getElementById('recentTrades');
-      if (!rows || !rows.length) {
-        body.innerHTML = `<tr><td colspan="10" class="muted">暂无已平仓交易。</td></tr>`;
+      if (!rows.length) {
+        body.innerHTML = `<tr><td colspan="12" class="muted">暂无已平仓交易。</td></tr>`;
         return;
       }
-      body.innerHTML = rows.slice(0, 80).map(t => `<tr>
+      body.innerHTML = rows.map(t => `<tr>
         ${cell((t.exit_time || '').replace('T', ' ').replace('Z', ''))}
         ${cell(`<b>${t.symbol}</b>`)}
         ${cell(t.side_label)}
@@ -262,10 +276,24 @@
         ${cell(price(t.entry_price))}
         ${cell(price(t.exit_price))}
         ${cell(money(t.pnl), cls(t.pnl))}
+        ${cell(money(t.commission || 0), 'bad')}
+        ${cell(money(t.funding_fee || 0), cls(t.funding_fee))}
         ${cell(pct(t.pnl_pct), cls(t.pnl_pct))}
         ${cell(t.exit_reason_label)}
         ${cell(hold(t.hold_minutes))}
       </tr>`).join('');
+    }
+
+    async function loadTradesPage(page = tradeState.page) {
+      const res = await fetch(`/api/trades?days=30&page=${page}&per_page=${tradeState.perPage}`, { cache: 'no-store' });
+      const data = await res.json();
+      if (!data.ok) throw new Error(data.error || 'trades api error');
+      renderTradesPage(data);
+    }
+
+    function changeTradePage(delta) {
+      const next = Math.min(Math.max(1, tradeState.page + delta), tradeState.totalPages);
+      loadTradesPage(next).catch(err => document.getElementById('status').textContent = `分页异常：${err.message}`);
     }
 
     async function loadAll(manual=false) {
@@ -277,22 +305,24 @@
         document.getElementById('clock').textContent = data.clock || '--';
         const account = data.account || {};
         const today = data.today || {};
+        const todayIncome = today.income_summary || today.exchange_income || {};
         const periods = data.periods || {};
+        const p30Income = periods['30']?.income_summary || periods['30']?.exchange_income || {};
         setText('totalBalance', plainMoney(account.total_wallet_balance));
         setText('availableBalance', plainMoney(account.available_balance));
         setText('unrealized', money(account.total_unrealized_pnl), cls(account.total_unrealized_pnl));
         setText('todayPnl', money(today.exchange_net_pnl ?? today.total_pnl), cls(today.exchange_net_pnl ?? today.total_pnl));
+        setText('todayFee', money(todayIncome.commission || 0), 'bad');
+        setText('fee30', money(p30Income.commission || 0), 'bad');
         document.getElementById('todayWindow').textContent = today.utc8_window || data.time_basis || '';
-        setText('pnl7', money(periods['7']?.exchange_net_pnl ?? periods['7']?.total_pnl), cls(periods['7']?.exchange_net_pnl ?? periods['7']?.total_pnl));
-        document.getElementById('pf7').textContent = `PF ${Number(periods['7']?.profit_factor || 0).toFixed(2)} | 胜率 ${Number(periods['7']?.win_rate || 0).toFixed(1)}%`;
-        setText('pnl30', money(periods['30']?.exchange_net_pnl ?? periods['30']?.total_pnl), cls(periods['30']?.exchange_net_pnl ?? periods['30']?.total_pnl));
-        document.getElementById('pf30').textContent = `PF ${Number(periods['30']?.profit_factor || 0).toFixed(2)} | 胜率 ${Number(periods['30']?.win_rate || 0).toFixed(1)}%`;
+        document.getElementById('incomeSource').textContent = `来源 ${todayIncome.source || today.pnl_source || 'DB'}`;
+        document.getElementById('orderSummary').textContent = `保护单 ${data.orders?.total || 0}`;
         setText('todayTrades', today.closed_trades || 0);
         setText('todayWinRate', `${Number(today.win_rate || 0).toFixed(1)}%`);
         setText('todayPayoff', Number(today.payoff_ratio || 0).toFixed(2));
         renderPositions(account.positions || []);
         renderPeriods(periods);
-        renderTrades(data.recent_trades || []);
+        renderTradesPage(data.recent_trades || { trades: [], page: 1, total_pages: 1, total: 0 });
         const log = data.log_tail || {};
         document.getElementById('logs').textContent = (log.lines || []).join('\n') || '暂无日志';
       } catch (err) {

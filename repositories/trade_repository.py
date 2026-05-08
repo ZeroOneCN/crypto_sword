@@ -165,6 +165,31 @@ class TradeDatabase:
         cursor.execute("""
             CREATE INDEX IF NOT EXISTS idx_trade_reviews_session ON trade_reviews(session_id)
         """)
+
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS exchange_income_rows (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                tran_id TEXT,
+                time_ms INTEGER NOT NULL,
+                symbol TEXT,
+                income_type TEXT NOT NULL,
+                income REAL NOT NULL DEFAULT 0.0,
+                asset TEXT,
+                info TEXT,
+                raw_json TEXT,
+                created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(tran_id, time_ms, income_type, symbol, income)
+            )
+        """)
+        cursor.execute("""
+            CREATE INDEX IF NOT EXISTS idx_exchange_income_time ON exchange_income_rows(time_ms)
+        """)
+        cursor.execute("""
+            CREATE INDEX IF NOT EXISTS idx_exchange_income_symbol ON exchange_income_rows(symbol)
+        """)
+        cursor.execute("""
+            CREATE INDEX IF NOT EXISTS idx_exchange_income_type ON exchange_income_rows(income_type)
+        """)
         
         conn.commit()
         conn.close()
@@ -932,6 +957,100 @@ class TradeDatabase:
         rows = cursor.fetchall()
         conn.close()
         return sum(1 for row in rows if is_utc_date(row["entry_time"], report_date))
+
+    @staticmethod
+    def _datetime_to_ms(value: Any) -> int:
+        parsed = parse_db_datetime(value)
+        if not parsed:
+            return 0
+        return int(parsed.timestamp() * 1000)
+
+    def upsert_exchange_income_rows(self, rows: list[dict[str, Any]]) -> int:
+        """Persist Binance income rows for dashboard/report fallback."""
+        if not rows:
+            return 0
+        conn = self._get_connection()
+        cursor = conn.cursor()
+        written = 0
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            try:
+                time_ms = int(row.get("time", 0) or 0)
+                income_type = str(row.get("incomeType", "UNKNOWN") or "UNKNOWN").upper()
+                symbol = str(row.get("symbol", "") or "").upper()
+                income = float(row.get("income", 0) or 0)
+            except Exception:
+                continue
+            cursor.execute(
+                """
+                INSERT OR IGNORE INTO exchange_income_rows (
+                    tran_id, time_ms, symbol, income_type, income, asset, info, raw_json
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    str(row.get("tranId", "") or ""),
+                    time_ms,
+                    symbol,
+                    income_type,
+                    income,
+                    str(row.get("asset", "") or ""),
+                    str(row.get("info", "") or ""),
+                    json.dumps(row, ensure_ascii=False, sort_keys=True, default=str),
+                ),
+            )
+            written += int(cursor.rowcount > 0)
+        conn.commit()
+        conn.close()
+        return written
+
+    def get_exchange_income_rows(
+        self,
+        start: Any,
+        end: Any,
+        *,
+        symbol: str | None = None,
+        income_type: str | None = None,
+    ) -> list[dict[str, Any]]:
+        """Read persisted Binance income rows by UTC window."""
+        start_ms = self._datetime_to_ms(start)
+        end_ms = self._datetime_to_ms(end)
+        if start_ms <= 0 or end_ms <= 0:
+            return []
+        sql = """
+            SELECT tran_id AS tranId, time_ms AS time, symbol, income_type AS incomeType,
+                   income, asset, info, raw_json
+            FROM exchange_income_rows
+            WHERE time_ms >= ? AND time_ms < ?
+        """
+        params: list[Any] = [start_ms, end_ms]
+        if symbol:
+            sql += " AND symbol = ?"
+            params.append(symbol.upper())
+        if income_type:
+            sql += " AND income_type = ?"
+            params.append(income_type.upper())
+        sql += " ORDER BY time_ms ASC, id ASC"
+        conn = self._get_connection()
+        cursor = conn.cursor()
+        cursor.execute(sql, params)
+        rows = [dict(row) for row in cursor.fetchall()]
+        conn.close()
+        return rows
+
+    def get_exchange_income_bounds(self) -> dict[str, Any]:
+        """Return local exchange-income cache coverage."""
+        conn = self._get_connection()
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            SELECT COUNT(*) AS rows, MIN(time_ms) AS first_ms, MAX(time_ms) AS last_ms
+            FROM exchange_income_rows
+            """
+        )
+        row = cursor.fetchone()
+        conn.close()
+        return dict(row) if row else {"rows": 0, "first_ms": None, "last_ms": None}
 
     def export_to_csv(self, output_path: Path, days: int = 30):
         """导出交易记录到 CSV"""

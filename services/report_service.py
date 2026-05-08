@@ -9,8 +9,15 @@ from typing import Any
 
 from feature_store import feature_store
 from repositories.trade_repository import TradeDatabase, TradeRecord
-from services.accounting_service import fetch_daily_income_summary, fetch_period_income_summary
-from services.time_basis import parse_db_datetime, utc_today_key, utc8_window_label
+from services.accounting_service import fetch_income_rows, summarize_income_rows
+from services.time_basis import (
+    parse_db_datetime,
+    utc_cutoff_for_days,
+    utc_day_window,
+    utc_now,
+    utc_today_key,
+    utc8_window_label,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -134,7 +141,8 @@ class ReportService:
             logger.debug("entry protection summary skipped [%s]: %s", date_key, exc)
             report.setdefault("entry_protection", {})
 
-        self._merge_exchange_income(report, fetch_daily_income_summary(date_key))
+        start, end = utc_day_window(date_key)
+        self._merge_exchange_income(report, self._income_summary_for_window(start, end))
         return report
 
     def period_report(self, days: int = 7, mode: str = "live") -> dict[str, Any]:
@@ -151,13 +159,19 @@ class ReportService:
                 "total_pnl": 0.0,
                 "reason_counts": {},
             }
-        self._merge_exchange_income(report, fetch_period_income_summary(days))
+        self._merge_exchange_income(report, self._income_summary_for_window(utc_cutoff_for_days(days), utc_now()))
         return report
 
     def period_reports(self, days_list: tuple[int, ...] = (7, 30), mode: str = "live") -> list[dict[str, Any]]:
         return [self.period_report(days=days, mode=mode) for days in days_list]
 
-    def recent_trades(self, days: int = 30, limit: int = 80, mode: str = "live") -> list[dict[str, Any]]:
+    def recent_trades(
+        self,
+        days: int = 30,
+        limit: int = 80,
+        mode: str = "live",
+        offset: int = 0,
+    ) -> list[dict[str, Any]]:
         trades = self.db.get_closed_trades(days=days, mode=mode)
         sessions = self.db._aggregate_closed_trade_sessions(trades)
         sessions.sort(
@@ -165,8 +179,11 @@ class ReportService:
             reverse=True,
         )
         result = []
-        for item in sessions[: max(1, min(limit, 5000))]:
+        offset = max(0, int(offset or 0))
+        limit = max(1, min(int(limit or 80), 100000))
+        for item in sessions[offset : offset + limit]:
             pnl = _safe_float(item.get("pnl"))
+            income = self._income_for_trade_session(item)
             result.append(
                 {
                     "session_id": item.get("session_id", ""),
@@ -184,12 +201,20 @@ class ReportService:
                     "exit_reason": item.get("exit_reason", "") or "UNKNOWN",
                     "exit_reason_label": _reason_label(item.get("exit_reason")),
                     "pnl": round(pnl, 8),
+                    "commission": round(_safe_float(income.get("commission")), 8),
+                    "fee": round(abs(_safe_float(income.get("commission"))), 8),
+                    "funding_fee": round(_safe_float(income.get("funding_fee")), 8),
+                    "exchange_net_pnl": round(_safe_float(income.get("net_pnl")), 8),
                     "pnl_pct": round(_safe_float(item.get("pnl_pct")), 4),
                     "rows": _safe_int(item.get("rows"), 1),
                     "result": "win" if pnl > 0 else ("loss" if pnl < 0 else "flat"),
                 }
             )
         return result
+
+    def recent_trades_count(self, days: int = 30, mode: str = "live") -> int:
+        trades = self.db.get_closed_trades(days=days, mode=mode)
+        return len(self.db._aggregate_closed_trade_sessions(trades))
 
     def open_db_trades(self, mode: str = "live") -> list[dict[str, Any]]:
         result = []
@@ -211,6 +236,41 @@ class ReportService:
             )
         return result
 
+    def _income_summary_for_window(self, start: datetime, end: datetime) -> dict[str, Any]:
+        """Fetch Binance income first, persist it, then report from local DB."""
+        source = "db"
+        fetch_error = ""
+        try:
+            rows = fetch_income_rows(start, end)
+            if rows:
+                self.db.upsert_exchange_income_rows(rows)
+                source = "binance_synced_db"
+        except Exception as exc:
+            fetch_error = str(exc)
+            logger.warning("Binance income sync failed; using local DB cache: %s", exc)
+
+        db_rows = self.db.get_exchange_income_rows(start, end)
+        summary = summarize_income_rows(db_rows)
+        summary["source"] = source
+        summary["available"] = bool(db_rows)
+        summary["start_utc"] = start.isoformat().replace("+00:00", "Z")
+        summary["end_utc"] = end.isoformat().replace("+00:00", "Z")
+        summary["cache_bounds"] = self.db.get_exchange_income_bounds()
+        if fetch_error:
+            summary["sync_error"] = fetch_error
+        if not db_rows and fetch_error:
+            summary["reason"] = fetch_error
+        return summary
+
+    def _income_for_trade_session(self, item: dict[str, Any]) -> dict[str, Any]:
+        start = parse_db_datetime(item.get("entry_time"))
+        end = parse_db_datetime(item.get("exit_time"))
+        symbol = str(item.get("symbol", "") or "").upper()
+        if not start or not end or not symbol:
+            return {"net_pnl": 0.0, "commission": 0.0, "funding_fee": 0.0, "rows": 0}
+        rows = self.db.get_exchange_income_rows(start, end, symbol=symbol)
+        return summarize_income_rows(rows)
+
     def _merge_exchange_income(self, report: dict[str, Any], income_summary: dict[str, Any]) -> None:
         report["exchange_income"] = income_summary
         report["exchange_net_pnl"] = _safe_float(income_summary.get("net_pnl"))
@@ -227,4 +287,3 @@ class ReportService:
         report["pnl_source"] = "exchange_income"
         report["income_summary"] = income_summary
         report["pnl_diff_vs_db"] = round(exchange_net_pnl - db_total_pnl, 8)
-

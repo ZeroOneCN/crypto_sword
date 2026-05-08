@@ -168,8 +168,24 @@ class DashboardData:
 
         return self.cache.get(f"today:{utc_today_key()}", STATS_TTL_SEC, _load)
 
-    def recent_trades(self, days: int = 30, limit: int = 80) -> list[dict[str, Any]]:
-        return self.reports.recent_trades(days=days, limit=limit, mode="live")
+    def recent_trades(self, days: int = 30, limit: int = 80, offset: int = 0) -> list[dict[str, Any]]:
+        return self.reports.recent_trades(days=days, limit=limit, offset=offset, mode="live")
+
+    def recent_trades_page(self, days: int = 30, page: int = 1, per_page: int = 15) -> dict[str, Any]:
+        page = max(1, _safe_int(page, 1))
+        per_page = max(1, min(_safe_int(per_page, 15), 100))
+        total = self.reports.recent_trades_count(days=days, mode="live")
+        offset = (page - 1) * per_page
+        rows = self.recent_trades(days=days, limit=per_page, offset=offset)
+        total_pages = max(1, (total + per_page - 1) // per_page)
+        return {
+            "days": days,
+            "page": page,
+            "per_page": per_page,
+            "total": total,
+            "total_pages": total_pages,
+            "trades": rows,
+        }
 
     def open_db_trades(self) -> list[dict[str, Any]]:
         return self.reports.open_db_trades(mode="live")
@@ -217,7 +233,7 @@ class DashboardData:
             },
             "today": today,
             "periods": {"7": period7, "30": period30},
-            "recent_trades": self.recent_trades(days=30, limit=80),
+            "recent_trades": self.recent_trades_page(days=30, page=1, per_page=15),
             "open_db_trades": self.open_db_trades(),
             "log_tail": self.log_tail(60),
         }

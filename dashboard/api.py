@@ -53,8 +53,10 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 self._send_json(DATA.overview())
             elif path == "/api/trades":
                 days = _safe_int((query.get("days") or ["30"])[0], 30)
-                limit = _safe_int((query.get("limit") or ["200"])[0], 200)
-                self._send_json({"ok": True, "trades": DATA.recent_trades(days=days, limit=limit)})
+                page = _safe_int((query.get("page") or ["1"])[0], 1)
+                per_page = _safe_int((query.get("per_page") or query.get("limit") or ["15"])[0], 15)
+                payload = DATA.recent_trades_page(days=days, page=page, per_page=per_page)
+                self._send_json({"ok": True, **payload})
             elif path == "/api/positions":
                 account = DATA.account_snapshot()
                 orders = DATA.order_snapshot()
@@ -68,7 +70,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self._send_json({"ok": False, "error": str(exc)}, HTTPStatus.INTERNAL_SERVER_ERROR)
 
     def _send_trade_csv(self) -> None:
-        rows = DATA.recent_trades(days=365, limit=5000)
+        DATA.period_report(365)
+        rows = DATA.recent_trades(days=3650, limit=100000)
         buf = io.StringIO()
         fieldnames = [
             "exit_time",
@@ -81,6 +84,9 @@ class DashboardHandler(BaseHTTPRequestHandler):
             "quantity",
             "pnl",
             "pnl_pct",
+            "commission",
+            "funding_fee",
+            "exchange_net_pnl",
             "exit_reason_label",
             "session_id",
             "rows",
