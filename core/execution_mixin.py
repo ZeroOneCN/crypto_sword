@@ -8,7 +8,6 @@ from datetime import datetime
 from typing import Optional
 
 from feature_store import feature_store
-from speed_executor import quick_close_position
 from telegram_notifier import (
     format_direction_label,
     format_entry_failure_detail,
@@ -18,6 +17,7 @@ from telegram_notifier import (
 )
 from services.capital_allocator import capital_allocator
 from services.execution_service import execution_service
+from services.order_service import order_service
 from services.risk_service import risk_service
 from services.exit_service import ExitServiceMixin
 from services.position_lifecycle import PositionLifecycleMixin
@@ -517,7 +517,7 @@ class ExecutionMixin(ProtectionServiceMixin, PositionLifecycleMixin, ExitService
 
             if protection_errors:
                 close_side = "SELL" if direction == "LONG" else "BUY"
-                flat_result = quick_close_position(
+                flat_result = order_service.quick_close(
                     symbol=symbol,
                     side=close_side,
                     quantity=actual_quantity,

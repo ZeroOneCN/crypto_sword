@@ -4,7 +4,8 @@ from __future__ import annotations
 
 from typing import Any
 
-from binance_trading_executor import TradingSignal, execute_trade, should_trade
+from binance_trading_executor import TradingSignal, should_trade
+from services.order_service import order_service
 
 
 class ExecutionService:
@@ -43,7 +44,7 @@ class ExecutionService:
     ) -> dict[str, Any]:
         roi_targets = take_profit_target_pcts if take_profit_mode == "roi" else None
         price_targets = take_profit_target_pcts if take_profit_mode != "roi" else None
-        return execute_trade(
+        return order_service.execute_trade(
             signal=signal,
             account_balance=account_balance,
             risk_per_trade_pct=risk_per_trade_pct,

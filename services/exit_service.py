@@ -6,7 +6,7 @@ from typing import Optional
 
 from binance_trading_executor import OrderResult
 from feature_store import build_trade_review, feature_store
-from speed_executor import quick_close_position
+from services.order_service import order_service
 from telegram_notifier import (
     format_close_position_msg,
     format_error_msg,
@@ -261,7 +261,7 @@ class ExitServiceMixin:
                 reduce_only=True,
             )
             if result.status != "FILLED":
-                fast_result = quick_close_position(
+                fast_result = order_service.quick_close(
                     symbol=symbol,
                     side=close_side,
                     quantity=position.quantity,
