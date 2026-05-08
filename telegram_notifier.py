@@ -8,6 +8,7 @@ evolve independently without touching trading code imports.
 from __future__ import annotations
 
 from notifiers import *  # noqa: F401,F403
+from notifiers.labels import _fmt_usdt  # Backward compatibility for legacy mixins.
 
 
 def main() -> int:

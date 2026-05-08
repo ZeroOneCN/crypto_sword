@@ -9,22 +9,13 @@ from __future__ import annotations
 import logging
 import threading
 import time
-from datetime import datetime
 from typing import Any
 
 from binance_api_client import get_native_binance_client, is_native_binance_configured
 from hermes_paths import hermes_logs_dir
-from services.accounting_service import fetch_daily_income_summary, fetch_period_income_summary
-from services.time_basis import parse_db_datetime, report_clock_label, utc_today_key, utc8_window_label
-from trade_logger import TradeDatabase
-
-logger = logging.getLogger("dashboard")
-
-from binance_api_client import get_native_binance_client, is_native_binance_configured
-from hermes_paths import hermes_logs_dir
-from services.accounting_service import fetch_daily_income_summary, fetch_period_income_summary
-from services.time_basis import parse_db_datetime, report_clock_label, utc_today_key, utc8_window_label
-from trade_logger import TradeDatabase
+from repositories.trade_repository import TradeDatabase
+from services.report_service import ReportService
+from services.time_basis import report_clock_label, utc_today_key
 
 logger = logging.getLogger("dashboard")
 
@@ -33,29 +24,6 @@ REALTIME_TTL_SEC = 5.0
 ORDERS_TTL_SEC = 12.0
 STATS_TTL_SEC = 60.0
 LOG_TTL_SEC = 5.0
-
-
-REASON_LABELS = {
-    "PROTECTIVE_STOP_EXCHANGE": "防守止损盈利离场",
-    "PROTECTIVE_STOP": "防守止损盈利离场",
-    "TAKE_PROFIT_TP_FULL_EXCHANGE": "TP1/TP2/TP3 全部成交",
-    "TAKE_PROFIT_EXCHANGE": "交易所止盈完成",
-    "TAKE_PROFIT_LOCAL_FALLBACK": "本地止盈兜底",
-    "TAKE_PROFIT": "止盈触发",
-    "STOP_LOSS_EXCHANGE": "交易所止损触发",
-    "STOP_LOSS": "止损触发",
-    "TRAILING_STOP": "追踪止损触发",
-    "TRAILING": "追踪止损触发",
-    "MANUAL": "手动平仓",
-    "ENTRY_PROTECTION_FAILED": "开仓保护失败回滚",
-    "SIDEWAYS_TIMEOUT": "横盘超时退出",
-    "SIDEWAYS_REPLACED_BY_STRONG_SIGNAL": "横盘仓位被强信号替换",
-    "EARLY_PROFIT_EXCHANGE": "提前微利退出",
-    "EARLY_PROFIT": "提前微利退出",
-    "EXCHANGE_REALIZED_EXCHANGE": "交易所已实现盈亏同步",
-    "EXCHANGE_REALIZED": "交易所已实现盈亏同步",
-    "UNKNOWN": "未知原因",
-}
 
 
 def _safe_float(value: Any, default: float = 0.0) -> float:
@@ -72,21 +40,6 @@ def _safe_int(value: Any, default: int = 0) -> int:
         return default
 
 
-def _reason_label(reason: Any) -> str:
-    key = str(reason or "UNKNOWN").upper()
-    if key in REASON_LABELS:
-        return REASON_LABELS[key]
-    if "TAKE_PROFIT" in key:
-        return "止盈触发"
-    if "STOP_LOSS" in key:
-        return "止损触发"
-    if "TRAIL" in key:
-        return "追踪止损触发"
-    if "EXCHANGE_REALIZED" in key:
-        return "交易所已实现盈亏同步"
-    return key or "未知原因"
-
-
 def _side_label(side: Any) -> str:
     key = str(side or "").upper()
     if key in {"LONG", "BUY"}:
@@ -96,23 +49,8 @@ def _side_label(side: Any) -> str:
     return key or "未知"
 
 
-def _iso_or_empty(value: Any) -> str:
-    parsed = parse_db_datetime(value)
-    if not parsed:
-        return str(value or "")
-    return parsed.isoformat(timespec="seconds").replace("+00:00", "Z")
-
-
-def _hold_minutes(entry_time: Any, exit_time: Any) -> float:
-    start = parse_db_datetime(entry_time)
-    end = parse_db_datetime(exit_time)
-    if not start or not end:
-        return 0.0
-    return max(0.0, (end - start).total_seconds() / 60.0)
-
-
 def _json_default(value: Any) -> Any:
-    if isinstance(value, datetime):
+    if hasattr(value, "isoformat"):
         return value.isoformat()
     return str(value)
 
@@ -137,6 +75,7 @@ class TimedCache:
 class DashboardData:
     def __init__(self):
         self.db = TradeDatabase()
+        self.reports = ReportService(self.db)
         self.cache = TimedCache()
 
     def account_snapshot(self) -> dict[str, Any]:
@@ -210,87 +149,30 @@ class DashboardData:
 
     def today_income(self) -> dict[str, Any]:
         key = f"income_today:{utc_today_key()}"
-        return self.cache.get(key, STATS_TTL_SEC, lambda: fetch_daily_income_summary(utc_today_key()))
+        report = self.today_report()
+        return report.get("exchange_income", {})
 
     def period_income(self, days: int) -> dict[str, Any]:
-        return self.cache.get(f"income:{days}", STATS_TTL_SEC, lambda: fetch_period_income_summary(days))
+        report = self.period_report(days)
+        return report.get("exchange_income", {})
 
     def period_report(self, days: int) -> dict[str, Any]:
         def _load() -> dict[str, Any]:
-            report = self.db.get_period_report(days=days, mode="live")
-            income = self.period_income(days)
-            report["exchange_income"] = income
-            report["exchange_net_pnl"] = _safe_float(income.get("net_pnl"))
-            return report
+            return self.reports.period_report(days=days, mode="live")
 
         return self.cache.get(f"period:{days}", STATS_TTL_SEC, _load)
 
     def today_report(self) -> dict[str, Any]:
         def _load() -> dict[str, Any]:
-            date_key = utc_today_key()
-            report = self.db.get_daily_report(date_key, mode="live")
-            income = self.today_income()
-            report["date"] = date_key
-            report["utc8_window"] = utc8_window_label(date_key)
-            report["exchange_income"] = income
-            report["exchange_net_pnl"] = _safe_float(income.get("net_pnl"))
-            return report
+            return self.reports.daily_report(utc_today_key(), mode="live")
 
         return self.cache.get(f"today:{utc_today_key()}", STATS_TTL_SEC, _load)
 
     def recent_trades(self, days: int = 30, limit: int = 80) -> list[dict[str, Any]]:
-        trades = self.db.get_closed_trades(days=days, mode="live")
-        sessions = self.db._aggregate_closed_trade_sessions(trades)
-        sessions.sort(
-            key=lambda item: (parse_db_datetime(item.get("exit_time")) or datetime.fromtimestamp(0)).timestamp(),
-            reverse=True,
-        )
-        result = []
-        for item in sessions[: max(1, min(limit, 500))]:
-            pnl = _safe_float(item.get("pnl"))
-            result.append(
-                {
-                    "session_id": item.get("session_id", ""),
-                    "symbol": item.get("symbol", ""),
-                    "side": item.get("side", ""),
-                    "side_label": _side_label(item.get("side")),
-                    "strategy_line": item.get("strategy_line", "") or "UNKNOWN",
-                    "stage": item.get("stage", "") or "UNKNOWN",
-                    "entry_price": _safe_float(item.get("entry_price")),
-                    "exit_price": _safe_float(item.get("exit_price")),
-                    "quantity": _safe_float(item.get("quantity")),
-                    "entry_time": _iso_or_empty(item.get("entry_time")),
-                    "exit_time": _iso_or_empty(item.get("exit_time")),
-                    "hold_minutes": round(_hold_minutes(item.get("entry_time"), item.get("exit_time")), 1),
-                    "exit_reason": item.get("exit_reason", "") or "UNKNOWN",
-                    "exit_reason_label": _reason_label(item.get("exit_reason")),
-                    "pnl": round(pnl, 8),
-                    "pnl_pct": round(_safe_float(item.get("pnl_pct")), 4),
-                    "rows": _safe_int(item.get("rows"), 1),
-                    "result": "win" if pnl > 0 else ("loss" if pnl < 0 else "flat"),
-                }
-            )
-        return result
+        return self.reports.recent_trades(days=days, limit=limit, mode="live")
 
     def open_db_trades(self) -> list[dict[str, Any]]:
-        result = []
-        for trade in self.db.get_open_trades(mode="live"):
-            result.append(
-                {
-                    "id": trade.id,
-                    "symbol": trade.symbol,
-                    "side": trade.side,
-                    "side_label": _side_label(trade.side),
-                    "entry_price": trade.entry_price,
-                    "quantity": trade.quantity,
-                    "leverage": trade.leverage,
-                    "stop_loss": trade.stop_loss,
-                    "take_profit": trade.take_profit,
-                    "entry_time": _iso_or_empty(trade.entry_time),
-                    "stage": trade.stage,
-                }
-            )
-        return result
+        return self.reports.open_db_trades(mode="live")
 
     def log_tail(self, lines: int = 50) -> dict[str, Any]:
         def _load() -> dict[str, Any]:

@@ -62,9 +62,8 @@ from core.sync_mixin import SyncMixin
 from core.confirmation_mixin import ConfirmationMixin
 from core.market_mixin import MarketMixin
 from core.bootstrap_service import BootstrapService
-from feature_store import feature_store
-from services.accounting_service import fetch_daily_income_summary, fetch_period_income_summary
-from services.time_basis import utc_hour_key, utc_today_key, utc8_window_label
+from services.report_service import ReportService
+from services.time_basis import utc_hour_key, utc_today_key
 
 
 class CryptoSword(ExecutionMixin, ScannerMixin, CycleMixin, SyncMixin, ConfirmationMixin, MarketMixin):
@@ -75,6 +74,7 @@ class CryptoSword(ExecutionMixin, ScannerMixin, CycleMixin, SyncMixin, Confirmat
         self._log_dir = _LOG_DIR
         self.tracker = PositionTracker()
         self.db = TradeDatabase()
+        self.report_service = ReportService(self.db)
         self.daily_pnl = 0.0
         self.day_start_balance: float = 0.0
         self._daily_marker = utc_today_key()
@@ -159,87 +159,28 @@ class CryptoSword(ExecutionMixin, ScannerMixin, CycleMixin, SyncMixin, Confirmat
         return enriched
 
     def _enrich_daily_report_with_api(self, report: dict[str, Any], date_str: str) -> dict[str, Any]:
-        """Build daily report from persisted closed-position records."""
-        daily_report: dict[str, Any] = {
-            "date": date_str,
-            "time_basis": "Binance UTC",
-            "utc8_window": utc8_window_label(date_str),
-            "mode": self.config.mode,
-            "closed_trades": 0,
-            "winning_trades": 0,
-            "losing_trades": 0,
-            "win_rate": 0.0,
-            "total_pnl": 0.0,
-            "avg_pnl": 0.0,
-            "avg_win": 0.0,
-            "avg_loss": 0.0,
-            "payoff_ratio": 0.0,
-            "profit_factor": 0.0,
-            "max_loss": 0.0,
-            "best_trade": None,
-            "worst_trade": None,
-            "reason_counts": {},
-            "entry_protection": {
-                "attempts": 0,
-                "ok": 0,
-                "failed": 0,
-                "ok_rate": 0.0,
-                "failed_by_symbol": {},
-                "failed_by_direction": {},
-                "failed_by_detail": {},
-            },
-        }
-        del report  # explicitly ignore caller snapshot
-        try:
-            daily_report["entry_protection"] = feature_store.summarize_entry_protection(date_str, tz_offset_hours=0)
-        except Exception as e:
-            logger.debug(f"entry protection summary skipped [{date_str}]: {e}")
-
-        try:
-            db_report = self.db.get_daily_report(date_str, mode=self.config.mode)
-            if isinstance(db_report, dict):
-                entry_protection = daily_report.get("entry_protection", {})
-                daily_report.update(db_report)
-                daily_report["date"] = date_str
-                daily_report["time_basis"] = "Binance UTC"
-                daily_report["utc8_window"] = utc8_window_label(date_str)
-                daily_report["mode"] = self.config.mode
-                daily_report["entry_protection"] = entry_protection
-            income_summary = fetch_daily_income_summary(date_str)
-            if income_summary.get("available"):
-                db_total_pnl = float(daily_report.get("total_pnl", 0) or 0)
-                exchange_net_pnl = float(income_summary.get("net_pnl", 0) or 0)
-                daily_report["db_total_pnl"] = db_total_pnl
-                daily_report["exchange_total_pnl"] = exchange_net_pnl
-                daily_report["total_pnl"] = exchange_net_pnl
-                closed_trades = int(daily_report.get("closed_trades", 0) or 0)
-                if closed_trades > 0:
-                    daily_report["avg_pnl"] = round(exchange_net_pnl / closed_trades, 4)
-                daily_report["pnl_source"] = "exchange_income"
-                daily_report["income_summary"] = income_summary
-                daily_report["pnl_diff_vs_db"] = round(exchange_net_pnl - db_total_pnl, 8)
-            log_signature = "|".join(
-                [
-                    str(date_str),
-                    str(int(daily_report.get("closed_trades", 0) or 0)),
-                    f"{float(daily_report.get('total_pnl', 0) or 0):.4f}",
-                    str(daily_report.get("reason_counts", {})),
-                    str((daily_report.get("best_trade") or {}).get("symbol", "-")),
-                    str((daily_report.get("worst_trade") or {}).get("symbol", "-")),
-                ]
-            )
-            log = logger.info if log_signature != self._last_daily_report_db_log_signature else logger.debug
-            self._last_daily_report_db_log_signature = log_signature
-            log(
-                f"Daily report from DB [{date_str}] | trades={int(daily_report.get('closed_trades', 0) or 0)} "
-                f"pnl={float(daily_report.get('total_pnl', 0) or 0):+,.2f} "
-                f"best={((daily_report.get('best_trade') or {}).get('symbol', '-'))} "
-                f"worst={((daily_report.get('worst_trade') or {}).get('symbol', '-'))} "
-                f"reasons={daily_report.get('reason_counts', {})}"
-            )
-        except Exception as e:
-            logger.warning(f"Daily report DB build failed [{date_str}]: {e}")
-
+        """Build daily report through the unified ReportService."""
+        del report
+        daily_report = self.report_service.daily_report(date_str, mode=self.config.mode)
+        log_signature = "|".join(
+            [
+                str(date_str),
+                str(int(daily_report.get("closed_trades", 0) or 0)),
+                f"{float(daily_report.get('total_pnl', 0) or 0):.4f}",
+                str(daily_report.get("reason_counts", {})),
+                str((daily_report.get("best_trade") or {}).get("symbol", "-")),
+                str((daily_report.get("worst_trade") or {}).get("symbol", "-")),
+            ]
+        )
+        log = logger.info if log_signature != self._last_daily_report_db_log_signature else logger.debug
+        self._last_daily_report_db_log_signature = log_signature
+        log(
+            f"Daily report from ReportService [{date_str}] | trades={int(daily_report.get('closed_trades', 0) or 0)} "
+            f"pnl={float(daily_report.get('total_pnl', 0) or 0):+,.2f} "
+            f"best={((daily_report.get('best_trade') or {}).get('symbol', '-'))} "
+            f"worst={((daily_report.get('worst_trade') or {}).get('symbol', '-'))} "
+            f"reasons={daily_report.get('reason_counts', {})}"
+        )
         return daily_report
 
     def _get_daily_report_snapshot(self, ttl_sec: float = 60.0, force: bool = False) -> dict[str, Any]:
@@ -262,33 +203,15 @@ class CryptoSword(ExecutionMixin, ScannerMixin, CycleMixin, SyncMixin, Confirmat
         return {}
 
     def _get_period_reports_snapshot(self) -> list[dict[str, Any]]:
-        reports: list[dict[str, Any]] = []
-        for days in (7, 30):
-            try:
-                report = self.db.get_period_report(days=days, mode=self.config.mode)
-                if isinstance(report, dict):
-                    income_summary = fetch_period_income_summary(days)
-                    if income_summary.get("available"):
-                        db_total_pnl = float(report.get("total_pnl", 0) or 0)
-                        exchange_net_pnl = float(income_summary.get("net_pnl", 0) or 0)
-                        report["db_total_pnl"] = db_total_pnl
-                        report["exchange_total_pnl"] = exchange_net_pnl
-                        report["total_pnl"] = exchange_net_pnl
-                        closed_trades = int(report.get("closed_trades", 0) or 0)
-                        if closed_trades > 0:
-                            report["avg_pnl"] = round(exchange_net_pnl / closed_trades, 4)
-                        report["pnl_source"] = "exchange_income"
-                        report["income_summary"] = income_summary
-                        report["pnl_diff_vs_db"] = round(exchange_net_pnl - db_total_pnl, 8)
-                    reports.append(report)
-                    logger.info(
-                        f"Period report from DB [{days}d] | trades={int(report.get('closed_trades', 0) or 0)} "
-                        f"rows={int(report.get('source_rows', 0) or 0)} "
-                        f"pnl={float(report.get('total_pnl', 0) or 0):+,.2f} "
-                        f"PF={float(report.get('profit_factor', 0) or 0):.2f}"
-                    )
-            except Exception as e:
-                logger.warning(f"Period report DB build failed [{days}d]: {e}")
+        reports = self.report_service.period_reports((7, 30), mode=self.config.mode)
+        for report in reports:
+            logger.info(
+                f"Period report from ReportService [{int(report.get('period_days', 0) or 0)}d] | "
+                f"trades={int(report.get('closed_trades', 0) or 0)} "
+                f"rows={int(report.get('source_rows', 0) or 0)} "
+                f"pnl={float(report.get('total_pnl', 0) or 0):+,.2f} "
+                f"PF={float(report.get('profit_factor', 0) or 0):.2f}"
+            )
         return reports
 
     def _get_account_info_cached(self, ttl_sec: float = 3.0, force: bool = False) -> dict[str, Any]:
