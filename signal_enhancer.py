@@ -15,7 +15,7 @@ import time
 from typing import Dict, Any, Optional, List, Tuple
 from dataclasses import dataclass
 
-from binance_compat import run_native_binance_compat
+from binance_api_client import get_native_binance_client
 
 logger = logging.getLogger(__name__)
 
@@ -212,12 +212,11 @@ def get_klines(symbol: str, interval: str = "1h", limit: int = 50, use_cache: bo
         if cached is not None:
             return cached
     
-    data = run_native_binance_compat([
-        "kline-candlestick-data",
-        "--symbol", symbol,
-        "--interval", interval,
-        "--limit", str(limit)
-    ])
+    try:
+        data = get_native_binance_client().klines(symbol, interval=interval, limit=limit)
+    except Exception as exc:
+        logger.warning(f"{symbol} 信号K线获取失败: {exc}")
+        return None
     
     if not data or not isinstance(data, list):
         return None

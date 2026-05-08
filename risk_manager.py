@@ -10,12 +10,15 @@
 """
 
 import logging
+import time
 from typing import Dict, Any, Optional, List
 from dataclasses import dataclass, field
 
-from binance_compat import run_native_binance_compat
+from binance_api_client import get_native_binance_client
 
 logger = logging.getLogger(__name__)
+_EXCHANGE_INFO_CACHE: tuple[dict[str, Any], float] | None = None
+_EXCHANGE_INFO_TTL_SEC = 3600.0
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -129,13 +132,12 @@ class PositionRisk:
 
 def get_klines(symbol: str, interval: str = "1h", limit: int = 50) -> Optional[List[Dict]]:
     """获取 K 线数据"""
-    data = run_native_binance_compat([
-        "kline-candlestick-data",
-        "--symbol", symbol,
-        "--interval", interval,
-        "--limit", str(limit)
-    ])
-    
+    try:
+        data = get_native_binance_client().klines(symbol, interval=interval, limit=limit)
+    except Exception as exc:
+        logger.warning(f"{symbol} 风控K线获取失败: {exc}")
+        return None
+
     if not data:
         return None
     
@@ -149,6 +151,42 @@ def get_klines(symbol: str, interval: str = "1h", limit: int = 50) -> Optional[L
         })
     
     return klines
+
+
+def _exchange_info() -> dict[str, Any]:
+    global _EXCHANGE_INFO_CACHE
+    now = time.time()
+    if _EXCHANGE_INFO_CACHE and now - _EXCHANGE_INFO_CACHE[1] < _EXCHANGE_INFO_TTL_SEC:
+        return _EXCHANGE_INFO_CACHE[0]
+    data = get_native_binance_client().exchange_info()
+    _EXCHANGE_INFO_CACHE = (data if isinstance(data, dict) else {}, now)
+    return _EXCHANGE_INFO_CACHE[0]
+
+
+def _symbol_price_tick(symbol: str) -> float:
+    try:
+        for item in _exchange_info().get("symbols", []):
+            if str(item.get("symbol", "")).upper() != symbol.upper():
+                continue
+            for rule in item.get("filters", []):
+                if rule.get("filterType") == "PRICE_FILTER":
+                    tick = float(rule.get("tickSize", 0) or 0)
+                    if tick > 0:
+                        return tick
+    except Exception as exc:
+        logger.debug(f"{symbol} 价格tick获取失败: {exc}")
+    return 0.0
+
+
+def _align_to_tick(price: float, tick: float, rounding: str) -> float:
+    if tick <= 0:
+        return price
+    import math
+
+    units = price / tick
+    if rounding == "ceil":
+        return math.ceil(units - 1e-12) * tick
+    return math.floor(units + 1e-12) * tick
 
 
 def calculate_atr(klines: List[Dict], period: int = 14) -> float:
@@ -207,9 +245,8 @@ def _align_risk_price(symbol: str, entry_price: float, price: float, side: str, 
         rounding = "ceil" if side == "LONG" else "floor"
 
     try:
-        from binance_trading_executor import adjust_price_precision
-
-        adjusted = adjust_price_precision(symbol, price, rounding=rounding)
+        adjusted = _align_to_tick(price, _symbol_price_tick(symbol), rounding)
+        adjusted = _dynamic_price_round(adjusted, entry_price)
     except Exception as exc:
         logger.debug(f"{symbol} 风控价格精度适配失败，使用动态小数: {exc}")
         adjusted = _dynamic_price_round(price, entry_price)
