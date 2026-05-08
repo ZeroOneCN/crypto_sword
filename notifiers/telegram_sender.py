@@ -33,6 +33,12 @@ def _int_env(name: str, default: int) -> int:
     except Exception:
         return default
 
+_telegram_queue: "queue.Queue[tuple[str, str | None]]" = queue.Queue(
+    maxsize=max(10, _int_env("TELEGRAM_QUEUE_SIZE", 1000))
+)
+_telegram_worker_started = False
+_telegram_worker_lock = threading.Lock()
+
 def _hermes_home() -> Path:
     """Return Hermes home dir (cross-platform).
 
