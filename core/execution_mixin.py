@@ -277,67 +277,113 @@ class ExecutionMixin:
         return entry_price * (1 - price_move_pct / 100.0)
 
     def _recent_spike_reversal_reason(self, symbol: str, direction: str, current_price: float) -> str:
-        """Avoid entering immediately after a short-timeframe wick reversal."""
+        """Avoid entering after a blow-off spike that has already started reversing."""
         if not getattr(self.config, "spike_reversal_guard_enabled", True):
             return ""
         if current_price <= 0:
             return ""
-        try:
-            klines = get_klines(symbol, interval="5m", limit=8) or []
-        except Exception as exc:
-            logger.debug(f"{symbol} spike reversal guard skipped: {exc}")
-            return ""
-        if len(klines) < 4:
-            return ""
 
-        recent = klines[-4:]
-        highs = [float(k.get("high", 0) or 0) for k in recent]
-        lows = [float(k.get("low", 0) or 0) for k in recent]
-        if not highs or not lows or min(lows) <= 0:
-            return ""
+        side = str(direction or "").upper()
+        is_long = side in {"LONG", "BUY"}
+        min_runup = float(self.config.spike_guard_min_runup_pct)
+        min_pullback = float(self.config.spike_guard_min_pullback_pct)
+        min_wick = float(self.config.spike_guard_min_wick_ratio)
 
-        high = max(highs)
-        low = min(lows)
-        runup_pct = (high - low) / low * 100.0
-        if direction == "LONG":
-            pullback_pct = (high - current_price) / high * 100.0 if high > 0 else 0.0
-        else:
-            recent_low = low
-            pullback_pct = (current_price - recent_low) / recent_low * 100.0 if recent_low > 0 else 0.0
+        def _as_float(candle: dict, key: str) -> float:
+            try:
+                return float(candle.get(key, 0) or 0)
+            except (TypeError, ValueError):
+                return 0.0
 
-        if runup_pct < float(self.config.spike_guard_min_runup_pct):
-            return ""
-        if pullback_pct < float(self.config.spike_guard_min_pullback_pct):
-            return ""
+        def _evaluate(klines: list[dict], interval: str, min_candles: int) -> str:
+            if len(klines) < min_candles:
+                return ""
+            recent = klines[-min(len(klines), 12):]
+            opens = [_as_float(k, "open") for k in recent]
+            closes = [_as_float(k, "close") for k in recent]
+            highs = [_as_float(k, "high") for k in recent]
+            lows = [_as_float(k, "low") for k in recent]
+            if not opens or not highs or not lows or min(lows) <= 0:
+                return ""
 
-        wick_ratio = 0.0
-        reversal_candle = False
-        for candle in recent[-2:]:
-            open_price = float(candle.get("open", 0) or 0)
-            close_price = float(candle.get("close", 0) or 0)
-            high_price = float(candle.get("high", 0) or 0)
-            low_price = float(candle.get("low", 0) or 0)
-            candle_range = max(high_price - low_price, 0.0)
-            if candle_range <= 0:
-                continue
-            if direction == "LONG":
-                wick = high_price - max(open_price, close_price)
-                wick_ratio = max(wick_ratio, wick / candle_range)
-                if close_price < open_price and wick / candle_range >= float(self.config.spike_guard_min_wick_ratio):
-                    reversal_candle = True
+            high = max(highs)
+            low = min(lows)
+            first_open = opens[0]
+            if first_open <= 0 or high <= 0 or low <= 0:
+                return ""
+
+            if is_long:
+                impulse_pct = (high - first_open) / first_open * 100.0
+                fallback_impulse_pct = (high - low) / low * 100.0
+                pullback_pct = (high - current_price) / high * 100.0
             else:
-                wick = min(open_price, close_price) - low_price
-                wick_ratio = max(wick_ratio, wick / candle_range)
-                if close_price > open_price and wick / candle_range >= float(self.config.spike_guard_min_wick_ratio):
-                    reversal_candle = True
+                impulse_pct = (first_open - low) / first_open * 100.0
+                fallback_impulse_pct = (high - low) / low * 100.0
+                pullback_pct = (current_price - low) / low * 100.0
+            impulse_pct = max(impulse_pct, fallback_impulse_pct)
 
-        if wick_ratio < float(self.config.spike_guard_min_wick_ratio) and not reversal_candle:
-            return ""
+            if impulse_pct < min_runup or pullback_pct < min_pullback:
+                return ""
 
-        return (
-            f"短线冲高回落：5m拉升 {runup_pct:.2f}%，"
-            f"距短线高点回落 {pullback_pct:.2f}%，影线占比 {wick_ratio:.0%}"
-        )
+            wick_ratio = 0.0
+            reversal_candle = False
+            recent_direction_bars = 0
+            for candle in recent[-5:]:
+                open_price = _as_float(candle, "open")
+                close_price = _as_float(candle, "close")
+                high_price = _as_float(candle, "high")
+                low_price = _as_float(candle, "low")
+                candle_range = max(high_price - low_price, 0.0)
+                if candle_range <= 0:
+                    continue
+                if is_long:
+                    wick = high_price - max(open_price, close_price)
+                    this_wick_ratio = max(wick, 0.0) / candle_range
+                    wick_ratio = max(wick_ratio, this_wick_ratio)
+                    if close_price < open_price:
+                        recent_direction_bars += 1
+                    if close_price < open_price and this_wick_ratio >= min_wick:
+                        reversal_candle = True
+                else:
+                    wick = min(open_price, close_price) - low_price
+                    this_wick_ratio = max(wick, 0.0) / candle_range
+                    wick_ratio = max(wick_ratio, this_wick_ratio)
+                    if close_price > open_price:
+                        recent_direction_bars += 1
+                    if close_price > open_price and this_wick_ratio >= min_wick:
+                        reversal_candle = True
+
+            ma_window = closes[-min(7, len(closes)):]
+            short_ma = sum(ma_window) / len(ma_window) if ma_window else current_price
+            ma_broken = current_price < short_ma if is_long else current_price > short_ma
+            violent_range = fallback_impulse_pct >= max(min_runup * 1.4, min_runup + 2.0)
+
+            if not (wick_ratio >= min_wick or reversal_candle or ma_broken or recent_direction_bars >= 2 or violent_range):
+                return ""
+
+            if is_long:
+                return (
+                    f"{interval}冲高回落：先拉升 {impulse_pct:.2f}%，"
+                    f"现距高点回落 {pullback_pct:.2f}%，"
+                    f"{'已跌破短均' if ma_broken else f'影线占比 {wick_ratio:.0%}'}"
+                )
+            return (
+                f"{interval}急跌反抽：先下跌 {impulse_pct:.2f}%，"
+                f"现距低点反弹 {pullback_pct:.2f}%，"
+                f"{'已站回短均' if ma_broken else f'影线占比 {wick_ratio:.0%}'}"
+            )
+
+        for interval, limit, min_candles in (("1m", 12, 6), ("5m", 8, 4)):
+            try:
+                klines = get_klines(symbol, interval=interval, limit=limit) or []
+            except Exception as exc:
+                logger.debug(f"{symbol} spike reversal guard skipped ({interval}): {exc}")
+                continue
+            reason = _evaluate(klines, interval, min_candles)
+            if reason:
+                return reason
+
+        return ""
 
     def _cancel_symbol_stale_protection(
         self,
@@ -1623,11 +1669,8 @@ class ExecutionMixin:
                 if latest_price > 0:
                     price = latest_price
                     trading_signal.entry_price = latest_price
-            # 高分信号(>=90)跳过插针检查 - 强动量突破不应被短时震荡阻挡
-            if score >= 90.0:
-                spike_reason = ""
-            else:
-                spike_reason = self._recent_spike_reversal_reason(symbol, direction, price)
+            # 高分信号也必须过短线复查；USUAL 这类爆拉后回落不能靠分数豁免。
+            spike_reason = self._recent_spike_reversal_reason(symbol, direction, price)
             if spike_reason:
                 logger.warning(f"🧊 {symbol} 开仓前过滤：{spike_reason}")
                 if score >= 85.0:
