@@ -1,0 +1,307 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>宙斯交易中枢 | 数据看板</title>
+  <style>
+    :root {
+      --bg: #0b111b;
+      --panel: rgba(20, 31, 48, 0.88);
+      --panel-2: rgba(13, 21, 34, 0.92);
+      --line: rgba(148, 163, 184, 0.18);
+      --text: #e5eefc;
+      --muted: #91a0b8;
+      --good: #26d695;
+      --bad: #ff5c7a;
+      --warn: #ffd166;
+      --blue: #70b7ff;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      color: var(--text);
+      background:
+        radial-gradient(circle at 15% 10%, rgba(78, 141, 255, 0.20), transparent 30%),
+        radial-gradient(circle at 80% 0%, rgba(38, 214, 149, 0.12), transparent 28%),
+        linear-gradient(145deg, #080c13 0%, #10192a 55%, #090f18 100%);
+      font-family: "Microsoft YaHei", "PingFang SC", "Segoe UI", sans-serif;
+    }
+    header {
+      position: sticky;
+      top: 0;
+      z-index: 5;
+      padding: 18px clamp(14px, 3vw, 34px);
+      backdrop-filter: blur(18px);
+      background: rgba(8, 12, 19, 0.72);
+      border-bottom: 1px solid var(--line);
+    }
+    .title-row {
+      display: flex;
+      justify-content: space-between;
+      gap: 16px;
+      align-items: center;
+      flex-wrap: wrap;
+    }
+    h1 { margin: 0; font-size: clamp(22px, 4vw, 34px); letter-spacing: 0.04em; }
+    .sub { color: var(--muted); font-size: 13px; margin-top: 6px; }
+    .pill {
+      border: 1px solid var(--line);
+      color: var(--blue);
+      padding: 8px 12px;
+      border-radius: 999px;
+      background: rgba(112, 183, 255, 0.08);
+      font-size: 13px;
+      white-space: nowrap;
+    }
+    main { padding: 22px clamp(14px, 3vw, 34px) 40px; }
+    .grid { display: grid; gap: 14px; }
+    .cards { grid-template-columns: repeat(6, minmax(140px, 1fr)); }
+    .two { grid-template-columns: minmax(0, 1.1fr) minmax(0, 0.9fr); }
+    .three { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+    .panel, .card {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 18px;
+      box-shadow: 0 20px 60px rgba(0,0,0,0.25);
+    }
+    .card { padding: 16px; min-height: 105px; }
+    .label { color: var(--muted); font-size: 13px; }
+    .value { font-size: clamp(20px, 3vw, 30px); font-weight: 800; margin-top: 8px; }
+    .hint { margin-top: 8px; color: var(--muted); font-size: 12px; }
+    .panel { padding: 18px; margin-top: 14px; overflow: hidden; }
+    .panel h2 { margin: 0 0 14px; font-size: 18px; }
+    table { width: 100%; border-collapse: collapse; font-size: 13px; }
+    th, td { padding: 11px 10px; border-bottom: 1px solid var(--line); text-align: left; white-space: nowrap; }
+    th { color: var(--muted); font-weight: 600; background: rgba(255,255,255,0.02); }
+    tr:hover td { background: rgba(255,255,255,0.025); }
+    .good { color: var(--good); }
+    .bad { color: var(--bad); }
+    .warn { color: var(--warn); }
+    .muted { color: var(--muted); }
+    .scroll { overflow-x: auto; }
+    .status-dot {
+      display: inline-block; width: 8px; height: 8px; border-radius: 50%;
+      margin-right: 7px; background: var(--good); box-shadow: 0 0 18px var(--good);
+    }
+    .log {
+      background: var(--panel-2);
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      padding: 14px;
+      max-height: 360px;
+      overflow: auto;
+      font-family: "Cascadia Mono", Consolas, monospace;
+      font-size: 12px;
+      line-height: 1.55;
+      color: #b8c7de;
+      white-space: pre-wrap;
+    }
+    .toolbar { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; }
+    button, a.button {
+      border: 1px solid var(--line);
+      color: var(--text);
+      background: rgba(255,255,255,0.06);
+      padding: 9px 12px;
+      border-radius: 12px;
+      cursor: pointer;
+      text-decoration: none;
+      font: inherit;
+    }
+    button:hover, a.button:hover { background: rgba(112,183,255,0.15); }
+    @media (max-width: 1100px) {
+      .cards, .three { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      .two { grid-template-columns: 1fr; }
+    }
+    @media (max-width: 620px) {
+      .cards, .three { grid-template-columns: 1fr; }
+      th, td { padding: 9px 8px; }
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <div class="title-row">
+      <div>
+        <h1>宙斯交易中枢 · 数据看板</h1>
+        <div class="sub">只读自动刷新，不参与下单；统计口径以 Binance UTC 为准。</div>
+      </div>
+      <div class="toolbar">
+        <span class="pill"><span class="status-dot"></span><span id="status">连接中</span></span>
+        <span class="pill" id="clock">--</span>
+        <button onclick="loadAll(true)">立即刷新</button>
+        <a class="button" href="/api/export/trades.csv" target="_blank">下载CSV</a>
+      </div>
+    </div>
+  </header>
+  <main>
+    <section class="grid cards">
+      <div class="card"><div class="label">总余额</div><div class="value" id="totalBalance">--</div><div class="hint">Binance Futures</div></div>
+      <div class="card"><div class="label">可用余额</div><div class="value" id="availableBalance">--</div><div class="hint">可开仓资金</div></div>
+      <div class="card"><div class="label">未实现盈亏</div><div class="value" id="unrealized">--</div><div class="hint">当前持仓浮盈亏</div></div>
+      <div class="card"><div class="label">今日已实现(UTC)</div><div class="value" id="todayPnl">--</div><div class="hint" id="todayWindow">--</div></div>
+      <div class="card"><div class="label">近7天净盈亏</div><div class="value" id="pnl7">--</div><div class="hint" id="pf7">--</div></div>
+      <div class="card"><div class="label">近30天净盈亏</div><div class="value" id="pnl30">--</div><div class="hint" id="pf30">--</div></div>
+    </section>
+
+    <section class="grid two">
+      <div class="panel">
+        <h2>当前持仓</h2>
+        <div class="scroll"><table>
+          <thead><tr><th>币种</th><th>方向</th><th>数量</th><th>入场</th><th>标记</th><th>未实现</th><th>ROI</th><th>保护单</th></tr></thead>
+          <tbody id="positions"></tbody>
+        </table></div>
+      </div>
+      <div class="panel">
+        <h2>今日战况</h2>
+        <div class="grid three">
+          <div class="card"><div class="label">完整交易</div><div class="value" id="todayTrades">--</div><div class="hint">分批TP按1笔算</div></div>
+          <div class="card"><div class="label">胜率</div><div class="value" id="todayWinRate">--</div><div class="hint">SQLite 聚合</div></div>
+          <div class="card"><div class="label">盈亏比</div><div class="value" id="todayPayoff">--</div><div class="hint">均盈 / 均亏</div></div>
+        </div>
+      </div>
+    </section>
+
+    <section class="panel">
+      <h2>周期复盘</h2>
+      <div class="scroll"><table>
+        <thead><tr><th>周期</th><th>完整交易</th><th>总盈亏(DB)</th><th>交易所净收入</th><th>胜率</th><th>笔均</th><th>盈亏比</th><th>收益因子</th><th>最佳</th><th>最差</th></tr></thead>
+        <tbody id="periods"></tbody>
+      </table></div>
+    </section>
+
+    <section class="panel">
+      <h2>最近完整交易</h2>
+      <div class="scroll"><table>
+        <thead><tr><th>时间(UTC)</th><th>币种</th><th>方向</th><th>策略</th><th>入场</th><th>出场</th><th>盈亏</th><th>涨幅</th><th>原因</th><th>持仓</th></tr></thead>
+        <tbody id="recentTrades"></tbody>
+      </table></div>
+    </section>
+
+    <section class="panel">
+      <h2>运行日志尾部</h2>
+      <div class="log" id="logs">读取中...</div>
+    </section>
+  </main>
+
+  <script>
+    const fmt = new Intl.NumberFormat('en-US', { maximumFractionDigits: 6 });
+    const money = v => `${Number(v || 0) >= 0 ? '+' : ''}${fmt.format(Number(v || 0))} USDT`;
+    const plainMoney = v => `${fmt.format(Number(v || 0))} USDT`;
+    const pct = v => `${Number(v || 0) >= 0 ? '+' : ''}${Number(v || 0).toFixed(2)}%`;
+    const cls = v => Number(v || 0) > 0 ? 'good' : (Number(v || 0) < 0 ? 'bad' : 'muted');
+    const cell = (v, c='') => `<td class="${c}">${v}</td>`;
+    const price = v => Number(v || 0) ? Number(v).toPrecision(8).replace(/\.?0+$/, '') : '--';
+    const hold = m => {
+      m = Number(m || 0);
+      if (m < 60) return `${Math.round(m)}分钟`;
+      const h = Math.floor(m / 60), mm = Math.round(m % 60);
+      return `${h}小时${mm}分钟`;
+    };
+
+    function setText(id, value, className='') {
+      const el = document.getElementById(id);
+      el.textContent = value;
+      el.className = className ? `value ${className}` : 'value';
+    }
+
+    function renderPositions(rows) {
+      const body = document.getElementById('positions');
+      if (!rows || !rows.length) {
+        body.innerHTML = `<tr><td colspan="8" class="muted">当前无持仓，系统待命。</td></tr>`;
+        return;
+      }
+      body.innerHTML = rows.map(p => {
+        const prot = p.protected ? '✅ 完整' : `⚠️ SL ${p.protection?.stop || 0} / TP ${p.protection?.take_profit || 0}`;
+        return `<tr>
+          ${cell(`<b>${p.symbol}</b>`)}
+          ${cell(p.side_label)}
+          ${cell(fmt.format(p.quantity))}
+          ${cell(price(p.entry_price))}
+          ${cell(price(p.mark_price))}
+          ${cell(money(p.unrealized_pnl), cls(p.unrealized_pnl))}
+          ${cell(pct(p.roi_pct), cls(p.roi_pct))}
+          ${cell(prot, p.protected ? 'good' : 'warn')}
+        </tr>`;
+      }).join('');
+    }
+
+    function renderPeriods(periods) {
+      const body = document.getElementById('periods');
+      const rows = [['近7天', periods['7']], ['近30天', periods['30']]];
+      body.innerHTML = rows.map(([label, r]) => {
+        const best = r.best_trade ? `${r.best_trade.symbol} ${money(r.best_trade.pnl)}` : '--';
+        const worst = r.worst_trade ? `${r.worst_trade.symbol} ${money(r.worst_trade.pnl)}` : '--';
+        return `<tr>
+          ${cell(label)}
+          ${cell(r.closed_trades || 0)}
+          ${cell(money(r.total_pnl), cls(r.total_pnl))}
+          ${cell(money(r.exchange_net_pnl), cls(r.exchange_net_pnl))}
+          ${cell(`${Number(r.win_rate || 0).toFixed(2)}%`)}
+          ${cell(money(r.avg_pnl), cls(r.avg_pnl))}
+          ${cell(Number(r.payoff_ratio || 0).toFixed(2))}
+          ${cell(Number(r.profit_factor || 0).toFixed(2))}
+          ${cell(best, 'good')}
+          ${cell(worst, 'bad')}
+        </tr>`;
+      }).join('');
+    }
+
+    function renderTrades(rows) {
+      const body = document.getElementById('recentTrades');
+      if (!rows || !rows.length) {
+        body.innerHTML = `<tr><td colspan="10" class="muted">暂无已平仓交易。</td></tr>`;
+        return;
+      }
+      body.innerHTML = rows.slice(0, 80).map(t => `<tr>
+        ${cell((t.exit_time || '').replace('T', ' ').replace('Z', ''))}
+        ${cell(`<b>${t.symbol}</b>`)}
+        ${cell(t.side_label)}
+        ${cell(t.strategy_line || 'UNKNOWN')}
+        ${cell(price(t.entry_price))}
+        ${cell(price(t.exit_price))}
+        ${cell(money(t.pnl), cls(t.pnl))}
+        ${cell(pct(t.pnl_pct), cls(t.pnl_pct))}
+        ${cell(t.exit_reason_label)}
+        ${cell(hold(t.hold_minutes))}
+      </tr>`).join('');
+    }
+
+    async function loadAll(manual=false) {
+      try {
+        const res = await fetch('/api/overview', { cache: 'no-store' });
+        const data = await res.json();
+        if (!data.ok) throw new Error(data.error || 'unknown error');
+        document.getElementById('status').textContent = manual ? '已手动刷新' : '自动刷新中';
+        document.getElementById('clock').textContent = data.clock || '--';
+        const account = data.account || {};
+        const today = data.today || {};
+        const periods = data.periods || {};
+        setText('totalBalance', plainMoney(account.total_wallet_balance));
+        setText('availableBalance', plainMoney(account.available_balance));
+        setText('unrealized', money(account.total_unrealized_pnl), cls(account.total_unrealized_pnl));
+        setText('todayPnl', money(today.exchange_net_pnl ?? today.total_pnl), cls(today.exchange_net_pnl ?? today.total_pnl));
+        document.getElementById('todayWindow').textContent = today.utc8_window || data.time_basis || '';
+        setText('pnl7', money(periods['7']?.exchange_net_pnl ?? periods['7']?.total_pnl), cls(periods['7']?.exchange_net_pnl ?? periods['7']?.total_pnl));
+        document.getElementById('pf7').textContent = `PF ${Number(periods['7']?.profit_factor || 0).toFixed(2)} | 胜率 ${Number(periods['7']?.win_rate || 0).toFixed(1)}%`;
+        setText('pnl30', money(periods['30']?.exchange_net_pnl ?? periods['30']?.total_pnl), cls(periods['30']?.exchange_net_pnl ?? periods['30']?.total_pnl));
+        document.getElementById('pf30').textContent = `PF ${Number(periods['30']?.profit_factor || 0).toFixed(2)} | 胜率 ${Number(periods['30']?.win_rate || 0).toFixed(1)}%`;
+        setText('todayTrades', today.closed_trades || 0);
+        setText('todayWinRate', `${Number(today.win_rate || 0).toFixed(1)}%`);
+        setText('todayPayoff', Number(today.payoff_ratio || 0).toFixed(2));
+        renderPositions(account.positions || []);
+        renderPeriods(periods);
+        renderTrades(data.recent_trades || []);
+        const log = data.log_tail || {};
+        document.getElementById('logs').textContent = (log.lines || []).join('\n') || '暂无日志';
+      } catch (err) {
+        document.getElementById('status').textContent = `连接异常：${err.message}`;
+      }
+    }
+
+    loadAll();
+    setInterval(loadAll, 5000);
+  </script>
+</body>
+</html>

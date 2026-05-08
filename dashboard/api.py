@@ -1,0 +1,117 @@
+# -*- coding: utf-8 -*-
+"""Dashboard HTTP API and read-only static serving."""
+
+from __future__ import annotations
+
+import argparse
+import csv
+import io
+import json
+import logging
+from http import HTTPStatus
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
+from typing import Any
+from urllib.parse import parse_qs, urlparse
+
+from services.time_basis import report_clock_label
+from .data_service import DashboardData, _json_default, _safe_int
+
+logger = logging.getLogger("dashboard")
+DATA = DashboardData()
+STATIC_DIR = Path(__file__).resolve().parent / "static"
+INDEX_HTML = (STATIC_DIR / "index.html").read_text(encoding="utf-8")
+
+class DashboardHandler(BaseHTTPRequestHandler):
+    server_version = "HermesDashboard/1.0"
+
+    def log_message(self, fmt: str, *args: Any) -> None:
+        logger.info("%s - %s", self.address_string(), fmt % args)
+
+    def _send_bytes(self, body: bytes, content_type: str, status: HTTPStatus = HTTPStatus.OK) -> None:
+        self.send_response(status.value)
+        self.send_header("Content-Type", content_type)
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+        self.wfile.write(body)
+
+    def _send_json(self, data: Any, status: HTTPStatus = HTTPStatus.OK) -> None:
+        body = json.dumps(data, ensure_ascii=False, default=_json_default).encode("utf-8")
+        self._send_bytes(body, "application/json; charset=utf-8", status)
+
+    def do_GET(self) -> None:
+        parsed = urlparse(self.path)
+        path = parsed.path.rstrip("/") or "/"
+        query = parse_qs(parsed.query)
+        try:
+            if path == "/":
+                self._send_bytes(INDEX_HTML.encode("utf-8"), "text/html; charset=utf-8")
+            elif path == "/api/health":
+                self._send_json({"ok": True, "clock": report_clock_label()})
+            elif path == "/api/overview":
+                self._send_json(DATA.overview())
+            elif path == "/api/trades":
+                days = _safe_int((query.get("days") or ["30"])[0], 30)
+                limit = _safe_int((query.get("limit") or ["200"])[0], 200)
+                self._send_json({"ok": True, "trades": DATA.recent_trades(days=days, limit=limit)})
+            elif path == "/api/positions":
+                account = DATA.account_snapshot()
+                orders = DATA.order_snapshot()
+                self._send_json({"ok": True, "account": account, "orders": orders})
+            elif path == "/api/export/trades.csv":
+                self._send_trade_csv()
+            else:
+                self._send_json({"ok": False, "error": "not found"}, HTTPStatus.NOT_FOUND)
+        except Exception as exc:
+            logger.exception("dashboard request failed: %s", self.path)
+            self._send_json({"ok": False, "error": str(exc)}, HTTPStatus.INTERNAL_SERVER_ERROR)
+
+    def _send_trade_csv(self) -> None:
+        rows = DATA.recent_trades(days=365, limit=5000)
+        buf = io.StringIO()
+        fieldnames = [
+            "exit_time",
+            "symbol",
+            "side_label",
+            "strategy_line",
+            "stage",
+            "entry_price",
+            "exit_price",
+            "quantity",
+            "pnl",
+            "pnl_pct",
+            "exit_reason_label",
+            "session_id",
+            "rows",
+        ]
+        writer = csv.DictWriter(buf, fieldnames=fieldnames)
+        writer.writeheader()
+        for row in rows:
+            writer.writerow({key: row.get(key, "") for key in fieldnames})
+        body = buf.getvalue().encode("utf-8-sig")
+        self.send_response(HTTPStatus.OK.value)
+        self.send_header("Content-Type", "text/csv; charset=utf-8")
+        self.send_header("Content-Disposition", "attachment; filename=hermes_trades.csv")
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+        self.wfile.write(body)
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description="Hermes Trader read-only dashboard")
+    parser.add_argument("--host", default="127.0.0.1", help="Bind host, keep 127.0.0.1 for SSH tunnel safety")
+    parser.add_argument("--port", type=int, default=8787, help="Bind port")
+    args = parser.parse_args()
+
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(levelname)s | %(message)s")
+    server = ThreadingHTTPServer((args.host, args.port), DashboardHandler)
+    logger.info("Hermes dashboard listening on http://%s:%s", args.host, args.port)
+    try:
+        server.serve_forever()
+    except KeyboardInterrupt:
+        logger.info("Dashboard stopped")
+    finally:
+        server.server_close()
+    return 0
