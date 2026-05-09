@@ -148,6 +148,181 @@ class ConfirmationMixin:
             and range_position <= float(getattr(self.config, "max_range_position_pct", 95.0))
         )
 
+    def _signal_metric(self, signal: dict[str, Any], key: str, default: float = 0.0) -> float:
+        metrics = signal.get("metrics", {}) or {}
+        try:
+            return float(metrics.get(key, default) or default)
+        except (TypeError, ValueError):
+            return default
+
+    def _signal_oi_change(self, signal: dict[str, Any]) -> float:
+        oi_funding = signal.get("oi_funding") or {}
+        return max(
+            abs(self._signal_metric(signal, "oi_24h_pct", 0.0)),
+            abs(float(oi_funding.get("oi_change_pct", 0.0) or 0.0)),
+        )
+
+    def _signal_funding(self, signal: dict[str, Any]) -> float:
+        oi_funding = signal.get("oi_funding") or {}
+        value = self._signal_metric(signal, "funding_rate", 0.0)
+        try:
+            return float(oi_funding.get("funding_current", value) or value)
+        except (TypeError, ValueError):
+            return value
+
+    def _fast_lane_ready_signal(
+        self,
+        signal: dict[str, Any],
+        *,
+        trend: dict[str, Any] | None = None,
+        watched_seconds: float = 0.0,
+        pullback_pct: float = 0.0,
+    ) -> tuple[bool, str, str]:
+        """AITrader fast lanes: funding squeeze, quiet accumulation, and timed escalation."""
+        if not getattr(self.config, "ai_fast_lane_enabled", True):
+            return False, "", ""
+
+        direction = str(signal.get("direction", "") or "")
+        stage = str(signal.get("stage", "") or "")
+        metrics = signal.get("metrics", {}) or {}
+        score_total = float((signal.get("score") or {}).get("total_score", 0) or 0)
+        change_24h = self._signal_metric(signal, "change_24h_pct", 0.0)
+        abs_change = abs(change_24h)
+        oi_change = self._signal_oi_change(signal)
+        funding = self._signal_funding(signal)
+        range_position = self._signal_metric(signal, "range_position_24h_pct", 50.0)
+        drawdown = self._signal_metric(signal, "drawdown_from_24h_high_pct", 0.0)
+        rebound = self._signal_metric(signal, "rebound_from_24h_low_pct", 0.0)
+
+        trend = trend or {}
+        trend_1h = trend.get("1h", {}) or {}
+        trend_5m = trend.get("5m", {}) or {}
+        align_1h = str(trend_1h.get("ma_alignment", "NEUTRAL") or "NEUTRAL")
+        align_5m = str(trend_5m.get("ma_alignment", "NEUTRAL") or "NEUTRAL")
+        trend_not_against = (
+            (direction == "LONG" and align_1h != "BEARISH" and align_5m != "BEARISH")
+            or (direction == "SHORT" and align_1h != "BULLISH" and align_5m != "BULLISH")
+        )
+        if stage == "mania" and not (
+            (direction == "SHORT" and change_24h >= 6.0 and drawdown >= 1.2)
+            or (direction == "LONG" and change_24h <= -6.0 and rebound >= 1.2)
+        ):
+            return False, "", ""
+
+        min_squeeze_score = float(getattr(self.config, "ai_funding_squeeze_score", 78.0))
+        min_squeeze_oi = float(getattr(self.config, "ai_funding_squeeze_min_oi_pct", 10.0))
+        min_squeeze_change = float(getattr(self.config, "ai_funding_squeeze_min_change_pct", 3.0))
+        max_funding = max(float(getattr(self.config, "max_abs_funding_rate", 0.005)), 0.0005) * 1.35
+        funding_squeeze = False
+        if direction == "LONG":
+            funding_squeeze = (
+                funding <= -0.00005
+                and score_total >= min_squeeze_score
+                and change_24h >= min_squeeze_change
+                and oi_change >= min_squeeze_oi
+                and abs(funding) <= max_funding
+                and range_position <= 98.0
+                and trend_not_against
+            )
+        elif direction == "SHORT":
+            funding_squeeze = (
+                funding >= 0.00005
+                and score_total >= min_squeeze_score
+                and change_24h <= -min_squeeze_change
+                and oi_change >= min_squeeze_oi
+                and abs(funding) <= max_funding
+                and range_position >= 2.0
+                and trend_not_against
+            )
+        if funding_squeeze:
+            side_text = "轧空跟多" if direction == "LONG" else "多头拥挤转弱做空"
+            return (
+                True,
+                "费率轧压快线",
+                f"{side_text}：评分 {score_total:.1f}，OI {oi_change:+.1f}%，费率 {funding:+.4%}",
+            )
+
+        reversal_score = max(min_squeeze_score, 80.0)
+        if (
+            direction == "SHORT"
+            and change_24h >= 6.0
+            and drawdown >= 1.2
+            and oi_change >= 7.0
+            and score_total >= reversal_score
+            and align_5m != "BULLISH"
+        ):
+            return (
+                True,
+                "高位转弱快线",
+                f"冲高回落做空：评分 {score_total:.1f}，24h {change_24h:+.1f}%，回落 {drawdown:.1f}%，OI {oi_change:+.1f}%",
+            )
+        if (
+            direction == "LONG"
+            and change_24h <= -6.0
+            and rebound >= 1.2
+            and oi_change >= 7.0
+            and score_total >= reversal_score
+            and align_5m != "BEARISH"
+        ):
+            return (
+                True,
+                "低位转强快线",
+                f"急跌反抽做多：评分 {score_total:.1f}，24h {change_24h:+.1f}%，反抽 {rebound:.1f}%，OI {oi_change:+.1f}%",
+            )
+
+        min_acc_score = float(getattr(self.config, "ai_accumulation_direct_score", 76.0))
+        max_acc_change = float(getattr(self.config, "ai_accumulation_direct_max_change_pct", 14.0))
+        if (
+            self._is_accumulation_candidate(metrics, score_total)
+            and score_total >= min_acc_score
+            and abs_change <= max_acc_change
+            and oi_change >= float(getattr(self.config, "accumulation_entry_min_oi_pct", 7.0))
+            and trend_not_against
+        ):
+            return (
+                True,
+                "暗流吸筹快线",
+                f"暗流吸筹直通：评分 {score_total:.1f}，24h {change_24h:+.1f}%，OI {oi_change:+.1f}%",
+            )
+
+        escalation_sec = float(getattr(self.config, "ai_watch_escalation_sec", 600) or 600)
+        escalation_score = float(getattr(self.config, "ai_watch_escalation_score", 82.0) or 82.0)
+        if (
+            watched_seconds >= escalation_sec
+            and stage in {"pre_break", "confirmed_breakout"}
+            and score_total >= escalation_score
+            and abs_change >= 3.0
+            and oi_change >= 8.0
+            and abs(funding) <= max_funding
+            and trend_not_against
+        ):
+            return (
+                True,
+                "候选升级快线",
+                f"观察超时升级：已等 {watched_seconds/60:.0f} 分钟，评分 {score_total:.1f}，回踩 {pullback_pct:.2f}%",
+            )
+
+        return False, "", ""
+
+    def _mark_signal_ready(
+        self,
+        signal: dict[str, Any],
+        *,
+        status_text: str,
+        strategy_line: str,
+        watch_stage: str,
+        entry_note: str,
+        trend: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        signal["entry_status"] = "ready"
+        signal["entry_status_text"] = status_text
+        signal["strategy_line"] = strategy_line
+        signal["watch_stage"] = watch_stage
+        signal["entry_note"] = entry_note
+        if trend is not None:
+            signal["confirmation_trend"] = trend
+        return signal
+
     def _strategy_line_for_signal(self, signal: dict[str, Any]) -> str:
         metrics = signal.get("metrics", {}) or {}
         score_total = float((signal.get("score") or {}).get("total_score", 0) or 0)
@@ -579,16 +754,17 @@ class ConfirmationMixin:
                 signal["entry_status"] = "invalid"; signal["entry_status_text"] = "失效淘汰"; signal["entry_note"] = f"评分回落至 {score_total:.1f}"; return signal
         if not watch:
             strategy_line = self._strategy_line_for_signal(signal)
-            initial_note = "首次发现，等待回踩确认"
+            initial_note = "首次发现，普通信号等待回踩；强资金/OI会走AI快线"
             trend = self._load_confirmation_trend(symbol)
             continuation_ready, continuation_note = self._is_trend_continuation_ready(signal, trend, current_price)
             momentum_ready, momentum_note = self._is_momentum_entry_ready(signal, trend, current_price)
             accumulation_ready, accumulation_note = self._is_accumulation_entry_ready(signal, trend, current_price)
             ma_reentry_ready, ma_reentry_note = self._is_ma_reentry_ready(signal, trend, current_price)
+            fast_lane_ready, fast_lane_stage, fast_lane_note = self._fast_lane_ready_signal(signal, trend=trend)
             if strategy_line == "趋势突破线":
-                initial_note = "首次发现，等待趋势延续确认"
+                initial_note = "首次发现，等待趋势延续；强资金/OI会走AI快线"
             elif strategy_line == "均线二启线":
-                initial_note = "首次发现，等待回踩守住均线后二次启动"
+                initial_note = "首次发现，等待回踩守住均线后二次启动；强信号可升级"
             direct_stage_ok, direct_block_note = self._direct_entry_stage_decision(
                 signal,
                 strategy_line=strategy_line,
@@ -596,6 +772,15 @@ class ConfirmationMixin:
             )
             if direct_block_note:
                 initial_note = direct_block_note
+            if fast_lane_ready:
+                return self._mark_signal_ready(
+                    signal,
+                    status_text="AI快线入场",
+                    strategy_line="趋势突破线",
+                    watch_stage=fast_lane_stage,
+                    entry_note=fast_lane_note,
+                    trend=trend,
+                )
             if score_total >= float(getattr(self.config, "god_direct_score", 90.0)) and direct_stage_ok:
                 signal["entry_status"] = "ready"; signal["entry_status_text"] = "优势阶段神级直通"; signal["strategy_line"] = strategy_line; signal["watch_stage"] = "神级直通"; signal["entry_note"] = f"评分 {score_total:.1f}，阶段 {signal.get('stage', '')}"; signal["confirmation_trend"] = trend; return signal
             if (
@@ -623,11 +808,27 @@ class ConfirmationMixin:
             momentum_ready, momentum_note = self._is_momentum_entry_ready(signal, trend, current_price)
             accumulation_ready, accumulation_note = self._is_accumulation_entry_ready(signal, trend, current_price)
             ma_reentry_ready, ma_reentry_note = self._is_ma_reentry_ready(signal, trend, current_price)
+            watched_seconds = max(0.0, now - float(watch.get("first_seen_ts", now) or now))
+            fast_lane_ready, fast_lane_stage, fast_lane_note = self._fast_lane_ready_signal(
+                signal,
+                trend=trend,
+                watched_seconds=watched_seconds,
+                pullback_pct=pullback_pct,
+            )
             direct_stage_ok, direct_block_note = self._direct_entry_stage_decision(
                 signal,
                 strategy_line=watch.get("strategy_line", self._strategy_line_for_signal(signal)),
                 score_total=score_total,
             )
+            if fast_lane_ready:
+                return self._mark_signal_ready(
+                    signal,
+                    status_text="AI快线入场",
+                    strategy_line="趋势突破线",
+                    watch_stage=fast_lane_stage,
+                    entry_note=fast_lane_note,
+                    trend=trend,
+                )
             if direct_stage_ok and momentum_ready:
                 signal["entry_status"] = "ready"; signal["entry_status_text"] = "动量确认入场"; signal["strategy_line"] = "趋势突破线"; signal["watch_stage"] = "动量突破"; signal["entry_note"] = momentum_note; signal["confirmation_trend"] = trend; return signal
             if direct_stage_ok and accumulation_ready:
@@ -643,7 +844,7 @@ class ConfirmationMixin:
                 entry_note = "等待回踩均线后重新站上短均线"
             else:
                 stage_name = "趋势待命" if watch.get("strategy_line") == "趋势突破线" else "回踩等待"
-                entry_note = direct_block_note or ("等待趋势延续确认" if watch.get("strategy_line") == "趋势突破线" else f"等待至少 {required_pullback:.1f}% 回踩")
+                entry_note = direct_block_note or ("等待趋势延续或AI快线升级" if watch.get("strategy_line") == "趋势突破线" else f"等待至少 {required_pullback:.1f}% 回踩，强资金/OI可升级")
             self._update_watch_state(watch, strategy_line=watch.get("strategy_line", "回踩确认线"), stage_name=stage_name, entry_note=entry_note, required_pullback=required_pullback, current_pullback=pullback_pct, trend=trend)
             signal["entry_status"] = "watch"; signal["entry_status_text"] = "观察中"; signal["strategy_line"] = watch.get("strategy_line", "回踩确认线"); signal["watch_stage"] = stage_name; signal["entry_note"] = entry_note; return signal
         trend = self._load_confirmation_trend(symbol)
@@ -655,6 +856,22 @@ class ConfirmationMixin:
         else:
             trend_ok = higher_alignment == "BEARISH" and ma_alignment == "BEARISH" and 0 < current_price <= ma5 and short_tf_ok
         ma_reentry_ready, ma_reentry_note = self._is_ma_reentry_ready(signal, trend, current_price)
+        watched_seconds = max(0.0, now - float(watch.get("first_seen_ts", now) or now))
+        fast_lane_ready, fast_lane_stage, fast_lane_note = self._fast_lane_ready_signal(
+            signal,
+            trend=trend,
+            watched_seconds=watched_seconds,
+            pullback_pct=pullback_pct,
+        )
+        if fast_lane_ready:
+            return self._mark_signal_ready(
+                signal,
+                status_text="AI快线入场",
+                strategy_line="趋势突破线",
+                watch_stage=fast_lane_stage,
+                entry_note=fast_lane_note,
+                trend=trend,
+            )
         if watch.get("strategy_line") == "均线二启线":
             if ma_reentry_ready:
                 signal["entry_status"] = "ready"; signal["entry_status_text"] = "二启确认入场"; signal["strategy_line"] = "均线二启线"; signal["watch_stage"] = "均线二启"; signal["entry_note"] = ma_reentry_note; signal["confirmation_trend"] = trend; return signal
