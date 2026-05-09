@@ -23,7 +23,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--stop-loss", type=float, default=12.0, help="Stop loss percent")
     parser.add_argument("--take-profit", type=float, default=35.0, help="Take profit percent")
     parser.add_argument("--trailing", type=float, default=8.0, help="Trailing stop percent")
-    parser.add_argument("--max-positions", type=int, default=99, help="Max open positions")
+    parser.add_argument("--max-positions", type=int, default=10, help="Max open positions")
     parser.add_argument("--max-position-pct", type=float, default=15.0, help="Max notional position size percent of balance")
     parser.add_argument("--max-total-exposure", type=float, default=150.0, help="Max total notional exposure percent of balance")
     parser.add_argument("--daily-entry-limit", dest="daily_entry_limit", action="store_true", default=False, help="Enable daily entry count throttle")

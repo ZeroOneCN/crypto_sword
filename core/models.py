@@ -26,7 +26,7 @@ class TradingConfig:
         min_total_exposure_pct: float = 80.0,
         dynamic_total_exposure_hard_cap_pct: float = 260.0,
         max_daily_loss_pct: float = 5.0,
-        max_open_positions: int = 99,
+        max_open_positions: int = 10,
         daily_entry_limit_enabled: bool = False,
         max_daily_entries: int = 12,
         max_entries_per_cycle: int = 2,
