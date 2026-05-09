@@ -64,10 +64,10 @@ class ConfirmationMixin:
         change_24h = abs(float(metrics.get("change_24h_pct", 0) or 0))
         oi_change = abs(float(metrics.get("oi_24h_pct", 0) or 0))
 
-        if score_total >= 82 and change_24h >= 22 and oi_change >= 50:
-            return max(1.5, self.config.shallow_pullback_pct)
+        if score_total >= 78 and change_24h >= 14 and oi_change >= 24:
+            return max(0.6, self.config.shallow_pullback_pct)
         if score_total >= self.config.momentum_entry_score and change_24h >= 15 and oi_change >= self.config.momentum_entry_min_oi_pct:
-            return max(2.0, self.config.shallow_pullback_pct + 0.5)
+            return max(0.9, self.config.shallow_pullback_pct + 0.3)
         if (
             getattr(self.config, "ma_reentry_enabled", True)
             and score_total >= getattr(self.config, "ma_reentry_score", 58.0)
@@ -75,8 +75,8 @@ class ConfirmationMixin:
             and oi_change >= getattr(self.config, "ma_reentry_min_oi_pct", 5.0)
         ):
             return max(0.5, float(getattr(self.config, "ma_reentry_min_pullback_pct", 0.8)))
-        if change_24h >= 15 and oi_change >= 35:
-            return max(2.0, self.config.shallow_pullback_pct + 0.4)
+        if change_24h >= 10 and oi_change >= 20:
+            return max(0.9, self.config.shallow_pullback_pct + 0.3)
         return self.config.min_pullback_pct
 
     def _soft_breakout_candidate(self, metrics: dict[str, Any], score_total: float) -> bool:
@@ -85,9 +85,9 @@ class ConfirmationMixin:
         oi_change = abs(float(metrics.get("oi_24h_pct", 0) or 0))
         funding = float(metrics.get("funding_rate", 0) or 0)
         return (
-            score_total >= 70.0
-            and change_24h >= 15.0
-            and oi_change >= 20.0
+            score_total >= 66.0
+            and change_24h >= 8.0
+            and oi_change >= 12.0
             and abs(funding) < self.config.max_abs_funding_rate
         )
 
@@ -102,8 +102,8 @@ class ConfirmationMixin:
     ) -> bool:
         """Let elite setups enter before the 1h MA fully flips, but never against it."""
         higher_alignment = str(higher_alignment or "NEUTRAL").upper()
-        strong_hotspot = score_total >= 82.0 and abs(change_24h) >= 7.0
-        strong_flow = score_total >= 78.0 and abs(oi_change) >= 18.0 and abs(change_24h) >= 6.0
+        strong_hotspot = score_total >= 76.0 and abs(change_24h) >= 5.0
+        strong_flow = score_total >= 72.0 and abs(oi_change) >= 10.0 and abs(change_24h) >= 4.0
         if direction == "LONG":
             if strong_hotspot or strong_flow:
                 return higher_alignment != "BEARISH"
@@ -163,7 +163,7 @@ class ConfirmationMixin:
             and oi_change >= self.config.momentum_entry_min_oi_pct
         ):
             return "趋势突破线"
-        if score_total >= 70.0 and change_24h >= 15.0 and oi_change >= 28.0 and funding <= 0:
+        if score_total >= 66.0 and change_24h >= 8.0 and oi_change >= 15.0 and abs(funding) < self.config.max_abs_funding_rate:
             return "趋势突破线"
         if self._is_accumulation_candidate(metrics, score_total):
             return "趋势突破线"
@@ -251,9 +251,33 @@ class ConfirmationMixin:
         higher_alignment = str(trend_1h.get("ma_alignment", "NEUTRAL") or "NEUTRAL")
         short_tf_ok = self._short_tf_breakout_ready(trend, direction, current_price)
         if direction == "LONG":
-            ready = higher_alignment == "BULLISH" and ma_alignment == "BULLISH" and current_price >= ma5 > 0 and short_tf_ok and change_24h > 0
+            ready = (
+                change_24h > 0
+                and self._early_trend_alignment_ok(
+                    direction,
+                    higher_alignment,
+                    score_total=score_total,
+                    change_24h=change_24h,
+                    oi_change=oi_change,
+                )
+                and ma_alignment == "BULLISH"
+                and current_price >= ma5 > 0
+                and short_tf_ok
+            )
         else:
-            ready = higher_alignment == "BEARISH" and ma_alignment == "BEARISH" and 0 < current_price <= ma5 and short_tf_ok and change_24h < 0
+            ready = (
+                change_24h < 0
+                and self._early_trend_alignment_ok(
+                    direction,
+                    higher_alignment,
+                    score_total=score_total,
+                    change_24h=change_24h,
+                    oi_change=oi_change,
+                )
+                and ma_alignment == "BEARISH"
+                and 0 < current_price <= ma5
+                and short_tf_ok
+            )
         if not ready:
             return False, ""
         return True, f"强趋势动量确认：评分 {score_total:.1f}，24h {change_24h:+.1f}%，OI {oi_change:+.1f}%"
@@ -265,7 +289,7 @@ class ConfirmationMixin:
         change_24h = float(metrics.get("change_24h_pct", 0) or 0)
         oi_change = float(metrics.get("oi_24h_pct", 0) or 0)
         funding = abs(float(metrics.get("funding_rate", 0) or 0))
-        if score_total < 65 or abs(change_24h) < 10.0 or funding >= self.config.max_abs_funding_rate * 0.95:
+        if score_total < 62 or abs(change_24h) < 6.0 or funding >= self.config.max_abs_funding_rate:
             return False, ""
         trend_1h = trend.get("1h", {}) or {}
         trend_15m = trend.get("15m", {}) or {}
@@ -318,7 +342,7 @@ class ConfirmationMixin:
         ma_alignment_1h = str(trend_1h.get("ma_alignment", "NEUTRAL") or "NEUTRAL")
         ma5_5m = float(trend_5m.get("ma5", 0) or 0)
         short_tf_ok = self._short_tf_breakout_ready(trend, direction, current_price)
-        if score_total < 70 or oi_change < 28:
+        if score_total < 66 or oi_change < 16:
             return False, ""
         if direction == "LONG":
             ready = (
@@ -332,7 +356,7 @@ class ConfirmationMixin:
                 )
                 and current_price >= ma5_5m > 0
                 and short_tf_ok
-                and pullback_pct >= max(0.6, self.config.min_pullback_pct * 0.5)
+                and pullback_pct >= max(0.35, self.config.min_pullback_pct * 0.35)
             )
         else:
             ready = (
@@ -346,7 +370,7 @@ class ConfirmationMixin:
                 )
                 and 0 < current_price <= ma5_5m
                 and short_tf_ok
-                and pullback_pct >= max(0.6, self.config.min_pullback_pct * 0.5)
+                and pullback_pct >= max(0.35, self.config.min_pullback_pct * 0.35)
             )
         if not ready:
             return False, ""

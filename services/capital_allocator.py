@@ -270,7 +270,7 @@ class CapitalAllocator:
             max_position_multiplier = min(max_position_multiplier, 0.85)
             notes.append("收益曲线谨慎降仓")
 
-        soft_rr_floor = max(1.70, float(getattr(config, "capital_min_expected_rr", 2.0) or 2.0) - 0.25)
+        soft_rr_floor = max(1.45, float(getattr(config, "capital_min_expected_rr", 2.0) or 2.0) - 0.20)
         if expected_rr < soft_rr_floor:
             risk_multiplier = min(risk_multiplier, 0.80)
             max_position_multiplier = min(max_position_multiplier, 0.85)
@@ -298,9 +298,9 @@ class CapitalAllocator:
 
         min_expected_rr = float(getattr(config, "capital_min_expected_rr", 1.18) or 1.18)
         if mode in {"防守复利", "深度防守"}:
-            min_expected_rr = max(min_expected_rr, 1.55)
+            min_expected_rr = max(min_expected_rr, 1.45)
         if strong_signal:
-            min_expected_rr = max(1.40, min_expected_rr - 0.05)
+            min_expected_rr = max(1.30, min_expected_rr - 0.10)
 
         allowed = expected_rr >= min_expected_rr
         reason = "通过资本分配"

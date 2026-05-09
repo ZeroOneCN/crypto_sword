@@ -29,7 +29,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--daily-entry-limit", dest="daily_entry_limit", action="store_true", default=False, help="Enable daily entry count throttle")
     parser.add_argument("--no-daily-entry-limit", dest="daily_entry_limit", action="store_false", help="Disable daily entry count throttle")
     parser.add_argument("--max-daily-entries", type=int, default=12, help="Max new entries per day")
-    parser.add_argument("--max-entries-per-cycle", type=int, default=1, help="Max new entries per scan cycle")
+    parser.add_argument("--max-entries-per-cycle", type=int, default=2, help="Max new entries per scan cycle")
     parser.add_argument("--weak-daily-entries", type=int, default=4, help="Soft cap when daily stats are weak")
     parser.add_argument("--hard-daily-entries", type=int, default=2, help="Soft cap in deep defensive mode")
     parser.add_argument("--daily-exception-entries", type=int, default=1, help="Max A+ override entries after soft cap")
@@ -62,6 +62,53 @@ def build_config(args: argparse.Namespace) -> TradingConfig:
         scan_interval_sec=args.scan_interval,
         fast_scan_interval_sec=args.fast_interval,
         oi_funding_enabled=not args.disable_oi_funding,
+        min_signal_score_for_entry=82.0,
+        min_signal_score_defensive=90.0,
+        god_direct_score=92.0,
+        pre_break_direct_score=82.0,
+        confirmed_breakout_direct_score=90.0,
+        confirmed_breakout_max_change_pct=24.0,
+        confirmed_breakout_max_range_position_pct=90.0,
+        quality_guard_defensive_min_score=90.0,
+        quality_guard_defensive_max_change_pct=22.0,
+        quality_guard_defensive_max_oi_pct=75.0,
+        quality_guard_defensive_max_range_position_pct=88.0,
+        min_change_pct=1.0,
+        max_chase_change_pct=24.0,
+        min_pullback_pct=1.2,
+        shallow_pullback_pct=0.6,
+        reclaim_volume_ratio=0.90,
+        max_range_position_pct=92.0,
+        max_abs_funding_rate=0.0045,
+        max_oi_change_pct=100.0,
+        max_entry_slippage_pct=0.45,
+        exception_entry_score=90.0,
+        exception_entry_min_change_pct=5.0,
+        exception_entry_min_oi_pct=12.0,
+        exception_entry_max_change_pct=40.0,
+        exception_entry_max_oi_pct=100.0,
+        exception_entry_max_abs_funding_rate=0.0035,
+        defensive_score_override_score=92.0,
+        defensive_score_override_max_abs_funding_rate=0.0035,
+        momentum_entry_score=84.0,
+        momentum_entry_min_change_pct=6.0,
+        momentum_entry_min_oi_pct=12.0,
+        ma_reentry_score=62.0,
+        ma_reentry_min_change_pct=2.5,
+        ma_reentry_max_change_pct=32.0,
+        ma_reentry_min_oi_pct=5.0,
+        ma_reentry_min_pullback_pct=0.4,
+        ma_reentry_max_pullback_pct=9.0,
+        ma_reentry_ma_tolerance_pct=1.6,
+        ma_reentry_max_extension_pct=9.0,
+        ma_reentry_min_volume_ratio=0.70,
+        accumulation_entry_score=78.0,
+        accumulation_entry_min_oi_pct=10.0,
+        accumulation_entry_max_change_pct=16.0,
+        accumulation_entry_max_range_pct=82.0,
+        accumulation_entry_min_volume_mult=0.85,
+        capital_min_expected_rr=1.65,
+        capital_aggressive_score=88.0,
     )
 
 
