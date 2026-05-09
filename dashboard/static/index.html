@@ -268,7 +268,7 @@
       <div class="panel">
         <div class="panel-head"><h2>当前持仓</h2><span class="pill" id="orderSummary">保护单 --</span></div>
         <div class="scroll"><table>
-          <thead><tr><th>币种</th><th>方向</th><th>数量</th><th>入场</th><th>标记</th><th>未实现</th><th>ROI</th><th>保护单</th></tr></thead>
+          <thead><tr><th>币种</th><th>方向</th><th>数量</th><th>入场</th><th>标记</th><th>未实现</th><th>ROI</th><th>预计盈亏</th><th>保护单</th></tr></thead>
           <tbody id="positions"></tbody>
         </table></div>
       </div>
@@ -382,11 +382,16 @@
     function renderPositions(rows) {
       const body = document.getElementById('positions');
       if (!rows || !rows.length) {
-        body.innerHTML = `<tr><td colspan="8" class="muted">当前无持仓，系统待命。</td></tr>`;
+        body.innerHTML = `<tr><td colspan="9" class="muted">当前无持仓，系统待命。</td></tr>`;
         return;
       }
       body.innerHTML = rows.map(p => {
         const prot = p.protected ? '✅ 完整' : `⚠️ SL ${p.protection?.stop || 0} / TP ${p.protection?.take_profit || 0}`;
+        const expected = p.expected_pnl || {};
+        const expectedText = expected.available
+          ? `SL ${money(expected.stop_pnl)}<br>TP ${money(expected.take_profit_pnl)}`
+          : '--';
+        const expectedClass = expected.available ? cls(expected.take_profit_pnl + expected.stop_pnl) : 'muted';
         return `<tr>
           ${cell(`<b>${safe(p.symbol)}</b>`)}
           ${cell(safe(p.side_label))}
@@ -395,6 +400,7 @@
           ${cell(price(p.mark_price), 'mono')}
           ${cell(money(p.unrealized_pnl), cls(p.unrealized_pnl))}
           ${cell(pct(p.roi_pct), cls(p.roi_pct))}
+          ${cell(expectedText, expectedClass)}
           ${cell(prot, p.protected ? 'good' : 'warn')}
         </tr>`;
       }).join('');

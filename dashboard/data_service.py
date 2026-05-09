@@ -214,13 +214,18 @@ class DashboardData:
                 symbol = order["symbol"]
                 if not symbol:
                     continue
-                bucket = by_symbol.setdefault(symbol, {"total": 0, "stop": 0, "take_profit": 0})
+                bucket = by_symbol.setdefault(symbol, {"total": 0, "stop": 0, "take_profit": 0, "stop_prices": [], "take_profit_prices": []})
                 bucket["total"] += 1
                 kind = str(order.get("type", "")).upper()
+                trigger_price = _safe_float(order.get("trigger_price"))
                 if "TAKE_PROFIT" in kind:
                     bucket["take_profit"] += 1
+                    if trigger_price > 0:
+                        bucket["take_profit_prices"].append(trigger_price)
                 elif "STOP" in kind:
                     bucket["stop"] += 1
+                    if trigger_price > 0:
+                        bucket["stop_prices"].append(trigger_price)
             return {"available": True, "orders": orders, "by_symbol": by_symbol}
 
         try:
@@ -413,6 +418,7 @@ class DashboardData:
             merged = dict(pos)
             merged["protection"] = protection
             merged["protected"] = bool(protection.get("stop", 0) >= 1 and protection.get("take_profit", 0) >= 1)
+            merged["expected_pnl"] = self._estimate_position_expected_pnl(pos, protection)
             positions.append(merged)
 
         return {
@@ -473,3 +479,38 @@ class DashboardData:
             )
         positions.sort(key=lambda item: abs(item.get("unrealized_pnl", 0.0)), reverse=True)
         return positions
+
+    def _estimate_position_expected_pnl(self, pos: dict[str, Any], protection: dict[str, Any]) -> dict[str, Any]:
+        entry = _safe_float(pos.get("entry_price"))
+        quantity = _safe_float(pos.get("quantity"))
+        side = str(pos.get("side", "") or "").upper()
+        if entry <= 0 or quantity <= 0:
+            return {"available": False, "stop_price": 0.0, "stop_pnl": 0.0, "take_profit_prices": [], "take_profit_pnl": 0.0}
+
+        stop_prices = sorted([_safe_float(item) for item in protection.get("stop_prices", []) if _safe_float(item) > 0])
+        tp_prices = sorted([_safe_float(item) for item in protection.get("take_profit_prices", []) if _safe_float(item) > 0])
+        if side == "SHORT":
+            stop_prices = sorted(stop_prices, reverse=True)
+            tp_prices = sorted(tp_prices, reverse=True)
+
+        def pnl_at(price_value: float, qty: float = quantity) -> float:
+            if side == "SHORT":
+                return (entry - price_value) * qty
+            return (price_value - entry) * qty
+
+        stop_price = stop_prices[0] if stop_prices else 0.0
+        stop_pnl = pnl_at(stop_price) if stop_price > 0 else 0.0
+        tp_pnl = 0.0
+        if tp_prices:
+            # Open orders do not always expose each slice quantity consistently; use
+            # an equal-weight estimate so the dashboard stays directionally useful.
+            slice_qty = quantity / len(tp_prices)
+            tp_pnl = sum(pnl_at(price_value, slice_qty) for price_value in tp_prices)
+
+        return {
+            "available": bool(stop_price or tp_prices),
+            "stop_price": round(stop_price, 10),
+            "stop_pnl": round(stop_pnl, 8),
+            "take_profit_prices": [round(item, 10) for item in tp_prices],
+            "take_profit_pnl": round(tp_pnl, 8),
+        }
