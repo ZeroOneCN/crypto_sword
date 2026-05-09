@@ -694,7 +694,7 @@ class OrderService:
         except Exception as algo_error:
             algo_text = str(algo_error)
             if any(token in algo_text for token in ("Unknown order", "-2011", "Order does not exist")):
-                logger.info(f"{symbol} protective order already gone id={order_id}: {algo_error}")
+                logger.debug(f"{symbol} protective order already gone id={order_id}: {algo_error}")
                 return True
             try:
                 get_native_binance_client().cancel_order(symbol, order_id)  # type: ignore[union-attr]
@@ -702,7 +702,7 @@ class OrderService:
             except Exception as order_error:
                 order_text = str(order_error)
                 if any(token in order_text for token in ("Unknown order", "-2011", "Order does not exist")):
-                    logger.info(f"{symbol} protective order already gone id={order_id}: {order_error}")
+                    logger.debug(f"{symbol} protective order already gone id={order_id}: {order_error}")
                     return True
                 logger.warning(
                     f"{symbol} native cancel failed id={order_id}: "
@@ -861,6 +861,8 @@ class OrderService:
             else:
                 failed.append(order_id)
 
+        if canceled:
+            self.invalidate_symbol(symbol)
         return {
             "checked": len(orders),
             "canceled": canceled,
