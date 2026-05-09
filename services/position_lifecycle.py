@@ -25,7 +25,22 @@ class PositionLifecycleMixin:
         funding = float(metrics.get("funding_rate", 0.0) or 0.0)
         oi_change = float(metrics.get("oi_24h_pct", 0.0) or 0.0)
         volume_mult = float(metrics.get("volume_24h_mult", 1.0) or 1.0)
+        rebound = float(metrics.get("rebound_from_24h_low_pct", 0.0) or 0.0)
         required_pullback = self._required_pullback_pct(metrics)
+        top_reversal_short = (
+            change_24h >= 6.0
+            and drawdown >= max(1.2, min(required_pullback, 2.5))
+            and oi_change >= 7.0
+            and volume_mult >= 0.7
+            and range_position <= 97.0
+        )
+        bottom_reversal_long = (
+            change_24h <= -6.0
+            and rebound >= max(1.2, min(required_pullback, 2.5))
+            and oi_change >= 7.0
+            and volume_mult >= 0.7
+            and range_position >= 3.0
+        )
 
         if abs(funding) >= self.config.max_abs_funding_rate:
             return f"资金费率过热 {funding * 100:.3f}%"
@@ -33,7 +48,7 @@ class PositionLifecycleMixin:
             return f"OI过热 {oi_change:.1f}%"
 
         if direction == "LONG":
-            if change_24h <= (-15 if is_major_symbol else -12):
+            if change_24h <= (-15 if is_major_symbol else -12) and not bottom_reversal_long:
                 return f"大跌中不接多 {change_24h:.1f}%"
             if change_24h >= (
                 self.config.max_chase_change_pct + 10 if is_major_symbol else self.config.max_chase_change_pct
@@ -49,7 +64,7 @@ class PositionLifecycleMixin:
             if change_24h >= 8 and range_position >= (96.0 if is_major_symbol else self.config.max_range_position_pct):
                 return f"价格处于24h区间高位 {range_position:.1f}%"
         elif direction == "SHORT":
-            if change_24h >= (15 if is_major_symbol else 12):
+            if change_24h >= (15 if is_major_symbol else 12) and not top_reversal_short:
                 return f"大涨中不追空 {change_24h:.1f}%"
             if change_24h <= (
                 -(self.config.max_chase_change_pct + 10) if is_major_symbol else -self.config.max_chase_change_pct

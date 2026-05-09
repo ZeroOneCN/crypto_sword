@@ -219,12 +219,36 @@ def decide_direction(stage: str, metrics: dict) -> str:
     ls_prev = float(metrics.get("ls_ratio_prev_24h", 0.0) or 0.0)
     oi_24h = float(metrics.get("oi_24h_pct", 0.0) or 0.0)
     volume_mult = float(metrics.get("volume_24h_mult", 0.0) or 0.0)
+    drawdown = float(metrics.get("drawdown_from_24h_high_pct", 0.0) or 0.0)
+    rebound = float(metrics.get("rebound_from_24h_low_pct", 0.0) or 0.0)
+    range_position = float(metrics.get("range_position_24h_pct", 50.0) or 50.0)
     
     ls_rising = ls_now > ls_prev
     ls_falling = ls_now < ls_prev
+    top_reversal_short = (
+        change_24h >= 6.0
+        and drawdown >= 1.2
+        and oi_24h >= 7.0
+        and volume_mult >= 0.8
+        and range_position <= 97.0
+    )
+    bottom_reversal_long = (
+        change_24h <= -6.0
+        and rebound >= 1.2
+        and oi_24h >= 7.0
+        and volume_mult >= 0.8
+        and range_position >= 3.0
+    )
     
     # pre_break / confirmed_breakout: 宽松双向交易
     if stage == "pre_break" or stage == "confirmed_breakout":
+        # High-runup failure: 24h is still green, but price has already rolled
+        # over from the high with OI/volume active. This is the AIA-like short.
+        if top_reversal_short:
+            return "SHORT"
+        if bottom_reversal_long:
+            return "LONG"
+
         # 做多条件：价格上涨为主，其他辅助（放宽到 2 个条件满足即可）
         long_signals = sum([
             change_24h > 0,           # 价格上涨
@@ -521,6 +545,9 @@ def build_symbol_metrics(symbol: str) -> dict[str, Any] | None:
     drawdown = 0.0
     if high > 0:
         drawdown = (high - last_price) / high * 100
+    rebound = 0.0
+    if low > 0:
+        rebound = (last_price - low) / low * 100
 
     # Venues/events approximation (we only have Binance, so use signal families)
     venues, events = derive_venues_events(
@@ -545,6 +572,7 @@ def build_symbol_metrics(symbol: str) -> dict[str, Any] | None:
         "venues_180m": venues,
         "events_180m": events,
         "drawdown_from_24h_high_pct": drawdown,
+        "rebound_from_24h_low_pct": rebound,
         "range_position_24h_pct": ((last_price - low) / (high - low) * 100) if high > low else 50.0,
         "high_24h": high,
         "low_24h": low,

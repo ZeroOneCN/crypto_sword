@@ -32,6 +32,8 @@ def classify_breakout_stage(metrics: dict[str, Any]) -> tuple[str, str, str]:
     ls_now = float(metrics.get("ls_ratio_now", 0.0) or 0.0)
     ls_prev = float(metrics.get("ls_ratio_prev_24h", 0.0) or 0.0)
     drawdown = float(metrics.get("drawdown_from_24h_high_pct", 0.0) or 0.0)
+    rebound = float(metrics.get("rebound_from_24h_low_pct", 0.0) or 0.0)
+    range_position = float(metrics.get("range_position_24h_pct", 50.0) or 50.0)
 
     ls_rising = ls_now > ls_prev
     crowded_longs = ls_now >= 2.5 or (ls_now >= 2.0 and funding > 0.01)
@@ -41,6 +43,20 @@ def classify_breakout_stage(metrics: dict[str, Any]) -> tuple[str, str, str]:
     early_break = change_24h >= 5 and volume_24h >= 1.0 and oi_24h >= 10
     strong_breakdown = change_72h <= -10 and volume_24h >= 1.2 and oi_24h >= 15
     early_breakdown = change_24h <= -5 and volume_24h >= 1.0 and oi_24h >= 10
+    top_reversal_short = (
+        change_24h >= 6
+        and drawdown >= 1.2
+        and volume_24h >= 0.8
+        and oi_24h >= 7
+        and range_position <= 97
+    )
+    bottom_reversal_long = (
+        change_24h <= -6
+        and rebound >= 1.2
+        and volume_24h >= 0.8
+        and oi_24h >= 7
+        and range_position >= 3
+    )
 
     overheated_long = change_24h >= 25 or change_72h >= 50 or volume_24h >= 6
     overheated_short = change_24h <= -20 or change_72h <= -45
@@ -84,6 +100,20 @@ def classify_breakout_stage(metrics: dict[str, Any]) -> tuple[str, str, str]:
             "confirmed_breakout",
             "72h跌破确认 + 放量 + OI上升 + 空头主导",
             risk,
+        )
+
+    if top_reversal_short:
+        return (
+            "pre_break",
+            "高位冲高回落 + OI/量能仍活跃",
+            "24h仍偏强但短线已从高点回撤，允许转弱做空，需防急反抽",
+        )
+
+    if bottom_reversal_long:
+        return (
+            "pre_break",
+            "低位急跌反抽 + OI/量能仍活跃",
+            "24h仍偏弱但短线已从低点反弹，允许转强做多，需防二次下杀",
         )
 
     if early_break:
