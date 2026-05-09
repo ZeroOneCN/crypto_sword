@@ -26,7 +26,13 @@ class DashboardHandler(BaseHTTPRequestHandler):
     server_version = "HermesDashboard/1.0"
 
     def log_message(self, fmt: str, *args: Any) -> None:
-        logger.info("%s - %s", self.address_string(), fmt % args)
+        message = fmt % args
+        # Dashboard refreshes every few seconds. Keep normal 2xx polling out of
+        # the trading log, but still surface redirects, client errors and server errors.
+        if any(token in message for token in ('" 200 ', '" 204 ', '" 304 ')):
+            logger.debug("%s - %s", self.address_string(), message)
+            return
+        logger.warning("%s - %s", self.address_string(), message)
 
     def _send_bytes(self, body: bytes, content_type: str, status: HTTPStatus = HTTPStatus.OK) -> None:
         self.send_response(status.value)
