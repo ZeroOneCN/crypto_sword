@@ -122,7 +122,7 @@ class CryptoSword(ExecutionMixin, ScannerMixin, CycleMixin, SyncMixin, Confirmat
         self._last_period_report_sent_for: str = ""
         self._last_hourly_summary_sent_for: str = utc_hour_key()
         self._last_watch_monitor_time: float = 0.0
-        self._market_style_mode: str = "balanced"
+        self._market_style_mode: str = "alt"
         self._market_style_stats: dict[str, Any] = {}
         self._last_market_style_refresh: float = 0.0
         self._last_summary_signature: str = ""

@@ -161,11 +161,25 @@ class MarketMixin:
         )
 
     def _refresh_market_style(self, force: bool = False):
-        """Auto-detect whether recent profits favor majors or hot alts."""
+        """Lock trading style to altcoins.
+
+        BTC remains a benchmark/reference symbol, but the trading engine's
+        opportunity model is intentionally altcoin-first.
+        """
         now = time.time()
         if not force and now - self._last_market_style_refresh < self.config.market_style_refresh_sec:
             return
         self._last_market_style_refresh = now
+        self._market_style_mode = "alt"
+        self._market_style_stats = {
+            "locked": True,
+            "reason": "altcoin-first core mode",
+            "major_symbols": list(getattr(self.config, "major_symbols", [])),
+        }
+        logger.info(
+            "市场风格锁定：mode=alt | BTC仅作参考，其他合约按山寨币机会处理"
+        )
+        return
 
         try:
             recent_closed = self.db.get_closed_trades(days=30, mode=self.config.mode)[: self.config.market_style_lookback_trades]

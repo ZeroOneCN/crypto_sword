@@ -291,7 +291,9 @@ class TradingConfig:
         self.pullback_stop_multiplier = pullback_stop_multiplier
         self.daily_report_enabled = daily_report_enabled
         self.daily_report_on_first_cycle = daily_report_on_first_cycle
-        self.major_symbols = [symbol.upper() for symbol in (major_symbols or ["BTCUSDT", "ETHUSDT"]) if symbol]
+        # Core principle: BTC is the only major benchmark. Every other futures
+        # symbol, including ETH, is treated as an altcoin opportunity target.
+        self.major_symbols = [symbol.upper() for symbol in (major_symbols or ["BTCUSDT"]) if symbol]
         self.market_style_lookback_trades = max(6, int(market_style_lookback_trades))
         self.market_style_refresh_sec = max(300, int(market_style_refresh_sec))
         self.target_altcoins = target_altcoins

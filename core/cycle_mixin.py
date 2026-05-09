@@ -64,7 +64,7 @@ class CycleMixin:
     def _select_deep_scan_symbols(self, candidates: list[str] | None = None) -> list[str]:
         """Pick symbols for expensive deep scan, preferring fresh fast-scan candidates."""
         major_symbols = list(self.config.major_symbols)
-        prefer_major = self._market_style_mode in {"major", "balanced"}
+        prefer_major = False
         selected_candidates = candidates if candidates is not None else self._fast_scan_candidates()
         if selected_candidates:
             selected_candidates = self._filter_altcoin_symbols(selected_candidates)
