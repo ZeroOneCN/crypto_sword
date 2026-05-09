@@ -47,7 +47,7 @@ class TradingConfig:
         min_signal_score_defensive: float = 88.0,
         god_direct_score: float = 90.0,
         pre_break_direct_score: float = 78.0,
-        confirmed_breakout_direct_score: float = 86.0,
+        confirmed_breakout_direct_score: float = 78.0,
         confirmed_breakout_max_change_pct: float = 30.0,
         confirmed_breakout_max_range_position_pct: float = 94.0,
         allow_mania_long_entries: bool = False,
