@@ -28,6 +28,45 @@ logger = logging.getLogger(__name__)
 class CycleMixin:
     """Runtime cycle scheduling and monitor notifications."""
 
+    def _notify_ready_entry_skipped(self, signal: dict[str, Any], reason: str, component: str = "entry_gate") -> None:
+        """Notify once when a ready signal cannot reach order execution."""
+        symbol = str(signal.get("symbol", "") or "")
+        if not symbol:
+            return
+        score = self._signal_score_value(signal)
+        status_text = str(signal.get("entry_status_text", "") or "")
+        watch_stage = str(signal.get("watch_stage", "") or "")
+        strategy_line = str(signal.get("strategy_line", "") or "")
+        direction = "做空" if str(signal.get("direction", "") or "").upper() == "SHORT" else "做多"
+        key = f"{symbol}|{component}|{reason}|{status_text}|{watch_stage}"
+        now = time.time()
+        last_map = getattr(self, "_ready_entry_skip_notify_ts", {})
+        if not isinstance(last_map, dict):
+            last_map = {}
+        ttl_sec = float(getattr(self.config, "ready_entry_skip_notify_ttl_sec", 900) or 900)
+        if now - float(last_map.get(key, 0) or 0) < ttl_sec:
+            return
+        last_map[key] = now
+        self._ready_entry_skip_notify_ts = last_map
+
+        message = (
+            f"阶段：ready信号执行前检查\n"
+            f"原因：{reason}\n"
+            f"方向：{direction}\n"
+            f"策略：{strategy_line or 'UNKNOWN'}\n"
+            f"状态：{status_text or 'ready'}\n"
+            f"阶段标签：{watch_stage or '-'}\n"
+            f"评分：{score:.1f}"
+        )
+        send_telegram_message(
+            format_error_msg(
+                error_type="ready信号未开仓",
+                message=message,
+                symbol=symbol,
+                component=component,
+            )
+        )
+
     def _filter_altcoin_symbols(self, symbols: list[str]) -> list[str]:
         if not getattr(self.config, "target_altcoins", False):
             return symbols
@@ -728,12 +767,20 @@ class CycleMixin:
                         f"Entry throttle: cycle entry cap reached "
                         f"{entries_opened_this_cycle}/{self.config.max_entries_per_cycle}"
                     )
+                    for pending_signal in signals:
+                        if pending_signal.get("entry_status") == "ready":
+                            self._notify_ready_entry_skipped(
+                                pending_signal,
+                                f"每轮开仓上限已达 {entries_opened_this_cycle}/{self.config.max_entries_per_cycle}",
+                                component="entry_cycle_cap",
+                            )
                     break
                 if signal.get("entry_status") != "ready":
                     continue
                 throttle_reason = self._entry_throttle_reason(signal, entry_gate_snapshot)
                 if throttle_reason:
                     logger.info(f"Entry throttle skip {signal.get('symbol', '')}: {throttle_reason}")
+                    self._notify_ready_entry_skipped(signal, throttle_reason, component="entry_throttle")
                     continue
                 signal_price = float(signal.get("price", 0) or 0)
                 score_conf = str((signal.get("score") or {}).get("confidence", "") or "")
@@ -743,11 +790,13 @@ class CycleMixin:
                 guard_text = f"{status_text}|{watch_stage}|{entry_note}|{score_conf}"
                 if signal_price <= 0:
                     logger.warning(f"entry guard skip {signal.get('symbol', '')}: invalid signal price={signal_price}")
+                    self._notify_ready_entry_skipped(signal, f"信号价格无效：{signal_price}", component="entry_guard")
                     continue
                 if any(token in guard_text for token in ("失效", "淘汰", "移出监控", "状态变更")):
                     logger.warning(
                         f"entry guard skip {signal.get('symbol', '')}: blocked by monitor state [{guard_text}]"
                     )
+                    self._notify_ready_entry_skipped(signal, f"监控状态禁止执行：{guard_text}", component="entry_guard")
                     continue
                 if balance_hint is not None:
                     signal["_balance_hint"] = balance_hint
@@ -759,14 +808,30 @@ class CycleMixin:
                         f"entry guard skip {signal_symbol}: already have open position "
                         f"(session={self.tracker.positions[signal_symbol].session_id})"
                     )
+                    self._notify_ready_entry_skipped(
+                        signal,
+                        f"同币种已有持仓，session={self.tracker.positions[signal_symbol].session_id}",
+                        component="entry_guard",
+                    )
                     continue
 
                 if self.tracker.get_open_count() >= self.config.max_open_positions:
                     if not self._try_replace_sideways_position_for_signal(signal):
                         logger.info(f"Max open positions reached ({self.config.max_open_positions})")
+                        self._notify_ready_entry_skipped(
+                            signal,
+                            f"最大持仓已满 {self.tracker.get_open_count()}/{self.config.max_open_positions}",
+                            component="position_limit",
+                        )
                         break
 
                 position = self.execute_entry(signal)
+                if not position:
+                    self._notify_ready_entry_skipped(
+                        signal,
+                        "已进入 execute_entry，但执行链未返回仓位；请查看同时间交易异常详情",
+                        component="execute_entry",
+                    )
                 if position:
                     with self._state_lock:
                         self.tracker.add_position(position)
