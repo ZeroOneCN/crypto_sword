@@ -131,7 +131,8 @@ class CycleMixin:
 
         lookback = int(getattr(self.config, "quality_guard_lookback_trades", 12) or 12)
         try:
-            trades = self.db.get_closed_trades(days=7, mode=self.config.mode)[:lookback]
+            # 只看当日交易 — 每日代码迭代，历史数据不反映当前策略质量
+            trades = self.db.get_closed_trades(days=1, mode=self.config.mode)[:lookback]
         except Exception as exc:
             logger.debug(f"recent quality guard skipped: {exc}")
             return {"mode": "normal", "reason": "近期交易读取失败"}
