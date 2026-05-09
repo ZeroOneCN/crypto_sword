@@ -309,6 +309,17 @@
     </section>
 
     <section class="panel">
+      <div class="panel-head">
+        <h2>交易异常记录</h2>
+        <span class="pill" id="errorSummary">异常 --</span>
+      </div>
+      <div class="scroll"><table>
+        <thead><tr><th>时间</th><th>级别</th><th>类型</th><th>组件</th><th>标的</th><th>流水号</th><th>原因详情</th></tr></thead>
+        <tbody id="transactionErrors"></tbody>
+      </table></div>
+    </section>
+
+    <section class="panel">
       <div class="panel-head"><h2>运行日志尾部</h2><span class="muted">仅展示最近 60 行</span></div>
       <div class="log" id="logs">读取中...</div>
     </section>
@@ -446,6 +457,29 @@
       </tr>`).join('');
     }
 
+    function renderErrors(payload) {
+      const body = document.getElementById('transactionErrors');
+      const rows = payload?.errors || [];
+      document.getElementById('errorSummary').textContent = `异常 ${payload?.total || 0}`;
+      if (!rows.length) {
+        body.innerHTML = `<tr><td colspan="7" class="muted">暂无交易异常，系统运行平稳。</td></tr>`;
+        return;
+      }
+      body.innerHTML = rows.map(e => {
+        const levelClass = e.level === 'ERROR' ? 'bad' : 'warn';
+        const detail = safe(e.detail || e.summary || '').replace(/\n/g, '<br>');
+        return `<tr>
+          ${cell(safe(e.time || ''), 'mono')}
+          ${cell(safe(e.level || ''), levelClass)}
+          ${cell(safe(e.type || ''), levelClass)}
+          ${cell(safe(e.component || '系统'))}
+          ${cell(e.symbol ? `<b>${safe(e.symbol)}</b>` : '--')}
+          ${cell(e.session_id ? safe(e.session_id) : '--', 'mono')}
+          ${cell(`<details><summary>${safe(e.summary || e.detail || '--')}</summary><div class="muted" style="white-space:pre-wrap;margin-top:8px">${detail}</div></details>`)}
+        </tr>`;
+      }).join('');
+    }
+
     async function loadTradesPage(page = tradeState.page) {
       const res = await fetch(`/api/trades?days=30&page=${page}&per_page=${tradeState.perPage}`, { cache: 'no-store' });
       const data = await res.json();
@@ -508,6 +542,7 @@
 
         renderPositions(account.positions || []);
         renderPeriods(periods);
+        renderErrors(data.transaction_errors || { errors: [], total: 0 });
         if (!tradeState.loaded || tradeState.page === 1) {
           renderTradesPage(data.recent_trades || { trades: [], page: 1, total_pages: 1, total: 0 });
         } else if (manual) {

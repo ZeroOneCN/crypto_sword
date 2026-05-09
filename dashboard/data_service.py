@@ -7,6 +7,7 @@ Keeps Binance/SQLite/log aggregation separate from HTTP routing and static UI.
 from __future__ import annotations
 
 import logging
+import re
 import threading
 import time
 from typing import Any
@@ -24,6 +25,11 @@ REALTIME_TTL_SEC = 5.0
 ORDERS_TTL_SEC = 12.0
 STATS_TTL_SEC = 60.0
 LOG_TTL_SEC = 5.0
+ERROR_TTL_SEC = 8.0
+
+LOG_LINE_RE = re.compile(r"^(?P<ts>\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2},\d{3}) \| (?P<level>[A-Z]+) \| (?P<msg>.*)$")
+SYMBOL_RE = re.compile(r"\b([A-Z0-9]{2,24}USDT)\b")
+SESSION_RE = re.compile(r"\b([A-Z0-9]{2,24}USDT-\d{14}-[a-f0-9]{8})\b")
 
 
 def _safe_float(value: Any, default: float = 0.0) -> float:
@@ -53,6 +59,82 @@ def _json_default(value: Any) -> Any:
     if hasattr(value, "isoformat"):
         return value.isoformat()
     return str(value)
+
+
+def _error_type_from_message(message: str) -> str:
+    text = str(message or "")
+    rules = [
+        ("开仓保护单失败", "开仓保护单失败"),
+        ("entry protection", "开仓保护单失败"),
+        ("开仓流程异常", "开仓流程异常"),
+        ("开仓下单失败", "开仓下单失败"),
+        ("开仓失败", "开仓失败"),
+        ("平仓失败", "平仓失败"),
+        ("止损单撤销失败", "止损单撤销失败"),
+        ("保护止损补挂失败", "保护止损补挂失败"),
+        ("保护止盈补挂失败", "保护止盈补挂失败"),
+        ("保护单修复失败", "保护单修复失败"),
+        ("Main loop exception", "主循环异常"),
+        ("Binance API HTTP", "Binance接口异常"),
+        ("Connection reset", "网络连接异常"),
+        ("Telegram", "通知异常"),
+    ]
+    for token, label in rules:
+        if token in text:
+            return label
+    if "失败" in text:
+        return "交易流程失败"
+    if "异常" in text or "exception" in text.lower():
+        return "系统异常"
+    return "运行异常"
+
+
+def _component_from_message(message: str) -> str:
+    text = str(message or "")
+    rules = [
+        ("execute_entry_trade", "开仓下单"),
+        ("execute_entry", "开仓流程"),
+        ("execute_exit", "平仓流程"),
+        ("entry_protection", "开仓保护单"),
+        ("protection_reconcile", "保护单补挂"),
+        ("protection_guard", "保护单守卫"),
+        ("stop_loss_cleanup", "止损清理"),
+        ("breakeven_stop", "保本止损"),
+        ("risk_assessment", "风控评估"),
+        ("account_query", "账户查询"),
+        ("Main loop", "主循环"),
+        ("Telegram", "Telegram通知"),
+    ]
+    for token, label in rules:
+        if token in text:
+            return label
+    if "保护" in text:
+        return "保护单"
+    if "开仓" in text:
+        return "开仓流程"
+    if "平仓" in text:
+        return "平仓流程"
+    return "系统"
+
+
+def _is_transaction_error_line(level: str, message: str) -> bool:
+    text = str(message or "")
+    if level == "ERROR":
+        return True
+    tokens = (
+        "❌",
+        "开仓失败",
+        "开仓流程异常",
+        "开仓保护单失败",
+        "平仓失败",
+        "保护止损补挂失败",
+        "保护止盈补挂失败",
+        "保护单修复失败",
+        "止损单撤销失败",
+        "Main loop exception",
+        "Binance API HTTP",
+    )
+    return any(token in text for token in tokens)
 
 
 class TimedCache:
@@ -203,6 +285,69 @@ class DashboardData:
 
         return self.cache.get(f"log:{lines}", LOG_TTL_SEC, _load)
 
+    def transaction_errors(self, limit: int = 80, scan_lines: int = 5000) -> dict[str, Any]:
+        """Parse recent trading exceptions from the runtime log."""
+        limit = max(1, min(_safe_int(limit, 80), 300))
+        scan_lines = max(limit, min(_safe_int(scan_lines, 5000), 20000))
+
+        def _load() -> dict[str, Any]:
+            path = hermes_logs_dir() / "crypto_sword.log"
+            if not path.exists():
+                return {"available": False, "path": str(path), "errors": [], "total": 0}
+            try:
+                lines = path.read_text(encoding="utf-8", errors="replace").splitlines()[-scan_lines:]
+            except Exception as exc:
+                return {"available": False, "path": str(path), "reason": str(exc), "errors": [], "total": 0}
+
+            events: list[dict[str, Any]] = []
+            index = 0
+            while index < len(lines):
+                line = lines[index]
+                match = LOG_LINE_RE.match(line)
+                if not match:
+                    index += 1
+                    continue
+                level = match.group("level")
+                message = match.group("msg")
+                if not _is_transaction_error_line(level, message):
+                    index += 1
+                    continue
+
+                detail_lines = [message]
+                cursor = index + 1
+                while cursor < len(lines) and not LOG_LINE_RE.match(lines[cursor]):
+                    extra = lines[cursor].rstrip()
+                    if extra:
+                        detail_lines.append(extra)
+                    cursor += 1
+
+                detail = "\n".join(detail_lines)[:3000]
+                symbol_match = SYMBOL_RE.search(detail)
+                session_match = SESSION_RE.search(detail)
+                events.append(
+                    {
+                        "time": match.group("ts"),
+                        "level": level,
+                        "type": _error_type_from_message(detail),
+                        "component": _component_from_message(detail),
+                        "symbol": symbol_match.group(1) if symbol_match else "",
+                        "session_id": session_match.group(1) if session_match else "",
+                        "summary": message[:260],
+                        "detail": detail,
+                    }
+                )
+                index = max(cursor, index + 1)
+
+            events.reverse()
+            return {
+                "available": True,
+                "path": str(path),
+                "total": len(events),
+                "errors": events[:limit],
+            }
+
+        return self.cache.get(f"errors:{limit}:{scan_lines}", ERROR_TTL_SEC, _load)
+
     def overview(self) -> dict[str, Any]:
         account = self.account_snapshot()
         orders = self.order_snapshot()
@@ -235,6 +380,7 @@ class DashboardData:
             "periods": {"7": period7, "30": period30},
             "recent_trades": self.recent_trades_page(days=30, page=1, per_page=15),
             "open_db_trades": self.open_db_trades(),
+            "transaction_errors": self.transaction_errors(limit=30),
             "log_tail": self.log_tail(60),
         }
 
