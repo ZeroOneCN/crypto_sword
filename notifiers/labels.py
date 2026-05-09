@@ -7,23 +7,26 @@ import html
 import re
 from typing import Any
 
+
 def _fmt_price(price: float) -> str:
-    """Smart price formatting: BTC-like → 2 dec, mid → 4 dec, cheap → 6-8 dec."""
-    if price <= 0:
+    """Smart price formatting for crypto prices."""
+    try:
+        value = float(price)
+    except Exception:
+        value = 0.0
+    if value <= 0:
         return "0"
-    if price >= 1000:
-        return f"{price:,.2f}"
-    if price >= 1:
-        return f"{price:,.4f}"
-    if price >= 0.01:
-        return f"{price:,.4f}"
-    if price >= 0.0001:
-        return f"{price:,.6f}"
-    return f"{price:,.8f}"
+    if value >= 1000:
+        return f"{value:,.2f}"
+    if value >= 0.01:
+        return f"{value:,.4f}"
+    if value >= 0.0001:
+        return f"{value:,.6f}"
+    return f"{value:,.8f}"
+
 
 def _fmt_usdt(amount: float) -> str:
-    """Smart USDT amount formatting: big→2dp, medium→4dp, small→6dp.
-    Balances, PnL, risk amounts that are USDT-denominated."""
+    """Smart USDT amount formatting."""
     try:
         value = float(amount)
     except Exception:
@@ -40,13 +43,14 @@ def _fmt_usdt(amount: float) -> str:
         return f"{sign}{value:,.6f}"
     return f"{sign}{value:,.8f}"
 
+
 def _fmt_price_code(price: float) -> str:
-    """Like _fmt_price but wrapped in <code> tags."""
     return f"<code>{_fmt_price(price)}</code>"
 
+
 def _normalize_telegram_value(value: Any) -> str:
-    text = str(value or "").strip().strip('"').strip("'")
-    return text
+    return str(value or "").strip().strip('"').strip("'")
+
 
 def _sanitize_token_preview(token: str) -> str:
     token = _normalize_telegram_value(token)
@@ -54,9 +58,11 @@ def _sanitize_token_preview(token: str) -> str:
         return token
     return f"{token[:6]}...{token[-4:]}"
 
+
 def _looks_like_placeholder(value: str) -> bool:
     upper = value.upper()
     return upper.startswith("YOUR_") or "PLACEHOLDER" in upper or upper in {"BOT_TOKEN", "CHAT_ID"}
+
 
 def _is_valid_bot_token(token: str) -> bool:
     token = _normalize_telegram_value(token)
@@ -64,25 +70,27 @@ def _is_valid_bot_token(token: str) -> bool:
         token = token[3:]
     return bool(re.match(r"^\d{6,}:[A-Za-z0-9_-]{20,}$", token))
 
+
 def _escape(value: Any) -> str:
     """Escape dynamic content for Telegram HTML messages."""
     return html.escape(str(value), quote=False)
 
+
 def _strip_html(message: str) -> str:
-    """Convert a simple Telegram HTML message to plain text."""
-    text = re.sub(r"(?i)<br\\s*/?>", "\n", message)
+    """Convert simple Telegram HTML to plain text."""
+    text = re.sub(r"(?i)<br\s*/?>", "\n", message)
     text = re.sub(r"</?(b|code|i|u|s|pre)>", "", text)
     return html.unescape(text)
 
+
 def _fmt_num(value: Any, decimals: int = 6) -> str:
-    """Format noisy float values for Telegram."""
     try:
         return f"{float(value):.{decimals}f}".rstrip("0").rstrip(".")
     except Exception:
         return str(value)
 
+
 def format_direction_label(direction: Any) -> str:
-    """Translate internal side/direction codes into user-facing Chinese."""
     key = str(direction or "").upper()
     mapping = {
         "LONG": "做多",
@@ -94,12 +102,12 @@ def format_direction_label(direction: Any) -> str:
     }
     return mapping.get(key, str(direction or "未知方向"))
 
+
 def _format_close_reason_label(reason: Any) -> str:
-    """Translate close reason codes into concise Chinese labels."""
     key = str(reason or "").upper()
     mapping = {
-        "PROTECTIVE_STOP_EXCHANGE": "防守止损盈利离场",
-        "PROTECTIVE_STOP": "防守止损盈利离场",
+        "PROTECTIVE_STOP_EXCHANGE": "保护止损离场",
+        "PROTECTIVE_STOP": "保护止损离场",
         "TAKE_PROFIT_TP_FULL_EXCHANGE": "TP1/TP2/TP3 全部成交｜交易所分批止盈完成",
         "TAKE_PROFIT_EXCHANGE": "交易所止盈完成",
         "TAKE_PROFIT_LOCAL_FALLBACK": "本地止盈兜底",
@@ -137,6 +145,7 @@ def _format_close_reason_label(reason: Any) -> str:
         return "提前微利退出（未达TP1）"
     return key if key else "未知原因"
 
+
 def format_entry_failure_detail(detail: Any) -> str:
     """Translate common exchange/execution failures while preserving the raw clue."""
     raw = str(detail or "").strip()
@@ -149,9 +158,9 @@ def format_entry_failure_detail(detail: Any) -> str:
         reason = "杠杆设置或复查失败，系统已拒绝继续开仓"
     elif "min notional" in lower or "notional" in lower or "名义" in raw:
         reason = "名义价值低于交易所最低下单要求"
-    elif "insufficient" in lower or "margin" in lower or "balance" in lower or "余额" in raw or "保证金" in raw:
+    elif any(token in lower for token in ("insufficient", "margin", "balance")) or any(token in raw for token in ("余额", "保证金")):
         reason = "可用余额或保证金不足"
-    elif "precision" in lower or "ticksize" in lower or "stepsize" in lower:
+    elif any(token in lower for token in ("precision", "ticksize", "stepsize")):
         reason = "价格或数量精度不符合交易所规则"
     elif "reduceonly" in lower or "reduce only" in lower:
         reason = "交易所拒绝 reduce-only 参数"
@@ -176,12 +185,12 @@ def format_entry_failure_detail(detail: Any) -> str:
         return reason
     return f"{reason}\n原始信息：{raw}"
 
+
 def _format_take_profit_targets(
     targets: list[dict[str, Any]] | None,
     entry_price: float = 0.0,
     direction: str = "LONG",
 ) -> str:
-    """Format staged take-profit targets for Telegram."""
     if not targets:
         return ""
 
@@ -195,20 +204,16 @@ def _format_take_profit_targets(
         level = int(target.get("level", len(lines) + 1) or (len(lines) + 1))
         expected_pnl = 0.0
         if entry_price > 0 and price > 0 and quantity > 0:
-            if direction == "LONG":
-                expected_pnl = (price - entry_price) * quantity
-            else:
-                expected_pnl = (entry_price - price) * quantity
+            expected_pnl = (price - entry_price) * quantity if direction == "LONG" else (entry_price - price) * quantity
         expected_text = f" | 预计 +{_fmt_usdt(expected_pnl)} USDT" if expected_pnl > 0 else ""
         lines.append(
-            f"TP{level}: "
-            f"<code>{price_move_pct:.2f}% 价格 / {roi_pct:.2f}% ROI</code> →<code>{_fmt_price(price)}</code> "
-            f"({ratio:.0f}% / {_fmt_num(quantity)}){expected_text}"
+            f"TP{level}: <code>{price_move_pct:.2f}% 价格 / {roi_pct:.2f}% ROI</code> → "
+            f"<code>{_fmt_price(price)}</code> ({ratio:.0f}% / {_fmt_num(quantity)}){expected_text}"
         )
     return "\n".join(lines)
 
+
 def _format_oi_funding_brief(oi_funding: dict[str, Any] | None) -> str:
-    """Format compact OI/Funding enhancement details for notifications."""
     if not oi_funding:
         return ""
     bonus = float(oi_funding.get("score_bonus", 0) or 0)
@@ -231,10 +236,9 @@ def _format_oi_funding_brief(oi_funding: dict[str, Any] | None) -> str:
         tags.append("评分加成")
     tag_text = " / ".join(tags) if tags else "无"
 
-    # bonus 明细
     bonus_text = f"+{bonus:.1f}"
     if breakdown:
-        bonus_text += " (" + " ".join(breakdown) + ")"
+        bonus_text += " (" + " ".join(str(item) for item in breakdown) + ")"
 
     return (
         f"<b>OI/Funding</b>  <code>{_escape(tag_text)}</code> | "
@@ -243,8 +247,8 @@ def _format_oi_funding_brief(oi_funding: dict[str, Any] | None) -> str:
         f"Funding <code>{funding_current:+.4%}</code>"
     )
 
+
 def _format_source_label(source: str) -> str:
-    """Translate internal event sources into concise user-facing Chinese labels."""
     source_map = {
         "entry_confirm": "开仓后确认",
         "startup_audit": "启动巡检",
@@ -256,8 +260,8 @@ def _format_source_label(source: str) -> str:
     }
     return source_map.get(source, source)
 
+
 def _format_component_label(component: str) -> str:
-    """Translate internal component names into concise user-facing Chinese labels."""
     component_map = {
         "account_query": "账户查询",
         "breakeven_stop": "保本止损",
@@ -265,7 +269,7 @@ def _format_component_label(component: str) -> str:
         "execute_entry": "开仓流程",
         "execute_entry_trade": "开仓下单",
         "execute_exit": "平仓流程",
-        "loss_guard": "连亏熔断",
+        "loss_guard": "连续亏损熔断",
         "main_loop": "主循环",
         "protection_guard": "保护单风控",
         "protection_cleanup": "保护条件单清理",
@@ -277,8 +281,8 @@ def _format_component_label(component: str) -> str:
     }
     return component_map.get(component, component)
 
+
 def _format_error_type_label(error_type: Any) -> str:
-    """Translate common legacy English error types."""
     raw = str(error_type or "")
     mapping = {
         "startup health checks failed": "启动健康检查失败",
@@ -287,11 +291,10 @@ def _format_error_type_label(error_type: Any) -> str:
     }
     return mapping.get(raw, raw)
 
+
 def _format_protection_failure_detail(detail: str) -> str:
-    """Translate protection failure internals into user-facing Chinese text."""
     raw = str(detail or "").strip()
     lower = raw.lower()
-
     if "stop_loss" in lower and "status=error" in lower and "id=0" in lower:
         return "止损保护单创建失败"
     if "stop_loss" in lower and "missing" in lower:
@@ -308,16 +311,20 @@ def _format_protection_failure_detail(detail: str) -> str:
         return "保护单价格会立即触发"
     if "min notional" in lower or "notional" in lower:
         return "名义价值低于交易所最低要求"
+    if "price less than min price" in lower:
+        return "触发价低于交易所最小价格"
     if "precision" in lower:
         return "价格或数量精度不符合交易所规则"
     return raw or "未知保护单失败"
 
+
 def format_protection_failure_detail(detail: Any) -> str:
-    """Public wrapper for protection failure translation."""
     return _format_protection_failure_detail(str(detail or ""))
+
 
 def _humanize_close_reason(reason: str) -> str:
     return _format_close_reason_label(reason)
+
 
 def _format_duration_from_hours(duration_hours: float) -> str:
     total_minutes = max(1, int(round(float(duration_hours or 0) * 60)))
@@ -327,4 +334,3 @@ def _format_duration_from_hours(duration_hours: float) -> str:
     if minutes <= 0:
         return f"{hours}小时"
     return f"{hours}小时{minutes}分钟"
-
