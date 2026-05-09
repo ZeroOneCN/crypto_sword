@@ -66,7 +66,7 @@ def build_config(args: argparse.Namespace) -> TradingConfig:
         min_signal_score_defensive=88.0,
         god_direct_score=90.0,
         pre_break_direct_score=78.0,
-        confirmed_breakout_direct_score=86.0,
+        confirmed_breakout_direct_score=78.0,
         confirmed_breakout_max_change_pct=30.0,
         confirmed_breakout_max_range_position_pct=94.0,
         quality_guard_defensive_min_score=88.0,
