@@ -112,6 +112,22 @@
     }
     button:disabled { opacity: 0.42; cursor: not-allowed; }
 
+    input.page-input {
+      width: 78px;
+      border: 1px solid var(--line);
+      border-radius: 0;
+      background: rgba(255,255,255,0.035);
+      color: var(--text);
+      padding: 9px 10px;
+      font: inherit;
+      font-size: 13px;
+      outline: none;
+    }
+    input.page-input:focus {
+      border-color: var(--m-blue);
+      box-shadow: 0 0 0 2px rgba(0, 163, 224, 0.16);
+    }
+
     .status-dot {
       display: inline-block;
       width: 8px;
@@ -282,6 +298,8 @@
           <span class="pill" id="tradePageInfo">第 1 页</span>
           <button id="prevPage" onclick="changeTradePage(-1)">上一页</button>
           <button id="nextPage" onclick="changeTradePage(1)">下一页</button>
+          <input class="page-input mono" id="jumpPageInput" type="number" min="1" value="1" aria-label="跳转页码" onkeydown="handleJumpKey(event)" />
+          <button onclick="jumpTradePage()">跳转</button>
         </div>
       </div>
       <div class="scroll"><table>
@@ -298,7 +316,7 @@
 
   <script>
     const fmt = new Intl.NumberFormat('en-US', { maximumFractionDigits: 6 });
-    const tradeState = { page: 1, perPage: 15, totalPages: 1 };
+    const tradeState = { page: 1, perPage: 15, totalPages: 1, loaded: false };
 
     const num = v => Number.isFinite(Number(v)) ? Number(v) : 0;
     const money = v => `${num(v) >= 0 ? '+' : ''}${fmt.format(num(v))} USDT`;
@@ -391,11 +409,21 @@
 
     function renderTradesPage(pageData) {
       const rows = pageData.trades || [];
-      tradeState.page = pageData.page || 1;
-      tradeState.totalPages = pageData.total_pages || 1;
+      const responsePage = pageData.page || 1;
+      const responseTotalPages = pageData.total_pages || 1;
+      if (responsePage > responseTotalPages) {
+        loadTradesPage(responseTotalPages).catch(err => document.getElementById('status').textContent = `分页修正异常：${err.message}`);
+        return;
+      }
+      tradeState.page = responsePage;
+      tradeState.totalPages = responseTotalPages;
       document.getElementById('tradePageInfo').textContent = `第 ${tradeState.page}/${tradeState.totalPages} 页 · 共 ${pageData.total || 0} 笔`;
       document.getElementById('prevPage').disabled = tradeState.page <= 1;
       document.getElementById('nextPage').disabled = tradeState.page >= tradeState.totalPages;
+      const jumpInput = document.getElementById('jumpPageInput');
+      jumpInput.max = tradeState.totalPages;
+      jumpInput.value = tradeState.page;
+      tradeState.loaded = true;
 
       const body = document.getElementById('recentTrades');
       if (!rows.length) {
@@ -428,6 +456,20 @@
     function changeTradePage(delta) {
       const next = Math.min(Math.max(1, tradeState.page + delta), tradeState.totalPages);
       loadTradesPage(next).catch(err => document.getElementById('status').textContent = `分页异常：${err.message}`);
+    }
+
+    function jumpTradePage() {
+      const input = document.getElementById('jumpPageInput');
+      const requested = Math.trunc(num(input.value));
+      const next = Math.min(Math.max(1, requested || 1), tradeState.totalPages);
+      input.value = next;
+      loadTradesPage(next).catch(err => document.getElementById('status').textContent = `跳转异常：${err.message}`);
+    }
+
+    function handleJumpKey(event) {
+      if (event.key === 'Enter') {
+        jumpTradePage();
+      }
     }
 
     async function loadAll(manual=false) {
@@ -466,7 +508,11 @@
 
         renderPositions(account.positions || []);
         renderPeriods(periods);
-        renderTradesPage(data.recent_trades || { trades: [], page: 1, total_pages: 1, total: 0 });
+        if (!tradeState.loaded || tradeState.page === 1) {
+          renderTradesPage(data.recent_trades || { trades: [], page: 1, total_pages: 1, total: 0 });
+        } else if (manual) {
+          loadTradesPage(tradeState.page).catch(err => document.getElementById('status').textContent = `当前页刷新异常：${err.message}`);
+        }
 
         const log = data.log_tail || {};
         document.getElementById('logs').textContent = (log.lines || []).join('\n') || '暂无日志';
