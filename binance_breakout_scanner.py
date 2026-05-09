@@ -226,18 +226,20 @@ def decide_direction(stage: str, metrics: dict) -> str:
     ls_rising = ls_now > ls_prev
     ls_falling = ls_now < ls_prev
     top_reversal_short = (
-        change_24h >= 6.0
-        and drawdown >= 1.2
-        and oi_24h >= 7.0
-        and volume_mult >= 0.8
-        and range_position <= 97.0
+        change_24h >= 10.0
+        and drawdown >= 3.0
+        and oi_24h >= 12.0
+        and volume_mult >= 0.9
+        and range_position <= 85.0
+        and (ls_falling or funding >= 0.0003)
     )
     bottom_reversal_long = (
-        change_24h <= -6.0
-        and rebound >= 1.2
-        and oi_24h >= 7.0
-        and volume_mult >= 0.8
-        and range_position >= 3.0
+        change_24h <= -10.0
+        and rebound >= 3.0
+        and oi_24h >= 12.0
+        and volume_mult >= 0.9
+        and range_position >= 15.0
+        and (ls_rising or funding <= -0.0003)
     )
     
     # pre_break / confirmed_breakout: 宽松双向交易
