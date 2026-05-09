@@ -272,12 +272,18 @@ class ReportService:
         return summarize_income_rows(rows)
 
     def _merge_exchange_income(self, report: dict[str, Any], income_summary: dict[str, Any]) -> None:
-        report["exchange_income"] = income_summary
-        report["exchange_net_pnl"] = _safe_float(income_summary.get("net_pnl"))
-        if not income_summary.get("available"):
-            return
         db_total_pnl = _safe_float(report.get("total_pnl"))
+        report["exchange_income"] = income_summary
+        report["income_summary"] = income_summary
+        report["db_total_pnl"] = db_total_pnl
+        if not income_summary.get("available"):
+            report["exchange_net_pnl"] = None
+            report["exchange_total_pnl"] = None
+            report["pnl_source"] = "db"
+            report["pnl_diff_vs_db"] = None
+            return
         exchange_net_pnl = _safe_float(income_summary.get("net_pnl"))
+        report["exchange_net_pnl"] = exchange_net_pnl
         report["db_total_pnl"] = db_total_pnl
         report["exchange_total_pnl"] = exchange_net_pnl
         report["total_pnl"] = exchange_net_pnl
@@ -285,5 +291,4 @@ class ReportService:
         if closed_trades > 0:
             report["avg_pnl"] = round(exchange_net_pnl / closed_trades, 4)
         report["pnl_source"] = "exchange_income"
-        report["income_summary"] = income_summary
         report["pnl_diff_vs_db"] = round(exchange_net_pnl - db_total_pnl, 8)

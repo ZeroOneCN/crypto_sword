@@ -6,84 +6,194 @@
   <title>宙斯交易中枢 | 数据看板</title>
   <style>
     :root {
-      --bg: #0b111b;
-      --panel: rgba(20, 31, 48, 0.88);
-      --panel-2: rgba(13, 21, 34, 0.92);
-      --line: rgba(148, 163, 184, 0.18);
-      --text: #e5eefc;
-      --muted: #91a0b8;
-      --good: #26d695;
-      --bad: #ff5c7a;
-      --warn: #ffd166;
-      --blue: #70b7ff;
+      --bg: #050608;
+      --panel: #0d1015;
+      --panel-2: #111720;
+      --panel-3: #07090d;
+      --line: #28303a;
+      --line-soft: rgba(255, 255, 255, 0.08);
+      --text: #f4f6f8;
+      --muted: #87919e;
+      --muted-2: #5f6874;
+      --m-blue: #00a3e0;
+      --m-navy: #003a70;
+      --m-red: #e4002b;
+      --good: #20d37a;
+      --bad: #ff3d55;
+      --warn: #ffd23f;
+      --shadow: rgba(0, 0, 0, 0.42);
     }
+
     * { box-sizing: border-box; }
+
     body {
       margin: 0;
       min-height: 100vh;
       color: var(--text);
       background:
-        radial-gradient(circle at 15% 10%, rgba(78, 141, 255, 0.20), transparent 30%),
-        radial-gradient(circle at 80% 0%, rgba(38, 214, 149, 0.12), transparent 28%),
-        linear-gradient(145deg, #080c13 0%, #10192a 55%, #090f18 100%);
+        linear-gradient(115deg, rgba(0, 163, 224, 0.12), transparent 28%),
+        radial-gradient(circle at 86% 8%, rgba(228, 0, 43, 0.12), transparent 24%),
+        repeating-linear-gradient(135deg, rgba(255,255,255,0.025) 0 1px, transparent 1px 16px),
+        var(--bg);
       font-family: "Microsoft YaHei", "PingFang SC", "Segoe UI", sans-serif;
     }
+
     header {
       position: sticky;
       top: 0;
       z-index: 5;
-      padding: 18px clamp(14px, 3vw, 34px);
-      backdrop-filter: blur(18px);
-      background: rgba(8, 12, 19, 0.72);
+      padding: 20px clamp(14px, 3vw, 34px) 18px;
+      background: rgba(5, 6, 8, 0.88);
       border-bottom: 1px solid var(--line);
+      backdrop-filter: blur(16px);
     }
-    .title-row { display: flex; justify-content: space-between; gap: 16px; align-items: center; flex-wrap: wrap; }
-    h1 { margin: 0; font-size: clamp(22px, 4vw, 34px); letter-spacing: 0.04em; }
-    .sub { color: var(--muted); font-size: 13px; margin-top: 6px; }
-    .pill {
-      border: 1px solid var(--line);
-      color: var(--blue);
-      padding: 8px 12px;
-      border-radius: 999px;
-      background: rgba(112, 183, 255, 0.08);
+
+    .m-stripe {
+      display: grid;
+      grid-template-columns: 1fr 1fr 1fr;
+      width: 132px;
+      height: 5px;
+      margin-bottom: 16px;
+      box-shadow: 0 0 24px rgba(0, 163, 224, 0.28);
+    }
+    .m-stripe span:nth-child(1) { background: var(--m-blue); }
+    .m-stripe span:nth-child(2) { background: var(--m-navy); }
+    .m-stripe span:nth-child(3) { background: var(--m-red); }
+
+    .title-row {
+      display: flex;
+      justify-content: space-between;
+      gap: 18px;
+      align-items: flex-end;
+      flex-wrap: wrap;
+    }
+
+    h1 {
+      margin: 0;
+      font-size: clamp(24px, 4vw, 40px);
+      letter-spacing: 0.08em;
+      line-height: 1;
+      text-transform: uppercase;
+    }
+
+    .sub {
+      color: var(--muted);
       font-size: 13px;
-      white-space: nowrap;
+      margin-top: 10px;
+      letter-spacing: 0.02em;
     }
-    main { padding: 22px clamp(14px, 3vw, 34px) 40px; }
+
+    main { padding: 22px clamp(14px, 3vw, 34px) 42px; }
+
+    .toolbar, .pager {
+      display: flex;
+      gap: 10px;
+      flex-wrap: wrap;
+      align-items: center;
+      justify-content: flex-end;
+    }
+
+    .pill, button, a.button {
+      border: 1px solid var(--line);
+      color: var(--text);
+      background: rgba(255,255,255,0.035);
+      padding: 9px 12px;
+      border-radius: 0;
+      font: inherit;
+      font-size: 13px;
+      text-decoration: none;
+      letter-spacing: 0.02em;
+    }
+
+    button, a.button { cursor: pointer; }
+    button:hover, a.button:hover {
+      border-color: var(--m-blue);
+      background: rgba(0, 163, 224, 0.12);
+    }
+    button:disabled { opacity: 0.42; cursor: not-allowed; }
+
+    .status-dot {
+      display: inline-block;
+      width: 8px;
+      height: 8px;
+      margin-right: 7px;
+      background: var(--good);
+      box-shadow: 0 0 18px var(--good);
+    }
+
     .grid { display: grid; gap: 14px; }
-    .cards { grid-template-columns: repeat(6, minmax(140px, 1fr)); }
+    .cards { grid-template-columns: repeat(8, minmax(132px, 1fr)); }
     .two { grid-template-columns: minmax(0, 1.1fr) minmax(0, 0.9fr); }
     .three { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+
     .panel, .card {
-      background: var(--panel);
+      background: linear-gradient(180deg, rgba(255,255,255,0.03), rgba(255,255,255,0.01)), var(--panel);
       border: 1px solid var(--line);
-      border-radius: 18px;
-      box-shadow: 0 20px 60px rgba(0,0,0,0.25);
+      border-radius: 0;
+      box-shadow: 0 20px 50px var(--shadow);
+      position: relative;
+      overflow: hidden;
     }
-    .card { padding: 16px; min-height: 105px; }
-    .label { color: var(--muted); font-size: 13px; }
-    .value { font-size: clamp(20px, 3vw, 30px); font-weight: 800; margin-top: 8px; }
-    .hint { margin-top: 8px; color: var(--muted); font-size: 12px; }
-    .panel { padding: 18px; margin-top: 14px; overflow: hidden; }
-    .panel-head { display: flex; justify-content: space-between; gap: 12px; align-items: center; flex-wrap: wrap; margin-bottom: 14px; }
-    .panel h2 { margin: 0; font-size: 18px; }
+
+    .card::before, .panel::before {
+      content: "";
+      position: absolute;
+      left: 0;
+      top: 0;
+      width: 3px;
+      height: 100%;
+      background: linear-gradient(var(--m-blue), var(--m-navy), var(--m-red));
+      opacity: 0.9;
+    }
+
+    .card { padding: 16px 16px 15px 18px; min-height: 112px; }
+    .panel { padding: 18px 18px 18px 20px; margin-top: 14px; }
+
+    .label { color: var(--muted); font-size: 12px; letter-spacing: 0.08em; text-transform: uppercase; }
+    .value {
+      font-family: "Cascadia Mono", Consolas, monospace;
+      font-size: clamp(19px, 2.7vw, 28px);
+      font-weight: 800;
+      margin-top: 10px;
+      word-break: break-word;
+    }
+    .hint { margin-top: 8px; color: var(--muted-2); font-size: 12px; }
+
+    .panel-head {
+      display: flex;
+      justify-content: space-between;
+      gap: 12px;
+      align-items: center;
+      flex-wrap: wrap;
+      margin-bottom: 14px;
+    }
+    .panel h2 { margin: 0; font-size: 18px; letter-spacing: 0.06em; }
+
+    .scroll { overflow-x: auto; }
     table { width: 100%; border-collapse: collapse; font-size: 13px; }
-    th, td { padding: 11px 10px; border-bottom: 1px solid var(--line); text-align: left; white-space: nowrap; }
-    th { color: var(--muted); font-weight: 600; background: rgba(255,255,255,0.02); }
-    tr:hover td { background: rgba(255,255,255,0.025); }
+    th, td {
+      padding: 11px 10px;
+      border-bottom: 1px solid var(--line-soft);
+      text-align: left;
+      white-space: nowrap;
+    }
+    th {
+      color: var(--muted);
+      font-weight: 600;
+      background: var(--panel-3);
+      letter-spacing: 0.04em;
+    }
+    tr:hover td { background: rgba(0, 163, 224, 0.045); }
+
+    .mono { font-family: "Cascadia Mono", Consolas, monospace; }
     .good { color: var(--good); }
     .bad { color: var(--bad); }
     .warn { color: var(--warn); }
     .muted { color: var(--muted); }
-    .scroll { overflow-x: auto; }
-    .status-dot {
-      display: inline-block; width: 8px; height: 8px; border-radius: 50%;
-      margin-right: 7px; background: var(--good); box-shadow: 0 0 18px var(--good);
-    }
+
     .log {
-      background: var(--panel-2);
+      background: var(--panel-3);
       border: 1px solid var(--line);
-      border-radius: 14px;
       padding: 14px;
       max-height: 360px;
       overflow: auto;
@@ -93,52 +203,49 @@
       color: #b8c7de;
       white-space: pre-wrap;
     }
-    .toolbar, .pager { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; }
-    button, a.button, select {
-      border: 1px solid var(--line);
-      color: var(--text);
-      background: rgba(255,255,255,0.06);
-      padding: 9px 12px;
-      border-radius: 12px;
-      cursor: pointer;
-      text-decoration: none;
-      font: inherit;
+
+    @media (max-width: 1320px) {
+      .cards { grid-template-columns: repeat(4, minmax(0, 1fr)); }
     }
-    button:hover, a.button:hover { background: rgba(112,183,255,0.15); }
-    button:disabled { opacity: 0.45; cursor: not-allowed; }
-    @media (max-width: 1100px) {
-      .cards, .three { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    @media (max-width: 1000px) {
       .two { grid-template-columns: 1fr; }
+      .three { grid-template-columns: repeat(2, minmax(0, 1fr)); }
     }
     @media (max-width: 620px) {
       .cards, .three { grid-template-columns: 1fr; }
+      .title-row { align-items: flex-start; }
+      .toolbar { justify-content: flex-start; }
       th, td { padding: 9px 8px; }
     }
   </style>
 </head>
 <body>
   <header>
+    <div class="m-stripe" aria-hidden="true"><span></span><span></span><span></span></div>
     <div class="title-row">
       <div>
-        <h1>宙斯交易中枢 · 数据看板</h1>
-        <div class="sub">只读自动刷新，不参与下单；统计以 Binance UTC 自然日为准，页面同时标注 UTC+8 辅助窗口。</div>
+        <h1>宙斯交易中枢</h1>
+        <div class="sub">只读自动看板 · 统计以 Binance UTC 自然日为准 · 页面同步标注 UTC+8 辅助窗口</div>
       </div>
       <div class="toolbar">
         <span class="pill"><span class="status-dot"></span><span id="status">连接中</span></span>
-        <span class="pill" id="clock">--</span>
+        <span class="pill mono" id="clock">--</span>
         <button onclick="loadAll(true)">立即刷新</button>
         <a class="button" href="/api/export/trades.csv" target="_blank">下载全部 CSV</a>
       </div>
     </div>
   </header>
+
   <main>
     <section class="grid cards">
       <div class="card"><div class="label">总余额</div><div class="value" id="totalBalance">--</div><div class="hint">Binance Futures</div></div>
       <div class="card"><div class="label">可用余额</div><div class="value" id="availableBalance">--</div><div class="hint">可开仓资金</div></div>
-      <div class="card"><div class="label">未实现盈亏</div><div class="value" id="unrealized">--</div><div class="hint">当前持仓浮盈亏</div></div>
+      <div class="card"><div class="label">未实现盈亏</div><div class="value" id="unrealized">--</div><div class="hint">当前持仓浮动盈亏</div></div>
       <div class="card"><div class="label">今日净盈亏 UTC</div><div class="value" id="todayPnl">--</div><div class="hint" id="todayWindow">--</div></div>
-      <div class="card"><div class="label">今日手续费</div><div class="value" id="todayFee">--</div><div class="hint">Binance income 本地缓存</div></div>
-      <div class="card"><div class="label">近30天手续费</div><div class="value" id="fee30">--</div><div class="hint">历史统计一并展示</div></div>
+      <div class="card"><div class="label">近7天净盈亏</div><div class="value" id="pnl7">--</div><div class="hint">交易所优先，DB 兜底</div></div>
+      <div class="card"><div class="label">近30天净盈亏</div><div class="value" id="pnl30">--</div><div class="hint">交易所优先，DB 兜底</div></div>
+      <div class="card"><div class="label">今日手续费</div><div class="value" id="todayFee">--</div><div class="hint">Commission</div></div>
+      <div class="card"><div class="label">近30天手续费</div><div class="value" id="fee30">--</div><div class="hint">历史统计同步展示</div></div>
     </section>
 
     <section class="grid two">
@@ -149,6 +256,7 @@
           <tbody id="positions"></tbody>
         </table></div>
       </div>
+
       <div class="panel">
         <div class="panel-head"><h2>今日战况</h2><span class="pill" id="incomeSource">来源 --</span></div>
         <div class="grid three">
@@ -160,7 +268,7 @@
     </section>
 
     <section class="panel">
-      <div class="panel-head"><h2>周期复盘</h2><span class="muted">净盈亏优先使用 Binance income，同步后落入本地 DB。</span></div>
+      <div class="panel-head"><h2>周期复盘</h2><span class="muted">净盈亏优先使用 Binance income；若交易所数据暂不可用，自动回退 DB 聚合。</span></div>
       <div class="scroll"><table>
         <thead><tr><th>周期</th><th>完整交易</th><th>DB盈亏</th><th>交易所净盈亏</th><th>手续费</th><th>资金费</th><th>胜率</th><th>笔均</th><th>收益因子</th><th>最佳</th><th>最差</th></tr></thead>
         <tbody id="periods"></tbody>
@@ -191,20 +299,43 @@
   <script>
     const fmt = new Intl.NumberFormat('en-US', { maximumFractionDigits: 6 });
     const tradeState = { page: 1, perPage: 15, totalPages: 1 };
-    const money = v => `${Number(v || 0) >= 0 ? '+' : ''}${fmt.format(Number(v || 0))} USDT`;
-    const plainMoney = v => `${fmt.format(Number(v || 0))} USDT`;
-    const pct = v => `${Number(v || 0) >= 0 ? '+' : ''}${Number(v || 0).toFixed(2)}%`;
-    const cls = v => Number(v || 0) > 0 ? 'good' : (Number(v || 0) < 0 ? 'bad' : 'muted');
-    const cell = (v, c='') => `<td class="${c}">${v}</td>`;
-    const price = v => Number(v || 0) ? Number(v).toPrecision(8).replace(/\.?0+$/, '') : '--';
-    const hold = m => {
-      m = Number(m || 0);
-      if (m < 60) return `${Math.round(m)}分钟`;
-      const h = Math.floor(m / 60), mm = Math.round(m % 60);
-      return `${h}小时${mm}分钟`;
-    };
 
-    function setText(id, value, className='') {
+    const num = v => Number.isFinite(Number(v)) ? Number(v) : 0;
+    const money = v => `${num(v) >= 0 ? '+' : ''}${fmt.format(num(v))} USDT`;
+    const plainMoney = v => `${fmt.format(num(v))} USDT`;
+    const pct = v => `${num(v) >= 0 ? '+' : ''}${num(v).toFixed(2)}%`;
+    const cls = v => num(v) > 0 ? 'good' : (num(v) < 0 ? 'bad' : 'muted');
+    const cell = (v, c='') => `<td class="${c}">${v}</td>`;
+    const price = v => num(v) ? Number(v).toPrecision(8).replace(/\.?0+$/, '') : '--';
+    const safe = v => String(v ?? '').replace(/[&<>"']/g, ch => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[ch]));
+
+    function hold(minutes) {
+      const m = num(minutes);
+      if (m < 60) return `${Math.round(m)}分钟`;
+      const h = Math.floor(m / 60);
+      const mm = Math.round(m % 60);
+      return `${h}小时${mm}分钟`;
+    }
+
+    function hasExchangeIncome(report) {
+      const income = report?.income_summary || report?.exchange_income || {};
+      return Boolean(income.available || report?.pnl_source === 'exchange_income');
+    }
+
+    function netPnl(report) {
+      if (!report) return 0;
+      if (hasExchangeIncome(report) && report.exchange_net_pnl !== null && report.exchange_net_pnl !== undefined) {
+        return num(report.exchange_net_pnl);
+      }
+      return num(report.total_pnl ?? report.db_total_pnl);
+    }
+
+    function dbPnl(report) {
+      if (!report) return 0;
+      return num(report.db_total_pnl ?? report.total_pnl);
+    }
+
+    function setValue(id, value, className='') {
       const el = document.getElementById(id);
       el.textContent = value;
       el.className = className ? `value ${className}` : 'value';
@@ -219,11 +350,11 @@
       body.innerHTML = rows.map(p => {
         const prot = p.protected ? '✅ 完整' : `⚠️ SL ${p.protection?.stop || 0} / TP ${p.protection?.take_profit || 0}`;
         return `<tr>
-          ${cell(`<b>${p.symbol}</b>`)}
-          ${cell(p.side_label)}
-          ${cell(fmt.format(p.quantity))}
-          ${cell(price(p.entry_price))}
-          ${cell(price(p.mark_price))}
+          ${cell(`<b>${safe(p.symbol)}</b>`)}
+          ${cell(safe(p.side_label))}
+          ${cell(fmt.format(num(p.quantity)), 'mono')}
+          ${cell(price(p.entry_price), 'mono')}
+          ${cell(price(p.mark_price), 'mono')}
           ${cell(money(p.unrealized_pnl), cls(p.unrealized_pnl))}
           ${cell(pct(p.roi_pct), cls(p.roi_pct))}
           ${cell(prot, p.protected ? 'good' : 'warn')}
@@ -233,22 +364,25 @@
 
     function renderPeriods(periods) {
       const body = document.getElementById('periods');
-      const rows = [['近7天', periods['7']], ['近30天', periods['30']]];
+      const rows = [['近7天', periods?.['7']], ['近30天', periods?.['30']]];
       body.innerHTML = rows.map(([label, r]) => {
         r = r || {};
         const income = r.income_summary || r.exchange_income || {};
-        const best = r.best_trade ? `${r.best_trade.symbol} ${money(r.best_trade.pnl)}` : '--';
-        const worst = r.worst_trade ? `${r.worst_trade.symbol} ${money(r.worst_trade.pnl)}` : '--';
+        const exchangeAvailable = hasExchangeIncome(r);
+        const exchangeText = exchangeAvailable ? money(r.exchange_net_pnl) : '未同步，显示DB兜底';
+        const exchangeClass = exchangeAvailable ? cls(r.exchange_net_pnl) : 'warn';
+        const best = r.best_trade ? `${safe(r.best_trade.symbol)} ${money(r.best_trade.pnl)}` : '--';
+        const worst = r.worst_trade ? `${safe(r.worst_trade.symbol)} ${money(r.worst_trade.pnl)}` : '--';
         return `<tr>
           ${cell(label)}
-          ${cell(r.closed_trades || 0)}
-          ${cell(money(r.db_total_pnl ?? r.total_pnl), cls(r.db_total_pnl ?? r.total_pnl))}
-          ${cell(money(r.exchange_net_pnl ?? r.total_pnl), cls(r.exchange_net_pnl ?? r.total_pnl))}
+          ${cell(r.closed_trades || 0, 'mono')}
+          ${cell(money(dbPnl(r)), cls(dbPnl(r)))}
+          ${cell(exchangeText, exchangeClass)}
           ${cell(money(income.commission || 0), 'bad')}
           ${cell(money(income.funding_fee || 0), cls(income.funding_fee))}
-          ${cell(`${Number(r.win_rate || 0).toFixed(2)}%`)}
+          ${cell(`${num(r.win_rate).toFixed(2)}%`, 'mono')}
           ${cell(money(r.avg_pnl), cls(r.avg_pnl))}
-          ${cell(Number(r.profit_factor || 0).toFixed(2))}
+          ${cell(num(r.profit_factor).toFixed(2), 'mono')}
           ${cell(best, 'good')}
           ${cell(worst, 'bad')}
         </tr>`;
@@ -259,27 +393,27 @@
       const rows = pageData.trades || [];
       tradeState.page = pageData.page || 1;
       tradeState.totalPages = pageData.total_pages || 1;
-      const info = `第 ${tradeState.page}/${tradeState.totalPages} 页 · 共 ${pageData.total || 0} 笔`;
-      document.getElementById('tradePageInfo').textContent = info;
+      document.getElementById('tradePageInfo').textContent = `第 ${tradeState.page}/${tradeState.totalPages} 页 · 共 ${pageData.total || 0} 笔`;
       document.getElementById('prevPage').disabled = tradeState.page <= 1;
       document.getElementById('nextPage').disabled = tradeState.page >= tradeState.totalPages;
+
       const body = document.getElementById('recentTrades');
       if (!rows.length) {
         body.innerHTML = `<tr><td colspan="12" class="muted">暂无已平仓交易。</td></tr>`;
         return;
       }
       body.innerHTML = rows.map(t => `<tr>
-        ${cell((t.exit_time || '').replace('T', ' ').replace('Z', ''))}
-        ${cell(`<b>${t.symbol}</b>`)}
-        ${cell(t.side_label)}
-        ${cell(t.strategy_line || 'UNKNOWN')}
-        ${cell(price(t.entry_price))}
-        ${cell(price(t.exit_price))}
+        ${cell(safe((t.exit_time || '').replace('T', ' ').replace('Z', '')), 'mono')}
+        ${cell(`<b>${safe(t.symbol)}</b>`)}
+        ${cell(safe(t.side_label))}
+        ${cell(safe(t.strategy_line || 'UNKNOWN'))}
+        ${cell(price(t.entry_price), 'mono')}
+        ${cell(price(t.exit_price), 'mono')}
         ${cell(money(t.pnl), cls(t.pnl))}
         ${cell(money(t.commission || 0), 'bad')}
         ${cell(money(t.funding_fee || 0), cls(t.funding_fee))}
         ${cell(pct(t.pnl_pct), cls(t.pnl_pct))}
-        ${cell(t.exit_reason_label)}
+        ${cell(safe(t.exit_reason_label))}
         ${cell(hold(t.hold_minutes))}
       </tr>`).join('');
     }
@@ -301,28 +435,39 @@
         const res = await fetch('/api/overview', { cache: 'no-store' });
         const data = await res.json();
         if (!data.ok) throw new Error(data.error || 'unknown error');
+
         document.getElementById('status').textContent = manual ? '已手动刷新' : '自动刷新中';
         document.getElementById('clock').textContent = data.clock || '--';
+
         const account = data.account || {};
         const today = data.today || {};
         const todayIncome = today.income_summary || today.exchange_income || {};
         const periods = data.periods || {};
-        const p30Income = periods['30']?.income_summary || periods['30']?.exchange_income || {};
-        setText('totalBalance', plainMoney(account.total_wallet_balance));
-        setText('availableBalance', plainMoney(account.available_balance));
-        setText('unrealized', money(account.total_unrealized_pnl), cls(account.total_unrealized_pnl));
-        setText('todayPnl', money(today.exchange_net_pnl ?? today.total_pnl), cls(today.exchange_net_pnl ?? today.total_pnl));
-        setText('todayFee', money(todayIncome.commission || 0), 'bad');
-        setText('fee30', money(p30Income.commission || 0), 'bad');
+        const p7 = periods['7'] || {};
+        const p30 = periods['30'] || {};
+        const p30Income = p30.income_summary || p30.exchange_income || {};
+        const source = hasExchangeIncome(today) ? (todayIncome.source || 'exchange') : 'DB兜底';
+
+        setValue('totalBalance', plainMoney(account.total_wallet_balance));
+        setValue('availableBalance', plainMoney(account.available_balance));
+        setValue('unrealized', money(account.total_unrealized_pnl), cls(account.total_unrealized_pnl));
+        setValue('todayPnl', money(netPnl(today)), cls(netPnl(today)));
+        setValue('pnl7', money(netPnl(p7)), cls(netPnl(p7)));
+        setValue('pnl30', money(netPnl(p30)), cls(netPnl(p30)));
+        setValue('todayFee', money(todayIncome.commission || 0), 'bad');
+        setValue('fee30', money(p30Income.commission || 0), 'bad');
+
         document.getElementById('todayWindow').textContent = today.utc8_window || data.time_basis || '';
-        document.getElementById('incomeSource').textContent = `来源 ${todayIncome.source || today.pnl_source || 'DB'}`;
+        document.getElementById('incomeSource').textContent = `来源 ${source}`;
         document.getElementById('orderSummary').textContent = `保护单 ${data.orders?.total || 0}`;
-        setText('todayTrades', today.closed_trades || 0);
-        setText('todayWinRate', `${Number(today.win_rate || 0).toFixed(1)}%`);
-        setText('todayPayoff', Number(today.payoff_ratio || 0).toFixed(2));
+        setValue('todayTrades', today.closed_trades || 0);
+        setValue('todayWinRate', `${num(today.win_rate).toFixed(1)}%`);
+        setValue('todayPayoff', num(today.payoff_ratio).toFixed(2));
+
         renderPositions(account.positions || []);
         renderPeriods(periods);
         renderTradesPage(data.recent_trades || { trades: [], page: 1, total_pages: 1, total: 0 });
+
         const log = data.log_tail || {};
         document.getElementById('logs').textContent = (log.lines || []).join('\n') || '暂无日志';
       } catch (err) {
