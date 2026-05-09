@@ -132,6 +132,7 @@ class ExecutionMixin(ProtectionServiceMixin, PositionLifecycleMixin, ExitService
             score_data = signal.get("score") or {}
             score = float(score_data.get("total_score", score_data.get("total", 0)) if isinstance(score_data, dict) else score_data or 0)
             direction_label = format_direction_label(direction)
+            notify_reject = entry_status == "ready"
 
             if (
                 str(signal.get("stage", "") or "") == "mania"
@@ -139,7 +140,7 @@ class ExecutionMixin(ProtectionServiceMixin, PositionLifecycleMixin, ExitService
                 and not getattr(self.config, "allow_mania_long_entries", False)
             ):
                 logger.warning(f"entry guard reject {symbol}: mania LONG is disabled")
-                if score >= 85.0:
+                if notify_reject:
                     send_telegram_message(
                         format_error_msg(
                             error_type="过热追多拦截",
@@ -158,7 +159,7 @@ class ExecutionMixin(ProtectionServiceMixin, PositionLifecycleMixin, ExitService
                 return None
 
             if not execution_service.should_trade(trading_signal):
-                if score >= 85.0:
+                if notify_reject:
                     send_telegram_message(
                         format_error_msg(
                             error_type="执行服务拒绝开仓",
@@ -221,7 +222,7 @@ class ExecutionMixin(ProtectionServiceMixin, PositionLifecycleMixin, ExitService
                         f"🧊 {symbol} 下单前价格偏移过大，放弃开仓: signal={price:.8f}, latest={latest_price:.8f}, "
                         f"slippage={slippage_pct:.2f}%"
                     )
-                    if score >= 85.0:
+                    if notify_reject:
                         send_telegram_message(
                             format_error_msg(
                                 error_type="价格偏移过大，拒绝开仓",
@@ -252,7 +253,7 @@ class ExecutionMixin(ProtectionServiceMixin, PositionLifecycleMixin, ExitService
                     spike_reason = ""
             if spike_reason:
                 logger.warning(f"🧊 {symbol} 开仓前过滤：{spike_reason}")
-                if score >= 85.0:
+                if notify_reject:
                     send_telegram_message(
                         format_error_msg(
                             error_type="短线插针风险，拒绝开仓",
@@ -316,7 +317,7 @@ class ExecutionMixin(ProtectionServiceMixin, PositionLifecycleMixin, ExitService
                     f"EV={capital_plan.expected_rr:.2f}R 原因={capital_plan.reason}"
                 )
                 if not capital_plan.allowed:
-                    if score >= 85.0:
+                    if notify_reject:
                         send_telegram_message(
                             format_error_msg(
                                 error_type="资本分配拒绝",
@@ -431,7 +432,7 @@ class ExecutionMixin(ProtectionServiceMixin, PositionLifecycleMixin, ExitService
                     return None
 
                 if position_value > 0 and not self._passes_liquidity_filter(symbol, position_value):
-                    if score >= 85.0:
+                    if notify_reject:
                         send_telegram_message(
                             format_error_msg(
                                 error_type="流动性过滤失败，拒绝开仓",

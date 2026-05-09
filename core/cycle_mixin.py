@@ -50,7 +50,7 @@ class CycleMixin:
         self._ready_entry_skip_notify_ts = last_map
 
         message = (
-            f"阶段：ready信号执行前检查\n"
+            f"检查：ready信号执行前检查\n"
             f"原因：{reason}\n"
             f"方向：{direction}\n"
             f"策略：{strategy_line or 'UNKNOWN'}\n"
@@ -777,8 +777,11 @@ class CycleMixin:
                     break
                 if signal.get("entry_status") != "ready":
                     continue
+                score = self._signal_score_value(signal)
                 throttle_reason = self._entry_throttle_reason(signal, entry_gate_snapshot)
                 if throttle_reason:
+                    if throttle_reason.startswith("评分不足"):
+                        throttle_reason = throttle_reason.replace("评分不足", "低于实盘执行阈值", 1)
                     logger.info(f"Entry throttle skip {signal.get('symbol', '')}: {throttle_reason}")
                     self._notify_ready_entry_skipped(signal, throttle_reason, component="entry_throttle")
                     continue
@@ -826,12 +829,6 @@ class CycleMixin:
                         break
 
                 position = self.execute_entry(signal)
-                if not position:
-                    self._notify_ready_entry_skipped(
-                        signal,
-                        "已进入 execute_entry，但执行链未返回仓位；请查看同时间交易异常详情",
-                        component="execute_entry",
-                    )
                 if position:
                     with self._state_lock:
                         self.tracker.add_position(position)
