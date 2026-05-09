@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import re
 import time
 from datetime import datetime
 from typing import Optional
@@ -30,6 +31,47 @@ logger = logging.getLogger(__name__)
 
 class ExecutionMixin(ProtectionServiceMixin, PositionLifecycleMixin, ExitServiceMixin):
     """Open/close execution and protective order lifecycle."""
+
+    @staticmethod
+    def _signal_float(signal: dict, key: str, default: float = 0.0) -> float:
+        metrics = signal.get("metrics", {}) or {}
+        try:
+            return float(metrics.get(key, default) or default)
+        except (TypeError, ValueError):
+            return default
+
+    def _allow_high_reversal_short_spike_bypass(self, signal: dict, spike_reason: str) -> bool:
+        """Allow qualified blow-off-top SHORT fast lanes through the generic spike guard."""
+        if not getattr(self.config, "fast_lane_spike_guard_bypass_enabled", True):
+            return False
+        if str(signal.get("direction", "") or "").upper() != "SHORT":
+            return False
+
+        marker = " ".join(
+            str(signal.get(key, "") or "")
+            for key in ("entry_status_text", "watch_stage", "entry_note", "strategy_line")
+        )
+        if "高位转弱快线" not in marker and "冲高回落做空" not in marker:
+            return False
+
+        score_data = signal.get("score") or {}
+        try:
+            score = float(score_data.get("total_score", score_data.get("total", 0)) if isinstance(score_data, dict) else score_data or 0)
+        except (TypeError, ValueError):
+            score = 0.0
+        change_24h = self._signal_float(signal, "change_24h_pct")
+        drawdown = self._signal_float(signal, "drawdown_from_24h_high_pct")
+        oi_change = abs(self._signal_float(signal, "oi_24h_pct", self._signal_float(signal, "oi_change_pct")))
+        rebound_match = re.search(r"反弹\s*([0-9.]+)%", spike_reason or "")
+        rebound_pct = float(rebound_match.group(1)) if rebound_match else 0.0
+
+        return (
+            score >= 80.0
+            and change_24h >= 8.0
+            and drawdown >= 3.0
+            and oi_change >= 20.0
+            and rebound_pct <= 6.0
+        )
 
     def execute_entry(self, signal: dict) -> Optional[Position]:
         """执行开仓 - 奥丁的长矛"""
@@ -204,6 +246,10 @@ class ExecutionMixin(ProtectionServiceMixin, PositionLifecycleMixin, ExitService
                     trading_signal.entry_price = latest_price
             # 高分信号也必须过短线复查；USUAL 这类爆拉后回落不能靠分数豁免。
             spike_reason = self._recent_spike_reversal_reason(symbol, direction, price)
+            if spike_reason:
+                if self._allow_high_reversal_short_spike_bypass(signal, spike_reason):
+                    logger.info(f"✅ {symbol} 高位转弱快线通过插针复查：{spike_reason}")
+                    spike_reason = ""
             if spike_reason:
                 logger.warning(f"🧊 {symbol} 开仓前过滤：{spike_reason}")
                 if score >= 85.0:
