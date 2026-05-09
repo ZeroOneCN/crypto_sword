@@ -19,11 +19,10 @@ from dataclasses import dataclass, asdict
 
 from hermes_paths import hermes_logs_dir
 from services.time_basis import (
-    is_after_utc_cutoff,
     is_utc_date,
     parse_db_datetime,
-    utc_cutoff_for_days,
     utc_date_key,
+    utc_natural_period_window,
     utc_now_iso,
 )
 
@@ -608,9 +607,14 @@ class TradeDatabase:
         rows = cursor.fetchall()
         conn.close()
 
-        cutoff = utc_cutoff_for_days(days)
+        start, end = utc_natural_period_window(days, end_now=True)
         trades = [self._row_to_trade(row) for row in rows]
-        return [trade for trade in trades if is_after_utc_cutoff(trade.exit_time, cutoff)]
+        filtered: List[TradeRecord] = []
+        for trade in trades:
+            exit_time = parse_db_datetime(trade.exit_time)
+            if exit_time and start <= exit_time < end:
+                filtered.append(trade)
+        return filtered
     
     def get_all_trades(self, limit: int = 100) -> List[TradeRecord]:
         """获取所有交易（限制数量）"""

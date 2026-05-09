@@ -90,6 +90,24 @@ def utc_cutoff_for_days(days: int) -> datetime:
     return utc_now() - timedelta(days=max(int(days), 0))
 
 
+def utc_natural_period_window(days: int, *, end_now: bool = True) -> tuple[datetime, datetime]:
+    """Return a stable UTC natural-day window for dashboard/report periods.
+
+    ``utc_cutoff_for_days`` is a rolling 24h cutoff and naturally moves every
+    refresh.  Dashboard period cards should not drift just because the page
+    refreshed, so they use UTC day boundaries like Binance's performance UI.
+    """
+
+    span = max(int(days), 1)
+    today = utc_now().date()
+    start_date = today - timedelta(days=span - 1)
+    start = datetime.combine(start_date, time.min, tzinfo=UTC)
+    if end_now:
+        return start, utc_now()
+    end = datetime.combine(today + timedelta(days=1), time.min, tzinfo=UTC)
+    return start, end
+
+
 def utc_day_window(date_key: str) -> tuple[datetime, datetime]:
     target = date.fromisoformat(str(date_key))
     start = datetime.combine(target, time.min, tzinfo=UTC)

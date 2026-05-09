@@ -12,8 +12,8 @@ from repositories.trade_repository import TradeDatabase, TradeRecord
 from services.accounting_service import fetch_income_rows, summarize_income_rows
 from services.time_basis import (
     parse_db_datetime,
-    utc_cutoff_for_days,
     utc_day_window,
+    utc_natural_period_window,
     utc_now,
     utc_today_key,
     utc8_window_label,
@@ -159,7 +159,10 @@ class ReportService:
                 "total_pnl": 0.0,
                 "reason_counts": {},
             }
-        self._merge_exchange_income(report, self._income_summary_for_window(utc_cutoff_for_days(days), utc_now()))
+        start, end = utc_natural_period_window(days, end_now=True)
+        report["start_utc"] = start.isoformat().replace("+00:00", "Z")
+        report["end_utc"] = end.isoformat().replace("+00:00", "Z")
+        self._merge_exchange_income(report, self._income_summary_for_window(start, end))
         return report
 
     def period_reports(self, days_list: tuple[int, ...] = (7, 30), mode: str = "live") -> list[dict[str, Any]]:

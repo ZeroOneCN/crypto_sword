@@ -258,8 +258,8 @@
       <div class="card"><div class="label">可用余额</div><div class="value" id="availableBalance">--</div><div class="hint">可开仓资金</div></div>
       <div class="card"><div class="label">未实现盈亏</div><div class="value" id="unrealized">--</div><div class="hint">当前持仓浮动盈亏</div></div>
       <div class="card"><div class="label">今日净盈亏 UTC</div><div class="value" id="todayPnl">--</div><div class="hint" id="todayWindow">--</div></div>
-      <div class="card"><div class="label">近7天净盈亏</div><div class="value" id="pnl7">--</div><div class="hint">交易所优先，DB 兜底</div></div>
-      <div class="card"><div class="label">近30天净盈亏</div><div class="value" id="pnl30">--</div><div class="hint">交易所优先，DB 兜底</div></div>
+      <div class="card"><div class="label">近7天净盈亏</div><div class="value" id="pnl7">--</div><div class="hint">UTC自然日，交易所DB缓存</div></div>
+      <div class="card"><div class="label">近30天净盈亏</div><div class="value" id="pnl30">--</div><div class="hint">UTC自然日，交易所DB缓存</div></div>
       <div class="card"><div class="label">今日手续费</div><div class="value" id="todayFee">--</div><div class="hint">Commission</div></div>
       <div class="card"><div class="label">近30天手续费</div><div class="value" id="fee30">--</div><div class="hint">历史统计同步展示</div></div>
     </section>
@@ -396,7 +396,7 @@
           ${cell(r.closed_trades || 0, 'mono')}
           ${cell(money(dbPnl(r)), cls(dbPnl(r)))}
           ${cell(exchangeText, exchangeClass)}
-          ${cell(money(income.commission || 0), 'bad')}
+          ${cell(money(income.commission_cost ?? Math.abs(num(income.commission || 0))), 'bad')}
           ${cell(money(income.funding_fee || 0), cls(income.funding_fee))}
           ${cell(`${num(r.win_rate).toFixed(2)}%`, 'mono')}
           ${cell(money(r.avg_pnl), cls(r.avg_pnl))}
@@ -438,7 +438,7 @@
         ${cell(price(t.entry_price), 'mono')}
         ${cell(price(t.exit_price), 'mono')}
         ${cell(money(t.pnl), cls(t.pnl))}
-        ${cell(money(t.commission || 0), 'bad')}
+        ${cell(money(t.fee ?? Math.abs(num(t.commission || 0))), 'bad')}
         ${cell(money(t.funding_fee || 0), cls(t.funding_fee))}
         ${cell(pct(t.pnl_pct), cls(t.pnl_pct))}
         ${cell(safe(t.exit_reason_label))}
@@ -496,8 +496,8 @@
         setValue('todayPnl', money(netPnl(today)), cls(netPnl(today)));
         setValue('pnl7', money(netPnl(p7)), cls(netPnl(p7)));
         setValue('pnl30', money(netPnl(p30)), cls(netPnl(p30)));
-        setValue('todayFee', money(todayIncome.commission || 0), 'bad');
-        setValue('fee30', money(p30Income.commission || 0), 'bad');
+        setValue('todayFee', money(todayIncome.commission_cost ?? Math.abs(num(todayIncome.commission || 0))), 'bad');
+        setValue('fee30', money(p30Income.commission_cost ?? Math.abs(num(p30Income.commission || 0))), 'bad');
 
         document.getElementById('todayWindow').textContent = today.utc8_window || data.time_basis || '';
         document.getElementById('incomeSource').textContent = `来源 ${source}`;

@@ -17,6 +17,12 @@ EXCLUDED_INCOME_TYPES = {
     "ASSET_TRANSFER",
 }
 
+ACCOUNTING_INCOME_TYPES = (
+    "REALIZED_PNL",
+    "COMMISSION",
+    "FUNDING_FEE",
+)
+
 
 def _ms(dt: datetime) -> int:
     return int(dt.astimezone(UTC).timestamp() * 1000)
@@ -36,8 +42,14 @@ def _row_time(row: dict[str, Any]) -> int:
         return 0
 
 
-def fetch_income_rows(start: datetime, end: datetime, *, limit: int = 1000) -> list[dict[str, Any]]:
-    """Fetch Binance income rows between UTC datetimes."""
+def _fetch_income_rows_once(
+    start: datetime,
+    end: datetime,
+    *,
+    income_type: str | None = None,
+    limit: int = 1000,
+) -> list[dict[str, Any]]:
+    """Fetch one Binance income stream between UTC datetimes."""
     if not is_native_binance_configured():
         return []
 
@@ -48,7 +60,12 @@ def fetch_income_rows(start: datetime, end: datetime, *, limit: int = 1000) -> l
     cursor = start_ms
 
     for _ in range(10):
-        batch = client.income_history(start_time=cursor, end_time=end_ms, limit=limit)  # type: ignore[union-attr]
+        batch = client.income_history(
+            income_type=income_type,
+            start_time=cursor,
+            end_time=end_ms,
+            limit=limit,
+        )  # type: ignore[union-attr]
         if not batch:
             break
         batch = [row for row in batch if isinstance(row, dict)]
@@ -60,7 +77,24 @@ def fetch_income_rows(start: datetime, end: datetime, *, limit: int = 1000) -> l
         if cursor >= end_ms:
             break
 
-    seen: set[tuple[str, str, str, str]] = set()
+    return rows
+
+
+def fetch_income_rows(start: datetime, end: datetime, *, limit: int = 1000) -> list[dict[str, Any]]:
+    """Fetch Binance income rows between UTC datetimes.
+
+    Binance's income endpoint can mix realized PnL, commission and funding
+    rows.  Pulling key accounting types separately makes fee and PnL summaries
+    much less likely to miss rows when a window contains many fills.
+    """
+    if not is_native_binance_configured():
+        return []
+
+    rows: list[dict[str, Any]] = []
+    for income_type in ACCOUNTING_INCOME_TYPES:
+        rows.extend(_fetch_income_rows_once(start, end, income_type=income_type, limit=limit))
+
+    seen: set[tuple[str, str, str, str, str, str]] = set()
     unique_rows: list[dict[str, Any]] = []
     for row in rows:
         key = (
@@ -68,6 +102,8 @@ def fetch_income_rows(start: datetime, end: datetime, *, limit: int = 1000) -> l
             str(row.get("time", "")),
             str(row.get("incomeType", "")),
             str(row.get("symbol", "")),
+            str(row.get("income", "")),
+            str(row.get("asset", "")),
         )
         if key in seen:
             continue
@@ -98,6 +134,7 @@ def summarize_income_rows(rows: list[dict[str, Any]]) -> dict[str, Any]:
         "net_pnl": round(net_pnl, 8),
         "realized_pnl": round(by_type.get("REALIZED_PNL", 0.0), 8),
         "commission": round(by_type.get("COMMISSION", 0.0), 8),
+        "commission_cost": round(abs(by_type.get("COMMISSION", 0.0)), 8),
         "funding_fee": round(by_type.get("FUNDING_FEE", 0.0), 8),
         "transfer_total": round(transfer_total, 8),
         "by_type": by_type,
