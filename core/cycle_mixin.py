@@ -427,11 +427,11 @@ class CycleMixin:
                     f"盈亏比={float(snapshot.get('payoff_ratio', 0) or 0):.2f}"
                 )
 
-        min_score = float(getattr(self.config, "min_signal_score_for_entry", 82.0) or 82.0)
+        min_score = float(getattr(self.config, "min_signal_score_for_entry", 78.0) or 78.0)
         if snapshot.get("weak_day"):
-            min_score = max(min_score, float(getattr(self.config, "min_signal_score_defensive", 90.0) or 90.0))
+            min_score = max(min_score, float(getattr(self.config, "min_signal_score_defensive", 88.0) or 88.0))
         if stage == "confirmed_breakout":
-            min_score = max(min_score, 90.0)
+            min_score = max(min_score, float(getattr(self.config, "confirmed_breakout_direct_score", 78.0) or 78.0))
         elif stage == "mania":
             if direction == "LONG" and not getattr(self.config, "allow_mania_long_entries", False):
                 return "mania过热阶段禁止追多"
