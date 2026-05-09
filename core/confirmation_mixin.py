@@ -178,8 +178,8 @@ class ConfirmationMixin:
         watched_seconds: float = 0.0,
         pullback_pct: float = 0.0,
     ) -> tuple[bool, str, str]:
-        """AITrader fast lanes: funding squeeze, quiet accumulation, and timed escalation."""
-        if not getattr(self.config, "ai_fast_lane_enabled", True):
+        """Fast lanes: funding squeeze, quiet accumulation, and timed escalation."""
+        if not getattr(self.config, "fast_lane_enabled", True):
             return False, "", ""
 
         direction = str(signal.get("direction", "") or "")
@@ -209,9 +209,9 @@ class ConfirmationMixin:
         ):
             return False, "", ""
 
-        min_squeeze_score = float(getattr(self.config, "ai_funding_squeeze_score", 78.0))
-        min_squeeze_oi = float(getattr(self.config, "ai_funding_squeeze_min_oi_pct", 10.0))
-        min_squeeze_change = float(getattr(self.config, "ai_funding_squeeze_min_change_pct", 3.0))
+        min_squeeze_score = float(getattr(self.config, "fast_lane_funding_squeeze_score", 78.0))
+        min_squeeze_oi = float(getattr(self.config, "fast_lane_funding_squeeze_min_oi_pct", 10.0))
+        min_squeeze_change = float(getattr(self.config, "fast_lane_funding_squeeze_min_change_pct", 3.0))
         max_funding = max(float(getattr(self.config, "max_abs_funding_rate", 0.005)), 0.0005) * 1.35
         funding_squeeze = False
         if direction == "LONG":
@@ -270,8 +270,8 @@ class ConfirmationMixin:
                 f"急跌反抽做多：评分 {score_total:.1f}，24h {change_24h:+.1f}%，反抽 {rebound:.1f}%，OI {oi_change:+.1f}%",
             )
 
-        min_acc_score = float(getattr(self.config, "ai_accumulation_direct_score", 76.0))
-        max_acc_change = float(getattr(self.config, "ai_accumulation_direct_max_change_pct", 14.0))
+        min_acc_score = float(getattr(self.config, "fast_lane_accumulation_direct_score", 76.0))
+        max_acc_change = float(getattr(self.config, "fast_lane_accumulation_direct_max_change_pct", 14.0))
         if (
             self._is_accumulation_candidate(metrics, score_total)
             and score_total >= min_acc_score
@@ -285,8 +285,8 @@ class ConfirmationMixin:
                 f"暗流吸筹直通：评分 {score_total:.1f}，24h {change_24h:+.1f}%，OI {oi_change:+.1f}%",
             )
 
-        escalation_sec = float(getattr(self.config, "ai_watch_escalation_sec", 600) or 600)
-        escalation_score = float(getattr(self.config, "ai_watch_escalation_score", 82.0) or 82.0)
+        escalation_sec = float(getattr(self.config, "fast_lane_watch_escalation_sec", 600) or 600)
+        escalation_score = float(getattr(self.config, "fast_lane_watch_escalation_score", 82.0) or 82.0)
         if (
             watched_seconds >= escalation_sec
             and stage in {"pre_break", "confirmed_breakout"}
@@ -754,7 +754,7 @@ class ConfirmationMixin:
                 signal["entry_status"] = "invalid"; signal["entry_status_text"] = "失效淘汰"; signal["entry_note"] = f"评分回落至 {score_total:.1f}"; return signal
         if not watch:
             strategy_line = self._strategy_line_for_signal(signal)
-            initial_note = "首次发现，普通信号等待回踩；强资金/OI会走AI快线"
+            initial_note = "首次发现，普通信号等待回踩；强资金/OI会走中枢快线"
             trend = self._load_confirmation_trend(symbol)
             continuation_ready, continuation_note = self._is_trend_continuation_ready(signal, trend, current_price)
             momentum_ready, momentum_note = self._is_momentum_entry_ready(signal, trend, current_price)
@@ -762,7 +762,7 @@ class ConfirmationMixin:
             ma_reentry_ready, ma_reentry_note = self._is_ma_reentry_ready(signal, trend, current_price)
             fast_lane_ready, fast_lane_stage, fast_lane_note = self._fast_lane_ready_signal(signal, trend=trend)
             if strategy_line == "趋势突破线":
-                initial_note = "首次发现，等待趋势延续；强资金/OI会走AI快线"
+                initial_note = "首次发现，等待趋势延续；强资金/OI会走中枢快线"
             elif strategy_line == "均线二启线":
                 initial_note = "首次发现，等待回踩守住均线后二次启动；强信号可升级"
             direct_stage_ok, direct_block_note = self._direct_entry_stage_decision(
@@ -775,7 +775,7 @@ class ConfirmationMixin:
             if fast_lane_ready:
                 return self._mark_signal_ready(
                     signal,
-                    status_text="AI快线入场",
+                    status_text="中枢快线入场",
                     strategy_line="趋势突破线",
                     watch_stage=fast_lane_stage,
                     entry_note=fast_lane_note,
@@ -823,7 +823,7 @@ class ConfirmationMixin:
             if fast_lane_ready:
                 return self._mark_signal_ready(
                     signal,
-                    status_text="AI快线入场",
+                    status_text="中枢快线入场",
                     strategy_line="趋势突破线",
                     watch_stage=fast_lane_stage,
                     entry_note=fast_lane_note,
@@ -844,7 +844,7 @@ class ConfirmationMixin:
                 entry_note = "等待回踩均线后重新站上短均线"
             else:
                 stage_name = "趋势待命" if watch.get("strategy_line") == "趋势突破线" else "回踩等待"
-                entry_note = direct_block_note or ("等待趋势延续或AI快线升级" if watch.get("strategy_line") == "趋势突破线" else f"等待至少 {required_pullback:.1f}% 回踩，强资金/OI可升级")
+                entry_note = direct_block_note or ("等待趋势延续或中枢快线升级" if watch.get("strategy_line") == "趋势突破线" else f"等待至少 {required_pullback:.1f}% 回踩，强资金/OI可升级")
             self._update_watch_state(watch, strategy_line=watch.get("strategy_line", "回踩确认线"), stage_name=stage_name, entry_note=entry_note, required_pullback=required_pullback, current_pullback=pullback_pct, trend=trend)
             signal["entry_status"] = "watch"; signal["entry_status_text"] = "观察中"; signal["strategy_line"] = watch.get("strategy_line", "回踩确认线"); signal["watch_stage"] = stage_name; signal["entry_note"] = entry_note; return signal
         trend = self._load_confirmation_trend(symbol)
@@ -866,7 +866,7 @@ class ConfirmationMixin:
         if fast_lane_ready:
             return self._mark_signal_ready(
                 signal,
-                status_text="AI快线入场",
+                status_text="中枢快线入场",
                 strategy_line="趋势突破线",
                 watch_stage=fast_lane_stage,
                 entry_note=fast_lane_note,
