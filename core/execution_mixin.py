@@ -228,6 +228,7 @@ class ExecutionMixin(ProtectionServiceMixin, PositionLifecycleMixin, ExitService
             quantity = None
             stop_loss = None
             capital_plan = None
+            entry_scale = {"mode": "full", "ratio": 1.0, "label": "完整仓"}
             risk_balance = balance
             entry_risk_pct = self.config.risk_per_trade_pct
             entry_max_position_pct = self.config.max_position_pct
@@ -294,6 +295,16 @@ class ExecutionMixin(ProtectionServiceMixin, PositionLifecycleMixin, ExitService
                 entry_risk_pct = capital_plan.risk_per_trade_pct
                 entry_max_position_pct = capital_plan.max_position_pct
                 entry_leverage = capital_plan.leverage
+                entry_scale = self._entry_scale_profile(signal)
+                scale_ratio = float(entry_scale.get("ratio", 1.0) or 1.0)
+                if scale_ratio < 1.0:
+                    entry_risk_pct *= scale_ratio
+                    entry_max_position_pct *= scale_ratio
+                    logger.info(
+                        f"{symbol} 试探仓模式：首仓 {scale_ratio * 100:.0f}% "
+                        f"风险={entry_risk_pct:.2f}% 仓位上限={entry_max_position_pct:.2f}% "
+                        f"原因={entry_scale.get('reason', '')}"
+                    )
 
                 risk_config = risk_service.build_config(
                     risk_per_trade_pct=entry_risk_pct,
@@ -346,6 +357,11 @@ class ExecutionMixin(ProtectionServiceMixin, PositionLifecycleMixin, ExitService
                 quantity = position_size.get("quantity")
                 stop_loss = risk_result.get("stop_loss", {}).get("stop_loss")
                 position_value = float(position_size.get("position_value", 0) or 0)
+                scale_ratio = float(entry_scale.get("ratio", 1.0) or 1.0)
+                if scale_ratio > 0 and quantity:
+                    entry_scale["intended_quantity"] = float(quantity) / scale_ratio
+                else:
+                    entry_scale["intended_quantity"] = float(quantity or 0)
 
                 if quantity is not None and quantity <= 0:
                     logger.warning(f"🛡️ {symbol} 仓位计算失败")
@@ -586,6 +602,10 @@ class ExecutionMixin(ProtectionServiceMixin, PositionLifecycleMixin, ExitService
                     int(item.get("order_id", 0) or 0) for item in take_profit_targets if item.get("order_id")
                 ],
                 leverage=leverage_applied,
+                entry_scale_mode=str(entry_scale.get("mode", "full") or "full"),
+                entry_scale_ratio=float(entry_scale.get("ratio", 1.0) or 1.0),
+                intended_quantity=float(entry_scale.get("intended_quantity", actual_quantity) or actual_quantity),
+                add_on_done=bool(entry_scale.get("add_on_done", False)),
             )
 
             from telegram_notifier import format_open_position_msg
@@ -603,7 +623,8 @@ class ExecutionMixin(ProtectionServiceMixin, PositionLifecycleMixin, ExitService
                 score=score,
                 risk_level=risk_level,
                 session_id=session_id,
-                strategy_line=f"{strategy_line}｜{exit_profile_name}",
+                strategy_line=f"{strategy_line}｜{exit_profile_name}"
+                + (f"｜{entry_scale.get('label')}" if entry_scale.get("mode") == "probe" else ""),
                 oi_funding=oi_funding,
                 target_roi_pct=primary_target_roi_pct,
                 price_move_pct=primary_price_move_pct,
@@ -663,6 +684,7 @@ class ExecutionMixin(ProtectionServiceMixin, PositionLifecycleMixin, ExitService
                 take_profit_targets=take_profit_targets,
                 tp_price=tp_price,
                 executed_entry_price=executed_entry_price,
+                entry_scale=entry_scale,
             )
             self._record_latency_step(latency_steps, "db_write", step_started)
             self._emit_latency_trace("execute_entry", trace_started, latency_steps, symbol=symbol)

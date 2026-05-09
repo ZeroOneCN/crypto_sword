@@ -9,6 +9,7 @@ from typing import Any, Optional
 from feature_store import feature_store
 from services.order_service import order_service
 from signal_enhancer import get_klines
+from telegram_notifier import format_direction_label, send_telegram_message
 from trade_logger import TradeRecord
 
 logger = logging.getLogger(__name__)
@@ -100,8 +101,10 @@ class PositionLifecycleMixin:
         take_profit_targets: list[dict],
         tp_price: float,
         executed_entry_price: float,
+        entry_scale: dict[str, Any] | None = None,
     ) -> int:
         from core.monitoring import build_execution_event, message_signature
+        entry_scale = entry_scale or {}
 
         notes_parts = [
             f"session_id={session_id}",
@@ -119,6 +122,10 @@ class PositionLifecycleMixin:
             f"stop_trigger_buffer_pct={stop_trigger_buffer_pct}",
             f"leverage_applied={leverage_applied}",
             f"capital_plan={json.dumps(capital_plan.to_dict() if capital_plan else {}, ensure_ascii=False, separators=(',', ':'))}",
+            f"entry_scale_mode={entry_scale.get('mode', 'full')}",
+            f"entry_scale_ratio={float(entry_scale.get('ratio', 1.0) or 1.0):.4f}",
+            f"intended_quantity={float(entry_scale.get('intended_quantity', position.quantity) or position.quantity):.8f}",
+            f"add_on_done={1 if entry_scale.get('add_on_done') else 0}",
             f"oi_funding_bonus={float(oi_funding.get('score_bonus', 0) or 0):.2f}",
             f"tp_plan={json.dumps(take_profit_targets, separators=(',', ':'))}",
             f"tp_order_ids={','.join(str(int(item.get('order_id', 0))) for item in take_profit_targets if item.get('order_id'))}",
@@ -147,6 +154,7 @@ class PositionLifecycleMixin:
                 "_entry_gate_note": signal.get("_entry_gate_note") or "",
                 "_leverage_applied": leverage_applied,
                 "_capital_plan": capital_plan.to_dict() if capital_plan else {},
+                "_entry_scale": entry_scale,
             },
             notes=";".join(notes_parts),
         )
@@ -163,11 +171,167 @@ class PositionLifecycleMixin:
                 "quantity": position.quantity,
                 "stop_loss": position.stop_loss_price,
                 "take_profit": tp_price,
+                "entry_scale_ratio": float(entry_scale.get("ratio", 1.0) or 1.0),
+                "intended_quantity": float(entry_scale.get("intended_quantity", position.quantity) or position.quantity),
             },
         )
         logger.info(f"execution_event {message_signature(entry_event)}")
         feature_store.append_event(entry_event)
         return trade_id
+
+    def _entry_scale_profile(self, signal: dict[str, Any]) -> dict[str, Any]:
+        """Return first-fill scale profile for strong signals that should probe first."""
+        if not getattr(self.config, "probe_entry_enabled", True):
+            return {"mode": "full", "ratio": 1.0, "label": "完整仓"}
+        status_text = str(signal.get("entry_status_text", "") or "")
+        watch_stage = str(signal.get("watch_stage", "") or "")
+        strategy_line = str(signal.get("strategy_line", "") or "")
+        score = self._signal_score_value(signal) if hasattr(self, "_signal_score_value") else 0.0
+        fast_lane = status_text == "中枢快线入场" or watch_stage.endswith("快线")
+        strong_direct = status_text in {"优势阶段神级直通", "预突破强信号直通", "突破确认入场", "动量确认入场"}
+        if strategy_line == "趋势突破线" and (fast_lane or strong_direct) and score >= float(self.config.probe_add_on_min_score):
+            ratio = float(self.config.probe_entry_ratio)
+            return {
+                "mode": "probe",
+                "ratio": ratio,
+                "label": f"试探仓{ratio * 100:.0f}%",
+                "reason": watch_stage or status_text,
+            }
+        return {"mode": "full", "ratio": 1.0, "label": "完整仓"}
+
+    def _probe_add_on_ready(self, position: Position) -> tuple[bool, str]:
+        if not getattr(self.config, "probe_add_on_enabled", True):
+            return False, "确认加仓关闭"
+        if getattr(position, "entry_scale_mode", "full") != "probe":
+            return False, "非试探仓"
+        if getattr(position, "add_on_done", False) or getattr(position, "add_on_attempted", False):
+            return False, "已处理"
+        if position.quantity <= 0 or position.entry_price <= 0:
+            return False, "仓位无效"
+        intended_qty = float(getattr(position, "intended_quantity", 0.0) or 0.0)
+        if intended_qty <= position.quantity * 1.05:
+            return False, "目标数量不足"
+        age = self._position_age_minutes(position)
+        if age > float(self.config.probe_add_on_max_age_minutes):
+            return False, f"超过加仓窗口 {age:.0f}m"
+        roi = self._position_roi_pct(position)
+        if roi < float(self.config.probe_add_on_min_roi_pct):
+            return False, f"ROI {roi:.2f}% 未达确认阈值"
+        score = self._position_entry_score_value(position)
+        if score < float(self.config.probe_add_on_min_score):
+            return False, f"评分 {score:.1f} 不足"
+        if self._position_has_taken_profit(position):
+            return False, "已触发止盈，不再加仓"
+        return True, f"ROI {roi:.2f}% 评分 {score:.1f} age {age:.0f}m"
+
+    def _try_probe_add_on(self, position: Position) -> bool:
+        ready, reason = self._probe_add_on_ready(position)
+        if not ready:
+            return False
+
+        position.add_on_attempted = True
+        target_qty = float(getattr(position, "intended_quantity", position.quantity) or position.quantity)
+        add_qty = max(target_qty - float(position.quantity or 0.0), 0.0)
+        if add_qty <= 0:
+            return False
+
+        side = "BUY" if position.side == "BUY" else "SELL"
+        position_side = "LONG" if position.side == "BUY" else "SHORT"
+        result = order_service.place_market_order(
+            position.symbol,
+            side,
+            add_qty,
+            leverage=max(int(position.leverage or self.config.leverage), 1),
+            position_side=position_side,
+            reduce_only=False,
+        )
+        if result.status not in {"FILLED", "HIGH_SLIPPAGE"} or result.quantity <= 0 or result.executed_price <= 0:
+            position.add_on_error = result.message
+            logger.warning(f"{position.symbol} 试探仓确认加仓失败：{result.status} {result.message}")
+            return False
+
+        old_qty = float(position.quantity or 0.0)
+        old_notional = old_qty * float(position.entry_price or 0.0)
+        add_notional = result.quantity * result.executed_price
+        new_qty = old_qty + result.quantity
+        if new_qty <= 0:
+            return False
+        position.entry_price = (old_notional + add_notional) / new_qty if old_notional + add_notional > 0 else position.entry_price
+        position.quantity = new_qty
+        position.initial_quantity = max(float(position.initial_quantity or 0.0), new_qty)
+        position.last_synced_quantity = new_qty
+        position.add_on_done = True
+        position.add_on_order_id = int(result.order_id or 0)
+        position.add_on_time = datetime.now()
+        position.add_on_error = ""
+        leverage = max(int(position.leverage or self.config.leverage or 1), 1)
+        for target in position.take_profit_targets or []:
+            target_roi = float(target.get("target_roi_pct", 0) or 0)
+            if target_roi <= 0:
+                continue
+            price_move_pct = target_roi / leverage
+            if position.side == "BUY":
+                target["price"] = position.entry_price * (1 + price_move_pct / 100.0)
+            else:
+                target["price"] = position.entry_price * (1 - price_move_pct / 100.0)
+            target["order_id"] = 0
+            target["status"] = "PENDING_REBUILD"
+            target["message"] = "rebuilt after probe add-on"
+        if position.take_profit_targets:
+            position.take_profit_price = float(position.take_profit_targets[0].get("price", position.take_profit_price) or position.take_profit_price)
+
+        try:
+            trade, matched_by = self._find_open_trade_for_session(position.symbol, position.session_id)
+            if trade and matched_by == "session_id":
+                self.db.update_open_trade(
+                    trade.id,
+                    entry_price=position.entry_price,
+                    quantity=position.quantity,
+                    stop_loss=position.stop_loss_price,
+                    take_profit=position.take_profit_price,
+                    note_updates={
+                        "add_on_done": 1,
+                        "add_on_order_id": position.add_on_order_id,
+                        "add_on_time": position.add_on_time.isoformat() if position.add_on_time else "",
+                        "entry_scale_mode": position.entry_scale_mode,
+                        "entry_scale_ratio": f"{float(position.entry_scale_ratio or 1.0):.4f}",
+                        "intended_quantity": f"{float(position.intended_quantity or position.quantity):.8f}",
+                    },
+                )
+        except Exception as exc:
+            logger.debug(f"{position.symbol} add-on DB sync skipped: {exc}")
+
+        try:
+            self._cancel_position_protection(position)
+            protected = self._ensure_position_protection(position)
+            self._send_protection_status(position, source="probe_add_on", force=True)
+        except Exception as exc:
+            protected = False
+            position.protection_failures += 1
+            position.last_protection_error = str(exc)
+            logger.exception(f"{position.symbol} 加仓后保护单重建失败")
+
+        logger.warning(
+            f"{position.symbol} 试探仓确认加仓完成：add_qty={result.quantity} price={result.executed_price:.8f} "
+            f"new_qty={new_qty} avg={position.entry_price:.8f} protected={protected} | {reason}"
+        )
+        direction = "LONG" if position.side == "BUY" else "SHORT"
+        send_telegram_message(
+            "➕ <b>宙斯交易中枢 | 确认加仓</b>\n\n"
+            f"<b>标的</b>  <code>{position.symbol}</code>\n"
+            f"<b>方向</b>  <code>{format_direction_label(direction)}</code>\n"
+            f"<b>加仓数量</b>  <code>{result.quantity:g}</code>\n"
+            f"<b>成交价</b>  <code>{result.executed_price:.8f}</code>\n"
+            f"<b>当前总仓</b>  <code>{position.quantity:g}</code>\n"
+            f"<b>新均价</b>  <code>{position.entry_price:.8f}</code>\n"
+            f"<b>保护单</b>  <code>{'已重建' if protected else '重建失败，请检查'}</code>\n"
+            f"<b>流水号</b>  <code>{position.session_id}</code>"
+        )
+        return True
+
+    def _manage_probe_positions(self):
+        for position in list(self.tracker.positions.values()):
+            self._try_probe_add_on(position)
 
     def _record_closed_trade_result(self, position: Position, pnl: float):
         """Record closed trade outcome without applying loss cooldowns."""

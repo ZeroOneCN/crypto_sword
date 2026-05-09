@@ -925,6 +925,10 @@ class SyncMixin:
                 take_profit_targets=take_profit_targets,
                 take_profit_order_ids=take_profit_order_ids,
                 leverage=restored_leverage,
+                entry_scale_mode=notes_map.get("entry_scale_mode", "full") or "full",
+                entry_scale_ratio=float(notes_map.get("entry_scale_ratio", 1.0) or 1.0),
+                intended_quantity=float(notes_map.get("intended_quantity", live_pos["quantity"]) or live_pos["quantity"]),
+                add_on_done=str(notes_map.get("add_on_done", "0")).strip() in {"1", "true", "True", "yes"},
             )
             self._apply_live_position_snapshot(restored, live_pos, source="startup_restore")
             self._adopt_existing_protection(restored)

@@ -668,6 +668,7 @@ class CycleMixin:
             for symbol, reason in exits.items():
                 logger.info(f"Exit trigger {symbol}: {reason}")
                 self.execute_exit(symbol, reason)
+            self._manage_probe_positions()
             self._manage_sideways_positions()
             self._record_latency_step(latency_steps, "manage_open_positions", step_started)
 

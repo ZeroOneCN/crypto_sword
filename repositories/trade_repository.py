@@ -244,6 +244,59 @@ class TradeDatabase:
         conn.commit()
         conn.close()
 
+    def update_open_trade(
+        self,
+        trade_id: int,
+        *,
+        entry_price: float | None = None,
+        quantity: float | None = None,
+        stop_loss: float | None = None,
+        take_profit: float | None = None,
+        market_snapshot: dict[str, Any] | None = None,
+        note_updates: dict[str, Any] | None = None,
+    ) -> bool:
+        """Update an open trade row after lifecycle changes such as add-on fills."""
+        conn = self._get_connection()
+        cursor = conn.cursor()
+        cursor.execute("SELECT notes FROM trades WHERE id = ? AND exit_price IS NULL", (trade_id,))
+        row = cursor.fetchone()
+        if not row:
+            conn.close()
+            return False
+
+        notes = str(row["notes"] or "")
+        if note_updates:
+            notes_map = self._parse_notes(notes)
+            for key, value in note_updates.items():
+                notes_map[str(key)] = str(value)
+            notes = ";".join(f"{key}={value}" for key, value in notes_map.items())
+
+        cursor.execute(
+            """
+            UPDATE trades SET
+                entry_price = COALESCE(?, entry_price),
+                quantity = COALESCE(?, quantity),
+                stop_loss = COALESCE(?, stop_loss),
+                take_profit = COALESCE(?, take_profit),
+                market_snapshot = COALESCE(?, market_snapshot),
+                notes = ?
+            WHERE id = ? AND exit_price IS NULL
+            """,
+            (
+                entry_price,
+                quantity,
+                stop_loss,
+                take_profit,
+                json.dumps(market_snapshot, ensure_ascii=False) if market_snapshot is not None else None,
+                notes,
+                trade_id,
+            ),
+        )
+        changed = cursor.rowcount > 0
+        conn.commit()
+        conn.close()
+        return changed
+
     @staticmethod
     def _parse_notes(notes: str) -> Dict[str, str]:
         result: Dict[str, str] = {}

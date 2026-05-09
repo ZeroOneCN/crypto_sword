@@ -145,6 +145,12 @@ class TradingConfig:
         fast_lane_accumulation_direct_max_change_pct: float = 14.0,
         fast_lane_watch_escalation_sec: int = 10 * 60,
         fast_lane_watch_escalation_score: float = 82.0,
+        probe_entry_enabled: bool = True,
+        probe_entry_ratio: float = 0.40,
+        probe_add_on_enabled: bool = True,
+        probe_add_on_min_roi_pct: float = 6.0,
+        probe_add_on_max_age_minutes: int = 45,
+        probe_add_on_min_score: float = 78.0,
         breakout_tp_multiplier: float = 1.50,
         breakout_stop_multiplier: float = 0.85,
         pullback_tp_multiplier: float = 1.30,
@@ -301,6 +307,12 @@ class TradingConfig:
         self.fast_lane_accumulation_direct_max_change_pct = max(0.0, float(fast_lane_accumulation_direct_max_change_pct))
         self.fast_lane_watch_escalation_sec = max(60, int(fast_lane_watch_escalation_sec))
         self.fast_lane_watch_escalation_score = max(0.0, float(fast_lane_watch_escalation_score))
+        self.probe_entry_enabled = bool(probe_entry_enabled)
+        self.probe_entry_ratio = min(1.0, max(0.10, float(probe_entry_ratio)))
+        self.probe_add_on_enabled = bool(probe_add_on_enabled)
+        self.probe_add_on_min_roi_pct = max(0.0, float(probe_add_on_min_roi_pct))
+        self.probe_add_on_max_age_minutes = max(1, int(probe_add_on_max_age_minutes))
+        self.probe_add_on_min_score = max(0.0, float(probe_add_on_min_score))
         self.breakout_tp_multiplier = breakout_tp_multiplier
         self.breakout_stop_multiplier = breakout_stop_multiplier
         self.pullback_tp_multiplier = pullback_tp_multiplier
@@ -361,6 +373,10 @@ class Position:
         take_profit_targets: Optional[List[dict[str, Any]]] = None,
         take_profit_order_ids: Optional[List[int]] = None,
         leverage: int = 0,
+        entry_scale_mode: str = "full",
+        entry_scale_ratio: float = 1.0,
+        intended_quantity: float = 0.0,
+        add_on_done: bool = False,
     ):
         self.symbol = symbol
         self.side = side
@@ -381,6 +397,14 @@ class Position:
         self.take_profit_targets = take_profit_targets or []
         self.take_profit_order_ids = take_profit_order_ids or []
         self.leverage = int(leverage or 0)
+        self.entry_scale_mode = str(entry_scale_mode or "full")
+        self.entry_scale_ratio = float(entry_scale_ratio or 1.0)
+        self.intended_quantity = float(intended_quantity or quantity)
+        self.add_on_done = bool(add_on_done)
+        self.add_on_attempted = False
+        self.add_on_order_id = 0
+        self.add_on_time: Optional[datetime] = None
+        self.add_on_error = ""
         self.initial_quantity = quantity
         self.last_synced_quantity = quantity
         self.partial_tp_count = 0
@@ -508,6 +532,10 @@ class Position:
             "oi_funding": self.oi_funding,
             "entry_score": self.entry_score,
             "entry_metrics": self.entry_metrics,
+            "entry_scale_mode": self.entry_scale_mode,
+            "entry_scale_ratio": round(self.entry_scale_ratio, 4),
+            "intended_quantity": round(self.intended_quantity, 8),
+            "add_on_done": self.add_on_done,
         }
 
 
