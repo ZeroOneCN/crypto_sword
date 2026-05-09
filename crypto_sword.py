@@ -383,28 +383,28 @@ def main():
     parser.add_argument("--weak-daily-entries", type=int, default=4, help="Soft cap when daily stats are weak")
     parser.add_argument("--hard-daily-entries", type=int, default=2, help="Soft cap in deep defensive mode")
     parser.add_argument("--daily-exception-entries", type=int, default=1, help="Max A+ override entries after soft cap")
-    parser.add_argument("--exception-entry-score", type=float, default=90.0, help="A+ override min score")
-    parser.add_argument("--min-entry-score", type=float, default=82.0, help="Minimum score for new entries")
-    parser.add_argument("--defensive-entry-score", type=float, default=90.0, help="Minimum score when daily stats are weak")
+    parser.add_argument("--exception-entry-score", type=float, default=88.0, help="A+ override min score")
+    parser.add_argument("--min-entry-score", type=float, default=78.0, help="Minimum score for new entries")
+    parser.add_argument("--defensive-entry-score", type=float, default=88.0, help="Minimum score when daily stats are weak")
 
     parser.add_argument("--top", type=int, default=30, help="Top N symbols")
     parser.add_argument("--interval", "-i", type=int, default=300, help="Deep scan interval (seconds)")
     parser.add_argument("--fast-interval", type=int, default=60, help="Fast scan interval (seconds)")
     parser.add_argument("--scan-workers", type=int, default=8, help="Scan workers")
-    parser.add_argument("--min-change", type=float, default=1.0, help="Min 24h change (%%)")
-    parser.add_argument("--min-pullback", type=float, default=1.2, help="Min pullback (%%)")
-    parser.add_argument("--reclaim-volume", type=float, default=0.90, help="5m volume reclaim ratio")
+    parser.add_argument("--min-change", type=float, default=0.8, help="Min 24h change (%%)")
+    parser.add_argument("--min-pullback", type=float, default=0.8, help="Min pullback (%%)")
+    parser.add_argument("--reclaim-volume", type=float, default=0.75, help="5m volume reclaim ratio")
     parser.add_argument("--by-volume", action="store_true", help="Rank by volume instead of change")
     parser.add_argument("--no-entry-confirm", action="store_true", help="Disable entry confirmation")
     parser.add_argument("--entry-confirm-timeout", type=int, default=1800, help="Entry confirmation timeout (seconds)")
     parser.add_argument("--no-momentum-entry", action="store_true", help="Disable momentum entry")
-    parser.add_argument("--momentum-score", type=float, default=84.0, help="Momentum entry min score")
-    parser.add_argument("--accumulation-score", type=float, default=78.0, help="Accumulation entry min score")
-    parser.add_argument("--accumulation-min-oi", type=float, default=10.0, help="Accumulation entry min OI change (%%)")
-    parser.add_argument("--accumulation-max-change", type=float, default=16.0, help="Accumulation entry max 24h change (%%)")
-    parser.add_argument("--max-abs-funding-rate", type=float, default=0.0045, help="Max abs funding rate")
-    parser.add_argument("--max-range-position", type=float, default=92.0, help="Max 24h range position (%%)")
-    parser.add_argument("--max-chase-change", type=float, default=24.0, help="Max chase 24h change (%%)")
+    parser.add_argument("--momentum-score", type=float, default=80.0, help="Momentum entry min score")
+    parser.add_argument("--accumulation-score", type=float, default=74.0, help="Accumulation entry min score")
+    parser.add_argument("--accumulation-min-oi", type=float, default=7.0, help="Accumulation entry min OI change (%%)")
+    parser.add_argument("--accumulation-max-change", type=float, default=20.0, help="Accumulation entry max 24h change (%%)")
+    parser.add_argument("--max-abs-funding-rate", type=float, default=0.0050, help="Max abs funding rate")
+    parser.add_argument("--max-range-position", type=float, default=95.0, help="Max 24h range position (%%)")
+    parser.add_argument("--max-chase-change", type=float, default=30.0, help="Max chase 24h change (%%)")
     parser.add_argument("--no-daily-report", action="store_true", help="Disable daily report")
     parser.add_argument("--trailing", type=float, default=8.0, help="Trailing stop (%%)")
     parser.add_argument("--no-trailing", action="store_true", help="Disable trailing stop")
@@ -457,7 +457,7 @@ def main():
         min_change_pct=args.min_change,
         max_chase_change_pct=args.max_chase_change,
         min_pullback_pct=max(0.5, args.min_pullback),
-        reclaim_volume_ratio=max(0.8, args.reclaim_volume),
+        reclaim_volume_ratio=max(0.6, args.reclaim_volume),
         max_range_position_pct=args.max_range_position,
         max_abs_funding_rate=args.max_abs_funding_rate,
         entry_confirmation_enabled=not args.no_entry_confirm,
