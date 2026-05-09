@@ -189,6 +189,32 @@ class TradeDatabase:
         cursor.execute("""
             CREATE INDEX IF NOT EXISTS idx_exchange_income_type ON exchange_income_rows(income_type)
         """)
+
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS transaction_errors (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                event_time TEXT NOT NULL,
+                error_type TEXT,
+                component TEXT,
+                symbol TEXT,
+                session_id TEXT,
+                summary TEXT,
+                detail TEXT,
+                source TEXT DEFAULT 'runtime',
+                raw_text TEXT,
+                created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(event_time, error_type, component, symbol, session_id, summary)
+            )
+        """)
+        cursor.execute("""
+            CREATE INDEX IF NOT EXISTS idx_transaction_errors_time ON transaction_errors(event_time)
+        """)
+        cursor.execute("""
+            CREATE INDEX IF NOT EXISTS idx_transaction_errors_symbol ON transaction_errors(symbol)
+        """)
+        cursor.execute("""
+            CREATE INDEX IF NOT EXISTS idx_transaction_errors_session ON transaction_errors(session_id)
+        """)
         
         conn.commit()
         conn.close()
@@ -1108,6 +1134,72 @@ class TradeDatabase:
         row = cursor.fetchone()
         conn.close()
         return dict(row) if row else {"rows": 0, "first_ms": None, "last_ms": None}
+
+    def add_transaction_error(
+        self,
+        *,
+        event_time: str,
+        error_type: str = "",
+        component: str = "",
+        symbol: str = "",
+        session_id: str = "",
+        summary: str = "",
+        detail: str = "",
+        source: str = "runtime",
+        raw_text: str = "",
+    ) -> bool:
+        """Persist one structured trading exception for dashboard review."""
+        conn = self._get_connection()
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            INSERT OR IGNORE INTO transaction_errors (
+                event_time, error_type, component, symbol, session_id,
+                summary, detail, source, raw_text
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                event_time or utc_now_iso(),
+                str(error_type or ""),
+                str(component or ""),
+                str(symbol or "").upper(),
+                str(session_id or ""),
+                str(summary or "")[:500],
+                str(detail or "")[:5000],
+                str(source or "runtime"),
+                str(raw_text or "")[:8000],
+            ),
+        )
+        changed = cursor.rowcount > 0
+        conn.commit()
+        conn.close()
+        return changed
+
+    def get_transaction_errors(self, limit: int = 15, offset: int = 0) -> list[dict[str, Any]]:
+        """Read persisted trading exceptions for dashboard pagination."""
+        conn = self._get_connection()
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            SELECT id, event_time, error_type, component, symbol, session_id,
+                   summary, detail, source, raw_text, created_at
+            FROM transaction_errors
+            ORDER BY event_time DESC, id DESC
+            LIMIT ? OFFSET ?
+            """,
+            (max(1, int(limit or 15)), max(0, int(offset or 0))),
+        )
+        rows = [dict(row) for row in cursor.fetchall()]
+        conn.close()
+        return rows
+
+    def count_transaction_errors(self) -> int:
+        conn = self._get_connection()
+        cursor = conn.cursor()
+        cursor.execute("SELECT COUNT(*) AS total FROM transaction_errors")
+        row = cursor.fetchone()
+        conn.close()
+        return int(row["total"] or 0) if row else 0
 
     def export_to_csv(self, output_path: Path, days: int = 30):
         """导出交易记录到 CSV"""

@@ -285,19 +285,45 @@ class DashboardData:
 
         return self.cache.get(f"log:{lines}", LOG_TTL_SEC, _load)
 
-    def transaction_errors(self, limit: int = 80, scan_lines: int = 5000) -> dict[str, Any]:
-        """Parse recent trading exceptions from the runtime log."""
-        limit = max(1, min(_safe_int(limit, 80), 300))
+    def transaction_errors(
+        self,
+        limit: int = 15,
+        scan_lines: int = 5000,
+        page: int = 1,
+        per_page: int | None = None,
+    ) -> dict[str, Any]:
+        """Return DB-backed trading exceptions with recent log fallback."""
+        if per_page is not None:
+            limit = per_page
+        page = max(1, _safe_int(page, 1))
+        limit = max(1, min(_safe_int(limit, 15), 300))
         scan_lines = max(limit, min(_safe_int(scan_lines, 5000), 20000))
+        offset = (page - 1) * limit
 
-        def _load() -> dict[str, Any]:
+        db_rows = self.db.get_transaction_errors(limit=1000, offset=0)
+        db_errors = [
+            {
+                "time": row.get("event_time", ""),
+                "level": "ERROR",
+                "type": row.get("error_type", "") or "交易异常",
+                "component": row.get("component", "") or "系统",
+                "symbol": row.get("symbol", "") or "",
+                "session_id": row.get("session_id", "") or "",
+                "summary": row.get("summary", "") or "",
+                "detail": row.get("detail", "") or row.get("raw_text", "") or "",
+                "source": row.get("source", "db"),
+            }
+            for row in db_rows
+        ]
+
+        def _load_log_events() -> list[dict[str, Any]]:
             path = hermes_logs_dir() / "crypto_sword.log"
             if not path.exists():
-                return {"available": False, "path": str(path), "errors": [], "total": 0}
+                return []
             try:
                 lines = path.read_text(encoding="utf-8", errors="replace").splitlines()[-scan_lines:]
-            except Exception as exc:
-                return {"available": False, "path": str(path), "reason": str(exc), "errors": [], "total": 0}
+            except Exception:
+                return []
 
             events: list[dict[str, Any]] = []
             index = 0
@@ -334,19 +360,43 @@ class DashboardData:
                         "session_id": session_match.group(1) if session_match else "",
                         "summary": message[:260],
                         "detail": detail,
+                        "source": "log",
                     }
                 )
                 index = max(cursor, index + 1)
 
             events.reverse()
-            return {
-                "available": True,
-                "path": str(path),
-                "total": len(events),
-                "errors": events[:limit],
-            }
+            return events
 
-        return self.cache.get(f"errors:{limit}:{scan_lines}", ERROR_TTL_SEC, _load)
+        log_errors = self.cache.get(f"errors-log:{scan_lines}", ERROR_TTL_SEC, _load_log_events)
+        combined: list[dict[str, Any]] = []
+        seen: set[tuple[str, str, str, str, str, str]] = set()
+        for event in [*db_errors, *log_errors]:
+            key = (
+                str(event.get("time", "")),
+                str(event.get("type", "")),
+                str(event.get("component", "")),
+                str(event.get("symbol", "")),
+                str(event.get("session_id", "")),
+                str(event.get("summary", ""))[:160],
+            )
+            if key in seen:
+                continue
+            seen.add(key)
+            combined.append(event)
+
+        combined.sort(key=lambda item: str(item.get("time", "")), reverse=True)
+        total = len(combined)
+        total_pages = max(1, (total + limit - 1) // limit)
+        return {
+            "available": True,
+            "source": "db+log" if db_errors and log_errors else ("db" if db_errors else "log"),
+            "total": total,
+            "page": page,
+            "per_page": limit,
+            "total_pages": total_pages,
+            "errors": combined[offset : offset + limit],
+        }
 
     def overview(self) -> dict[str, Any]:
         account = self.account_snapshot()
@@ -380,7 +430,7 @@ class DashboardData:
             "periods": {"7": period7, "30": period30},
             "recent_trades": self.recent_trades_page(days=30, page=1, per_page=15),
             "open_db_trades": self.open_db_trades(),
-            "transaction_errors": self.transaction_errors(limit=30),
+            "transaction_errors": self.transaction_errors(page=1, per_page=15),
             "log_tail": self.log_tail(60),
         }
 

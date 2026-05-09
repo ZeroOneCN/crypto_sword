@@ -10,6 +10,7 @@ import queue
 import re
 import threading
 import time
+from html import unescape
 from pathlib import Path
 from typing import Any
 
@@ -44,6 +45,10 @@ _telegram_queue: "queue.Queue[tuple[str, str | None]]" = queue.Queue(
 )
 _telegram_worker_started = False
 _telegram_worker_lock = threading.Lock()
+
+_ERROR_TIME_RE = re.compile(r"\b\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\b")
+_ERROR_SYMBOL_RE = re.compile(r"\b([A-Z0-9]{2,24}USDT)\b")
+_ERROR_SESSION_RE = re.compile(r"\b([A-Z0-9]{2,24}USDT-\d{14}-[a-f0-9]{8})\b")
 
 def _telegram_timeout() -> float:
     try:
@@ -112,6 +117,7 @@ def get_telegram_config() -> dict[str, Any]:
 
 def send_telegram_message(message: str, parse_mode: str | None = "HTML", async_send: bool | None = None) -> bool:
     """Queue a Telegram message without blocking trading flows."""
+    _record_transaction_error_message(message)
     if async_send is None:
         async_send = os.environ.get("TELEGRAM_ASYNC_SEND", "1").strip().lower() not in {"0", "false", "no"}
 
@@ -132,6 +138,71 @@ def send_telegram_message(message: str, parse_mode: str | None = "HTML", async_s
     except queue.Full:
         logger.error("Telegram queue full - dropping notification to keep trading loop non-blocking")
         return False
+
+def _record_transaction_error_message(message: str) -> None:
+    """Persist formatted trading-exception Telegram messages for the dashboard."""
+    if "交易异常" not in str(message or "") and "浜ゆ槗寮傚父" not in str(message or ""):
+        return
+    try:
+        text = unescape(_strip_html(str(message or "")))
+        lines = [line.strip() for line in text.splitlines() if line.strip()]
+        joined = "\n".join(lines)
+
+        def _after_label(label: str) -> str:
+            for line in lines:
+                if line.startswith(label):
+                    return line[len(label):].strip()
+            return ""
+
+        event_time = ""
+        time_match = _ERROR_TIME_RE.search(joined)
+        if time_match:
+            event_time = time_match.group(0)
+        else:
+            from services.time_basis import utc_now_iso
+
+            event_time = utc_now_iso()
+
+        error_type = _after_label("类型")
+        component = _after_label("组件")
+        symbol = _after_label("标的")
+        session_id = _after_label("流水号")
+
+        if not symbol:
+            symbol_match = _ERROR_SYMBOL_RE.search(joined)
+            symbol = symbol_match.group(1) if symbol_match else ""
+        if not session_id:
+            session_match = _ERROR_SESSION_RE.search(joined)
+            session_id = session_match.group(1) if session_match else ""
+
+        detail_lines: list[str] = []
+        in_detail = False
+        for line in lines:
+            if line == "详情":
+                in_detail = True
+                continue
+            if in_detail and (line.startswith("⚠") or set(line) <= {"━", "-"}):
+                break
+            if in_detail:
+                detail_lines.append(line)
+        detail = "\n".join(detail_lines) or joined
+        summary = detail_lines[0] if detail_lines else (error_type or joined[:120])
+
+        from repositories.trade_repository import TradeDatabase
+
+        TradeDatabase().add_transaction_error(
+            event_time=event_time,
+            error_type=error_type or "交易异常",
+            component=component,
+            symbol=symbol,
+            session_id=session_id,
+            summary=summary,
+            detail=detail,
+            source="telegram",
+            raw_text=joined,
+        )
+    except Exception as exc:
+        logger.debug(f"transaction error capture skipped: {exc}")
 
 def _ensure_telegram_worker():
     global _telegram_worker_started

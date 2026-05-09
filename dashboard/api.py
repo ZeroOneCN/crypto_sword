@@ -64,9 +64,10 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 payload = DATA.recent_trades_page(days=days, page=page, per_page=per_page)
                 self._send_json({"ok": True, **payload})
             elif path == "/api/errors":
-                limit = _safe_int((query.get("limit") or ["80"])[0], 80)
+                page = _safe_int((query.get("page") or ["1"])[0], 1)
+                per_page = _safe_int((query.get("per_page") or query.get("limit") or ["15"])[0], 15)
                 scan_lines = _safe_int((query.get("scan_lines") or ["5000"])[0], 5000)
-                self._send_json({"ok": True, **DATA.transaction_errors(limit=limit, scan_lines=scan_lines)})
+                self._send_json({"ok": True, **DATA.transaction_errors(page=page, per_page=per_page, scan_lines=scan_lines)})
             elif path == "/api/positions":
                 account = DATA.account_snapshot()
                 orders = DATA.order_snapshot()

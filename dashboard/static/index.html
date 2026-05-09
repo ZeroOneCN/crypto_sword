@@ -312,6 +312,13 @@
       <div class="panel-head">
         <h2>交易异常记录</h2>
         <span class="pill" id="errorSummary">异常 --</span>
+        <div class="pager">
+          <span class="pill" id="errorPageInfo">第 1 页</span>
+          <button id="prevErrorPage" onclick="changeErrorPage(-1)">上一页</button>
+          <button id="nextErrorPage" onclick="changeErrorPage(1)">下一页</button>
+          <input class="page-input mono" id="jumpErrorPageInput" type="number" min="1" value="1" aria-label="跳转异常页码" onkeydown="handleErrorJumpKey(event)" />
+          <button onclick="jumpErrorPage()">跳转</button>
+        </div>
       </div>
       <div class="scroll"><table>
         <thead><tr><th>时间</th><th>级别</th><th>类型</th><th>组件</th><th>标的</th><th>流水号</th><th>原因详情</th></tr></thead>
@@ -328,6 +335,7 @@
   <script>
     const fmt = new Intl.NumberFormat('en-US', { maximumFractionDigits: 6 });
     const tradeState = { page: 1, perPage: 15, totalPages: 1, loaded: false };
+    const errorState = { page: 1, perPage: 15, totalPages: 1, loaded: false };
 
     const num = v => Number.isFinite(Number(v)) ? Number(v) : 0;
     const money = v => `${num(v) >= 0 ? '+' : ''}${fmt.format(num(v))} USDT`;
@@ -460,7 +468,24 @@
     function renderErrors(payload) {
       const body = document.getElementById('transactionErrors');
       const rows = payload?.errors || [];
-      document.getElementById('errorSummary').textContent = `异常 ${payload?.total || 0}`;
+      const responsePage = payload?.page || 1;
+      const responseTotalPages = payload?.total_pages || 1;
+      if (responsePage > responseTotalPages) {
+        loadErrorsPage(responseTotalPages).catch(err => document.getElementById('status').textContent = `异常分页修正失败：${err.message}`);
+        return;
+      }
+      errorState.page = responsePage;
+      errorState.totalPages = responseTotalPages;
+      errorState.loaded = true;
+
+      document.getElementById('errorSummary').textContent = `异常 ${payload?.total || 0}｜${payload?.source || 'db'}`;
+      document.getElementById('errorPageInfo').textContent = `第 ${errorState.page}/${errorState.totalPages} 页 · 共 ${payload?.total || 0} 条`;
+      document.getElementById('prevErrorPage').disabled = errorState.page <= 1;
+      document.getElementById('nextErrorPage').disabled = errorState.page >= errorState.totalPages;
+      const jumpInput = document.getElementById('jumpErrorPageInput');
+      jumpInput.max = errorState.totalPages;
+      jumpInput.value = errorState.page;
+
       if (!rows.length) {
         body.innerHTML = `<tr><td colspan="7" class="muted">暂无交易异常，系统运行平稳。</td></tr>`;
         return;
@@ -478,6 +503,32 @@
           ${cell(`<details><summary>${safe(e.summary || e.detail || '--')}</summary><div class="muted" style="white-space:pre-wrap;margin-top:8px">${detail}</div></details>`)}
         </tr>`;
       }).join('');
+    }
+
+    async function loadErrorsPage(page = errorState.page) {
+      const res = await fetch(`/api/errors?page=${page}&per_page=${errorState.perPage}`, { cache: 'no-store' });
+      const data = await res.json();
+      if (!data.ok) throw new Error(data.error || 'errors api error');
+      renderErrors(data);
+    }
+
+    function changeErrorPage(delta) {
+      const next = Math.min(Math.max(1, errorState.page + delta), errorState.totalPages);
+      loadErrorsPage(next).catch(err => document.getElementById('status').textContent = `异常分页失败：${err.message}`);
+    }
+
+    function jumpErrorPage() {
+      const input = document.getElementById('jumpErrorPageInput');
+      const requested = Math.trunc(num(input.value));
+      const next = Math.min(Math.max(1, requested || 1), errorState.totalPages);
+      input.value = next;
+      loadErrorsPage(next).catch(err => document.getElementById('status').textContent = `异常跳转失败：${err.message}`);
+    }
+
+    function handleErrorJumpKey(event) {
+      if (event.key === 'Enter') {
+        jumpErrorPage();
+      }
     }
 
     async function loadTradesPage(page = tradeState.page) {
@@ -542,7 +593,11 @@
 
         renderPositions(account.positions || []);
         renderPeriods(periods);
-        renderErrors(data.transaction_errors || { errors: [], total: 0 });
+        if (!errorState.loaded || errorState.page === 1) {
+          renderErrors(data.transaction_errors || { errors: [], page: 1, total_pages: 1, total: 0 });
+        } else if (manual) {
+          loadErrorsPage(errorState.page).catch(err => document.getElementById('status').textContent = `异常当前页刷新失败：${err.message}`);
+        }
         if (!tradeState.loaded || tradeState.page === 1) {
           renderTradesPage(data.recent_trades || { trades: [], page: 1, total_pages: 1, total: 0 });
         } else if (manual) {
