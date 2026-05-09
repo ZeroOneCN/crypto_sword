@@ -55,7 +55,7 @@ class TradingConfig:
         quality_guard_lookback_trades: int = 12,
         quality_guard_min_profit_factor: float = 1.0,
         quality_guard_min_win_rate: float = 45.0,
-        quality_guard_max_loss_streak: int = 2,
+        quality_guard_max_loss_streak: int = 999,
         quality_guard_defensive_min_score: float = 88.0,
         quality_guard_defensive_max_change_pct: float = 26.0,
         quality_guard_defensive_max_oi_pct: float = 90.0,
