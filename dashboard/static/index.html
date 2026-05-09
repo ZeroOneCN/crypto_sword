@@ -335,7 +335,7 @@
   <script>
     const fmt = new Intl.NumberFormat('en-US', { maximumFractionDigits: 6 });
     const tradeState = { page: 1, perPage: 15, totalPages: 1, loaded: false };
-    const errorState = { page: 1, perPage: 15, totalPages: 1, loaded: false };
+    const errorState = { page: 1, perPage: 15, totalPages: 1, loaded: false, openKeys: new Set() };
 
     const num = v => Number.isFinite(Number(v)) ? Number(v) : 0;
     const money = v => `${num(v) >= 0 ? '+' : ''}${fmt.format(num(v))} USDT`;
@@ -345,6 +345,7 @@
     const cell = (v, c='') => `<td class="${c}">${v}</td>`;
     const price = v => num(v) ? Number(v).toPrecision(8).replace(/\.?0+$/, '') : '--';
     const safe = v => String(v ?? '').replace(/[&<>"']/g, ch => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[ch]));
+    const attrSafe = v => safe(v).replace(/`/g, '&#96;');
 
     function hold(minutes) {
       const m = num(minutes);
@@ -493,6 +494,8 @@
       body.innerHTML = rows.map(e => {
         const levelClass = e.level === 'ERROR' ? 'bad' : 'warn';
         const detail = safe(e.detail || e.summary || '').replace(/\n/g, '<br>');
+        const rowKey = `${e.session_id || ''}|${e.time || ''}|${e.type || ''}|${e.symbol || ''}|${e.summary || ''}`;
+        const openAttr = errorState.openKeys.has(rowKey) ? ' open' : '';
         return `<tr>
           ${cell(safe(e.time || ''), 'mono')}
           ${cell(safe(e.level || ''), levelClass)}
@@ -500,10 +503,22 @@
           ${cell(safe(e.component || '系统'))}
           ${cell(e.symbol ? `<b>${safe(e.symbol)}</b>` : '--')}
           ${cell(e.session_id ? safe(e.session_id) : '--', 'mono')}
-          ${cell(`<details><summary>${safe(e.summary || e.detail || '--')}</summary><div class="muted" style="white-space:pre-wrap;margin-top:8px">${detail}</div></details>`)}
+          ${cell(`<details data-error-key="${attrSafe(rowKey)}"${openAttr}><summary>${safe(e.summary || e.detail || '--')}</summary><div class="muted" style="white-space:pre-wrap;margin-top:8px">${detail}</div></details>`)}
         </tr>`;
       }).join('');
     }
+
+    document.getElementById('transactionErrors').addEventListener('toggle', event => {
+      const detail = event.target.closest?.('details[data-error-key]');
+      if (!detail) return;
+      const key = detail.getAttribute('data-error-key') || '';
+      if (!key) return;
+      if (detail.open) {
+        errorState.openKeys.add(key);
+      } else {
+        errorState.openKeys.delete(key);
+      }
+    }, true);
 
     async function loadErrorsPage(page = errorState.page) {
       const res = await fetch(`/api/errors?page=${page}&per_page=${errorState.perPage}`, { cache: 'no-store' });
