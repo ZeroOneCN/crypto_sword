@@ -136,6 +136,7 @@ class ScannerMixin:
             else:
                 major_bonus = 1 if symbol in self.config.major_symbols else 0
             entry_bonus = 3 if item.get("entry_status") == "ready" else 0
+            direction_bonus = 2 if str(item.get("direction", "") or "").upper() == "LONG" else -2
             stage = str(item.get("stage", "") or "")
             stage_bonus = {
                 "pre_break": 4,
@@ -146,7 +147,7 @@ class ScannerMixin:
             strategy_line = str(item.get("strategy_line", "") or "")
             strategy_bonus = 2 if strategy_line == "趋势突破线" and stage == "pre_break" else 1 if strategy_line == "均线二启线" else 0
             score_total = float((item.get("score") or {}).get("total_score", 0) or 0)
-            return entry_bonus, stage_bonus, strategy_bonus, major_bonus, score_total
+            return entry_bonus, direction_bonus, stage_bonus, strategy_bonus, major_bonus, score_total
 
         signals.sort(key=_signal_priority, reverse=True)
         self._record_latency_step(latency_steps, "score_filter", step_started)

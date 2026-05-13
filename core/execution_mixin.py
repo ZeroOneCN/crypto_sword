@@ -245,11 +245,14 @@ class ExecutionMixin(ProtectionServiceMixin, PositionLifecycleMixin, ExitService
                 if latest_price > 0:
                     price = latest_price
                     trading_signal.entry_price = latest_price
-            # 高分信号也必须过短线复查；USUAL 这类爆拉后回落不能靠分数豁免。
+            # ready 信号已经过策略确认；短线插针只记录，不再二次拦截主链机会。
             spike_reason = self._recent_spike_reversal_reason(symbol, direction, price)
             if spike_reason:
-                if self._allow_high_reversal_short_spike_bypass(signal, spike_reason):
-                    logger.info(f"✅ {symbol} 高位转弱快线通过插针复查：{spike_reason}")
+                if (
+                    getattr(self.config, "ready_signal_spike_guard_bypass", True)
+                    and entry_status == "ready"
+                ) or self._allow_high_reversal_short_spike_bypass(signal, spike_reason):
+                    logger.info(f"✅ {symbol} ready信号忽略短线插针复查：{spike_reason}")
                     spike_reason = ""
             if spike_reason:
                 logger.warning(f"🧊 {symbol} 开仓前过滤：{spike_reason}")

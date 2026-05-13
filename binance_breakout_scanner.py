@@ -225,13 +225,14 @@ def decide_direction(stage: str, metrics: dict) -> str:
     
     ls_rising = ls_now > ls_prev
     ls_falling = ls_now < ls_prev
+    # 多军模式：做空只保留“高位明显转弱”的极端机会，避免普通回落抢走做多仓位。
     top_reversal_short = (
-        change_24h >= 10.0
-        and drawdown >= 3.0
-        and oi_24h >= 12.0
-        and volume_mult >= 0.9
-        and range_position <= 85.0
-        and (ls_falling or funding >= 0.0003)
+        change_24h >= 16.0
+        and drawdown >= 4.5
+        and oi_24h >= 24.0
+        and volume_mult >= 1.0
+        and range_position <= 82.0
+        and (ls_falling or funding >= 0.0005)
     )
     bottom_reversal_long = (
         change_24h <= -10.0
@@ -261,14 +262,14 @@ def decide_direction(stage: str, metrics: dict) -> str:
         if long_signals >= 2:
             return "LONG"
         
-        # 做空条件：价格下跌为主，其他辅助
+        # 做空降级：普通下跌不再主动做空，只在多项空头证据同时成立时保留。
         short_signals = sum([
             change_24h < 0,           # 价格下跌
             funding <= 0.001,         # 资金费率不太正
             ls_falling,               # 多空比下降
             oi_24h > -5,              # OI 不太降
         ])
-        if short_signals >= 2:
+        if short_signals >= 4 and abs(change_24h) >= 8.0 and oi_24h >= 12.0:
             return "SHORT"
         
         return "WATCH"
@@ -276,7 +277,7 @@ def decide_direction(stage: str, metrics: dict) -> str:
     # mania: 极端行情 - 反向交易
     if stage == "mania":
         # 多头过热 → 做空
-        if change_24h >= 30 or ls_now >= 2.0:
+        if change_24h >= 35 and drawdown >= 6.0 and oi_24h >= 25.0 and (ls_falling or funding >= 0.0005):
             return "SHORT"
         # 空头过热 → 做多
         if change_24h <= -25 or ls_now <= 0.6:
@@ -286,7 +287,7 @@ def decide_direction(stage: str, metrics: dict) -> str:
     # exhaustion: 衰竭 - 反转交易（放宽阈值）
     if stage == "exhaustion":
         # 高位衰竭 → 做空（更宽松）
-        if change_72h >= 30 and change_24h < 20:
+        if change_72h >= 45 and change_24h < 10 and drawdown >= 6.0 and oi_24h >= 25.0:
             return "SHORT"
         # 低位衰竭 → 做多（更宽松）
         if change_72h <= -25 and change_24h > -20:

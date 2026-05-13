@@ -410,14 +410,36 @@ class CycleMixin:
                         return 0.0
             return 0.0
 
-        change_24h = abs(_metric("change_24h_pct", "price_change_pct"))
+        raw_change_24h = _metric("change_24h_pct", "price_change_pct")
+        change_24h = abs(raw_change_24h)
         oi_change = abs(_metric("oi_24h_pct", "oi_change_pct"))
         funding = abs(_metric("funding_rate", "funding_current"))
         range_position = float(metrics.get("range_position_24h_pct", 50) or 50)
+        drawdown = float(metrics.get("drawdown_from_24h_high_pct", 0) or 0)
         quality_mode = str(snapshot.get("quality_mode", "normal") or "normal")
         quality_reason = str(snapshot.get("quality_reason", "") or "")
+        long_momentum_override = self._is_long_momentum_override_signal(signal)
 
-        if quality_mode == "defensive":
+        if direction == "SHORT" and getattr(self.config, "long_bias_mode", True):
+            short_min_score = float(getattr(self.config, "short_entry_min_score", 92.0) or 92.0)
+            short_min_change = float(getattr(self.config, "short_entry_min_change_pct", 16.0) or 16.0)
+            short_min_drawdown = float(getattr(self.config, "short_entry_min_drawdown_pct", 4.5) or 4.5)
+            short_min_oi = float(getattr(self.config, "short_entry_min_oi_pct", 24.0) or 24.0)
+            short_max_range = float(getattr(self.config, "short_entry_max_range_position_pct", 82.0) or 82.0)
+            if not (
+                score >= short_min_score
+                and raw_change_24h >= short_min_change
+                and drawdown >= short_min_drawdown
+                and oi_change >= short_min_oi
+                and range_position <= short_max_range
+            ):
+                return (
+                    "多军模式：空单降级，仅允许高位转弱极端机会 "
+                    f"(需评分≥{short_min_score:.0f}、24h≥{short_min_change:.0f}%、"
+                    f"回落≥{short_min_drawdown:.1f}%、OI≥{short_min_oi:.0f}%)"
+                )
+
+        if quality_mode == "defensive" and not long_momentum_override:
             min_score = float(getattr(self.config, "quality_guard_defensive_min_score", 92.0) or 92.0)
             max_change = float(getattr(self.config, "quality_guard_defensive_max_change_pct", 18.0) or 18.0)
             max_oi = float(getattr(self.config, "quality_guard_defensive_max_oi_pct", 70.0) or 70.0)
@@ -437,7 +459,7 @@ class CycleMixin:
             signal["_quality_gate_mode"] = "defensive"
             signal["_quality_gate_note"] = quality_reason
 
-        elif quality_mode == "caution":
+        elif quality_mode == "caution" and not long_momentum_override:
             if stage == "mania":
                 return f"收益曲线谨慎：过热阶段跳过 | {quality_reason}"
             if stage == "confirmed_breakout" and (
@@ -468,6 +490,8 @@ class CycleMixin:
                 )
 
         min_score = float(getattr(self.config, "min_signal_score_for_entry", 78.0) or 78.0)
+        if direction == "LONG":
+            min_score = max(0.0, min_score - float(getattr(self.config, "long_bias_score_discount", 0.0) or 0.0))
         if snapshot.get("weak_day"):
             min_score = max(min_score, float(getattr(self.config, "min_signal_score_defensive", 88.0) or 88.0))
         if stage == "confirmed_breakout":
@@ -476,6 +500,10 @@ class CycleMixin:
             if direction == "LONG" and not getattr(self.config, "allow_mania_long_entries", False):
                 return "mania过热阶段禁止追多"
             min_score = max(min_score, 95.0)
+        if long_momentum_override:
+            signal["_entry_gate_override"] = "long_momentum_override"
+            signal["_entry_gate_note"] = "多军强趋势动量直通：忽略评分阈值/收益曲线谨慎拦截"
+            return ""
         if score < min_score:
             return f"评分不足 {score:.1f} < {min_score:.1f}"
 

@@ -50,6 +50,13 @@ class TradingConfig:
         confirmed_breakout_direct_score: float = 78.0,
         confirmed_breakout_max_change_pct: float = 30.0,
         confirmed_breakout_max_range_position_pct: float = 94.0,
+        long_bias_mode: bool = True,
+        long_bias_score_discount: float = 4.0,
+        short_entry_min_score: float = 92.0,
+        short_entry_min_change_pct: float = 16.0,
+        short_entry_min_drawdown_pct: float = 4.5,
+        short_entry_min_oi_pct: float = 24.0,
+        short_entry_max_range_position_pct: float = 82.0,
         allow_mania_long_entries: bool = False,
         quality_guard_enabled: bool = True,
         quality_guard_lookback_trades: int = 12,
@@ -83,6 +90,7 @@ class TradingConfig:
         max_oi_change_pct: float = 110.0,
         max_entry_slippage_pct: float = 0.45,
         spike_reversal_guard_enabled: bool = True,
+        ready_signal_spike_guard_bypass: bool = True,
         spike_guard_min_runup_pct: float = 4.0,
         spike_guard_min_pullback_pct: float = 0.60,
         spike_guard_min_wick_ratio: float = 0.35,
@@ -138,6 +146,10 @@ class TradingConfig:
         accumulation_entry_max_range_pct: float = 88.0,
         accumulation_entry_min_volume_mult: float = 0.70,
         fast_lane_enabled: bool = True,
+        long_momentum_override_enabled: bool = True,
+        long_momentum_override_min_score: float = 64.0,
+        long_momentum_override_min_change_pct: float = 5.0,
+        long_momentum_override_min_oi_pct: float = 8.0,
         fast_lane_funding_squeeze_score: float = 78.0,
         fast_lane_funding_squeeze_min_oi_pct: float = 10.0,
         fast_lane_funding_squeeze_min_change_pct: float = 3.0,
@@ -212,6 +224,13 @@ class TradingConfig:
         self.confirmed_breakout_direct_score = max(self.pre_break_direct_score, float(confirmed_breakout_direct_score))
         self.confirmed_breakout_max_change_pct = max(0.0, float(confirmed_breakout_max_change_pct))
         self.confirmed_breakout_max_range_position_pct = max(0.0, float(confirmed_breakout_max_range_position_pct))
+        self.long_bias_mode = bool(long_bias_mode)
+        self.long_bias_score_discount = max(0.0, float(long_bias_score_discount))
+        self.short_entry_min_score = max(self.min_signal_score_for_entry, float(short_entry_min_score))
+        self.short_entry_min_change_pct = max(0.0, float(short_entry_min_change_pct))
+        self.short_entry_min_drawdown_pct = max(0.0, float(short_entry_min_drawdown_pct))
+        self.short_entry_min_oi_pct = max(0.0, float(short_entry_min_oi_pct))
+        self.short_entry_max_range_position_pct = max(0.0, float(short_entry_max_range_position_pct))
         self.allow_mania_long_entries = bool(allow_mania_long_entries)
         self.quality_guard_enabled = bool(quality_guard_enabled)
         self.quality_guard_lookback_trades = max(3, int(quality_guard_lookback_trades))
@@ -245,6 +264,7 @@ class TradingConfig:
         self.max_oi_change_pct = max_oi_change_pct
         self.max_entry_slippage_pct = max_entry_slippage_pct
         self.spike_reversal_guard_enabled = spike_reversal_guard_enabled
+        self.ready_signal_spike_guard_bypass = bool(ready_signal_spike_guard_bypass)
         self.spike_guard_min_runup_pct = spike_guard_min_runup_pct
         self.spike_guard_min_pullback_pct = spike_guard_min_pullback_pct
         self.spike_guard_min_wick_ratio = spike_guard_min_wick_ratio
@@ -300,6 +320,10 @@ class TradingConfig:
         self.accumulation_entry_max_range_pct = accumulation_entry_max_range_pct
         self.accumulation_entry_min_volume_mult = accumulation_entry_min_volume_mult
         self.fast_lane_enabled = bool(fast_lane_enabled)
+        self.long_momentum_override_enabled = bool(long_momentum_override_enabled)
+        self.long_momentum_override_min_score = max(0.0, float(long_momentum_override_min_score))
+        self.long_momentum_override_min_change_pct = max(0.0, float(long_momentum_override_min_change_pct))
+        self.long_momentum_override_min_oi_pct = max(0.0, float(long_momentum_override_min_oi_pct))
         self.fast_lane_funding_squeeze_score = max(0.0, float(fast_lane_funding_squeeze_score))
         self.fast_lane_funding_squeeze_min_oi_pct = max(0.0, float(fast_lane_funding_squeeze_min_oi_pct))
         self.fast_lane_funding_squeeze_min_change_pct = max(0.0, float(fast_lane_funding_squeeze_min_change_pct))

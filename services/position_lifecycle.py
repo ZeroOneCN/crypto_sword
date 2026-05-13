@@ -728,6 +728,47 @@ class PositionLifecycleMixin:
         funding = float(metrics.get("funding_rate", 0.0) or 0.0)
         return score >= 95.0 and 10.0 <= change_24h <= 35.0 and oi_change >= 30.0 and funding <= 0.001
 
+    def _is_long_momentum_override_signal(self, signal: dict[str, Any]) -> bool:
+        """Long-bias override: let healthy altcoin momentum leaders pass score gates."""
+        if not getattr(self.config, "long_bias_mode", True):
+            return False
+        if not getattr(self.config, "long_momentum_override_enabled", True):
+            return False
+        if str(signal.get("direction", "") or "").upper() != "LONG":
+            return False
+        if str(signal.get("stage", "") or "") == "mania":
+            return False
+
+        marker = " ".join(
+            str(signal.get(key, "") or "")
+            for key in ("entry_status_text", "watch_stage", "entry_note", "strategy_line")
+        )
+        if not any(token in marker for token in ("趋势突破", "动量", "中枢快线", "预突破", "首发现直通")):
+            return False
+
+        score_data = signal.get("score") or {}
+        try:
+            score = float(
+                score_data.get("total_score", score_data.get("total", 0))
+                if isinstance(score_data, dict)
+                else score_data or 0
+            )
+        except (TypeError, ValueError):
+            score = 0.0
+        metrics = signal.get("metrics") or {}
+        change_24h = float(metrics.get("change_24h_pct", 0.0) or 0.0)
+        oi_change = abs(float(metrics.get("oi_24h_pct", metrics.get("oi_change_pct", 0.0)) or 0.0))
+        funding = abs(float(metrics.get("funding_rate", metrics.get("funding_current", 0.0)) or 0.0))
+        range_position = float(metrics.get("range_position_24h_pct", 50.0) or 50.0)
+
+        return (
+            score >= float(getattr(self.config, "long_momentum_override_min_score", 64.0))
+            and change_24h >= float(getattr(self.config, "long_momentum_override_min_change_pct", 5.0))
+            and oi_change >= float(getattr(self.config, "long_momentum_override_min_oi_pct", 8.0))
+            and funding <= float(getattr(self.config, "max_abs_funding_rate", 0.005)) * 1.35
+            and range_position <= 98.0
+        )
+
     def _dynamic_risk_limits(self, signal: dict[str, Any]) -> dict[str, Any]:
         """Calculate adaptive exposure and correlation limits for the next entry."""
         base_exposure = float(self.config.max_total_exposure_pct)
